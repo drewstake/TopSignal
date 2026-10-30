@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { isRouteErrorResponse, useLocation, useNavigate, useRouteError } from "react-router-dom";
+import { checkRouteLoad, isModuleLoadFailure, routeLoadMessages, type RouteLoadStatus } from "./routeLoadFailure";
 
 import { Button } from "../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
@@ -49,6 +51,19 @@ export function RouteErrorPage({ fullScreen = false }: RouteErrorPageProps) {
   const navigate = useNavigate();
   const summary = getErrorSummary(error);
   const showDetails = import.meta.env.DEV && Boolean(summary.stack);
+  const moduleFailure = isModuleLoadFailure(summary.message);
+  const [connection, setConnection] = useState<RouteLoadStatus>("checking");
+  const [checkNumber, setCheckNumber] = useState(0);
+  useEffect(() => {
+    if (!moduleFailure) return;
+    let active = true;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 5000);
+    void checkRouteLoad(summary.message, controller.signal).then((status) => {
+      if (active) setConnection(status);
+    }).finally(() => window.clearTimeout(timeout));
+    return () => { active = false; controller.abort(); window.clearTimeout(timeout); };
+  }, [moduleFailure, summary.message, checkNumber]);
 
   const content = (
     <Card className="w-full max-w-3xl rounded-lg border-app-negative/55 bg-app-bg/85 p-0 shadow-[0_20px_80px_-48px_rgb(var(--theme-negative)/0.75)]">
@@ -57,10 +72,10 @@ export function RouteErrorPage({ fullScreen = false }: RouteErrorPageProps) {
           <div className="space-y-2">
             <p className="text-xs font-medium uppercase tracking-wide text-app-negative">Screen unavailable</p>
             <CardTitle className="text-xl tracking-tight text-app-text md:text-2xl">
-              Something broke on this page
+              {moduleFailure ? "This screen could not be downloaded" : "Something broke on this page"}
             </CardTitle>
             <CardDescription className="max-w-2xl text-sm leading-6 text-app-muted">
-              TopSignal is still running, but this route hit an error before it could finish rendering.
+              {moduleFailure ? routeLoadMessages[connection] : "This screen could not finish rendering. Backend and trading status have not been verified."}
             </CardDescription>
           </div>
           <div className="rounded-full border border-app-negative/25 bg-app-negative/10 px-3 py-1 text-xs font-medium text-app-negative">
@@ -83,6 +98,7 @@ export function RouteErrorPage({ fullScreen = false }: RouteErrorPageProps) {
         </div>
 
         <div className="flex flex-col gap-3 sm:flex-row">
+          {moduleFailure ? <Button variant="secondary" disabled={connection === "checking"} onClick={() => { setConnection("checking"); setCheckNumber((value) => value + 1); }}>Check connection</Button> : null}
           <Button onClick={() => window.location.reload()}>Reload page</Button>
           <Button variant="secondary" onClick={() => navigate("/")}>
             Go to dashboard

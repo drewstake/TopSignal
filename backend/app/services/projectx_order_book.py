@@ -848,6 +848,12 @@ class ProjectXMarketDepthSession:
             self._broadcast_to_channel_locked(
                 channel, {"event": "snapshot", "data": channel.book.clear_for_reconnect()},
             )
+        if self._observation_user_id and (channel.last_state or {}).get("state") != payload["state"]:
+            from ..bot_diagnostics import event as diagnostic_event
+            diagnostic_event(logger, "projectx_feed_state",
+                             level=logging.WARNING if payload["state"] in {"reconnecting", "unavailable", "disconnected"} else logging.INFO,
+                             user_id=self._observation_user_id, state=payload["state"],
+                             stream_kind="depth" if self._subscribe_target == "SubscribeContractMarketDepth" else "price")
         channel.last_state = payload
         self._broadcast_to_channel_locked(channel, {"event": "state", "data": payload})
 

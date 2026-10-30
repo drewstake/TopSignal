@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,34 @@ from app.services.bot_service import _candle_delivery_delay_seconds, _market_can
 
 
 BASE = datetime(2026, 7, 9, 13, 30, tzinfo=timezone.utc)
+
+
+def test_bearish_chop_explains_participation_and_crossing_without_claiming_confirmation():
+    rows = [_candle(i, 20500 - i * .15 + math.sin(i * .8) * 3, volume=55 if i == 479 else 100) for i in range(480)]
+    for row in rows:
+        row.high_price = row.close_price + 3
+        row.low_price = row.close_price - 3
+    payload = build_market_analysis(candles=rows, timeframe_unit="minute", timeframe_unit_number=5,
+        fast_period=9, slow_period=21, signal_action="HOLD", stale_after_seconds=600,
+        now=rows[-1].candle_timestamp + timedelta(minutes=5))
+    explanation = payload["explanation"]
+    assert explanation["headline"] == "Bearish tilt · choppy market"
+    assert any("choppy" in text for text in explanation["conflicting_evidence"])
+    assert any("participation is subdued" in text for text in explanation["conflicting_evidence"])
+    assert all("not confirmed by one crossing" in level["condition"] for level in explanation["change_levels"])
+
+
+def test_flat_higher_frame_is_nonconfirmation_not_opposing_direction():
+    from app.services.bot_market_analysis import _explanation
+    result = _explanation(trend={"direction": "bearish", "strength": 30,
+        "components": [{"label": "EMA spread", "direction": "bearish"}]}, regime="chop",
+        drivers={"bullish": [], "bearish": [], "neutral": []},
+        provenance={"timeframe": {"label": "5m"}, "is_stale": False, "market_session_open": True},
+        nearest_support=None, nearest_resistance=None, volume_state="normal",
+        mtf={"status": "mixed", "timeframes": [{"timeframe": "5m", "direction": "bearish"}, {"timeframe": "15m", "direction": "neutral"}]},
+        vwap_provenance={"complete_session": False})
+    assert any("15m" in text and "does not confirm" in text for text in result["conflicting_evidence"])
+    assert not any("opposing" in text for text in result["conflicting_evidence"])
 
 
 def _candle(index: int, close: float, *, partial: bool = False, volume: float = 100) -> SimpleNamespace:
@@ -379,7 +408,7 @@ def test_observed_vwap_is_scoped_to_available_globex_candles():
     assert vwap["complete_session"] is False
     assert vwap["window_start"] == BASE.isoformat()
     assert vwap["window_start"] != vwap["session_start"]
-    assert any("strategy's RTH VWAP" in item for item in payload["explanation"]["limitations"])
+    assert any("missing intervals can shift this reference" in item for item in payload["explanation"]["limitations"])
 
 
 def test_direction_strength_and_component_agreement_are_independent_of_bot_signal():

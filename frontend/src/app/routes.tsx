@@ -4,6 +4,8 @@ import { AppShell } from "./AppShell";
 import { RouteErrorPage } from "./RouteErrorPage";
 import { AccountAccess } from "./AccountAccess";
 
+const LogsPage = lazy(() => import("../pages/diagnostics/LogsPage").then(module => ({ default: module.LogsPage })));
+
 const DashboardPage = lazy(() =>
   import("../pages/dashboard/DashboardPage").then((module) => ({ default: module.DashboardPage })),
 );
@@ -85,6 +87,11 @@ export const router = createBrowserRouter([
       {
         path: "backtesting",
         element: <BacktestingPage />,
+        errorElement: <RouteErrorPage />,
+      },
+      {
+        path: "logs",
+        element: <LogsPage />,
         errorElement: <RouteErrorPage />,
       },
       {

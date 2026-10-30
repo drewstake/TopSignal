@@ -123,11 +123,16 @@ class TopSignalFrontendHandler(SimpleHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         super().end_headers()
 
-    def log_message(self, format: str, *args: object) -> None:
+    def log_request(self, code="-", size="-") -> None:  # type: ignore[no-untyped-def]
         # Do not persist query strings; OAuth or other control URLs may carry
         # sensitive values there. The browser fragment is never sent over HTTP.
         request_path = self._request_path().replace("\r", "").replace("\n", "")
-        self.access_logger.info("%s %s", self.client_address[0], request_path)
+        self.access_logger.info("%s %s %s status=%s", self.client_address[0], self.command, request_path, code)
+
+    def log_message(self, format: str, *args: object) -> None:
+        # send_error also calls log_request; don't log unsanitized request lines
+        # or duplicate a missing-asset event without its HTTP status.
+        pass
 
 
 def _build_parser() -> argparse.ArgumentParser:

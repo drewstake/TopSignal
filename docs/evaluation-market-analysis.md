@@ -1,5 +1,62 @@
 # Evaluation and market analysis
 
+## Dashboard refresh — October 30, 2026
+
+The assessment, supporting/conflicting evidence, candle measurements, reference
+levels and conditions that would challenge the read are visible by default.
+Container-based layout responds to the panel's available width, including the
+workspace sidebars. Technical definitions and source windows remain optional.
+The recorded bot decision stays separate from market interpretation.
+
+Direction and regime answer different questions: a bearish tilt can coexist
+with choppy conditions. A flat higher timeframe is nonconfirmation, not an
+opposing directional vote. Low volume indicates subdued participation, not
+buy/sell imbalance. Volatility cards distinguish recent range change from the
+historical rank of ATR; neither is a price forecast. Empty contrary evidence
+is explicitly limited to the checked indicators.
+
+Levels show absolute point distance, percent of the last analyzed close, and
+ATR multiples. A tiny nonzero distance is displayed with a less-than threshold
+rather than a misleading zero. A single closed-candle crossing challenges the
+read; subsequent holding and a sequence of higher lows/highs or lower
+highs/lows would provide structure evidence. This panel does not automatically
+detect or claim that confirmation. A separate live quote never changes these
+saved distances. Prices are rounded for display, not calculation.
+
+Account-free chart analysis now requires every source bar in each higher
+timeframe bucket, rejects outdated higher-timeframe windows, preserves unknown
+volume during aggregation, and does not count flat higher readings as directional
+agreement. ATR requires 14 true ranges (first bar uses high minus low); percentile
+uses at least two rolling observations. VWAP uses only the current observed
+18:00 New York session and becomes unavailable if any included volume is missing
+or total volume is zero. It cannot carry a previous session's value forward.
+Partial session coverage and missing indicator inputs remain visible.
+
+Remaining limitations: chart trend uses fixed EMA9/21 spread and slope normalized
+by price; saved backend analysis uses its documented ATR-normalized components
+and selected periods. Their trend reads can differ. Backend levels include
+recent swings and rolling-window extremes; chart-only levels use confirmed
+unswept swings. Both are candle-derived estimates, not resting orders.
+Relative volume is not time-of-day adjusted. Optional Level 1 quotes retain
+their contract, cutoff and freshness eligibility checks and best-bid/ask-only
+scope. No Rithmic, Databento, or full-depth integration is inferred or added.
+
+Verification for this refresh:
+
+- Frontend: 82 passing tests across `botMarketContext`, `botMarketExplanation`,
+  `BotAnalysisPanel`, `botAnalysisContract`, `BotMarketPanels`, and connection tests.
+  Targeted ESLint, TypeScript compilation, and the production Vite build pass.
+- Backend: 228 passing tests across market analysis, context bundles, decision
+  explanations, and execution safety. One existing failure remains in
+  `test_topbot_does_not_stitch_different_contracts`: HOLD returns
+  `decision_not_closed` instead of the expected contract-mismatch reason.
+  The same failure was reproduced after loading the original HEAD version of
+  the analysis module. No execution code was modified to change this outcome.
+- Browser: actual component with synthetic backend-shaped data, inspected at
+  1440, 1024 and 390 CSS pixels. No horizontal overflow or browser errors;
+  disclosures work by keyboard. Checked saved evaluation, stale, missing history,
+  and account-free chart states. The preview cannot route orders.
+
 The panel answers five questions: what closed candles show, the supporting
 evidence, contrary evidence, levels that merit another evaluation, and why the
 recorded strategy/routing outcome holds, permits, or rejects an entry.

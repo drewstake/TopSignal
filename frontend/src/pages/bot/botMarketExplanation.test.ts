@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildMarketExplanation } from "./botMarketExplanation";
+import { buildMarketExplanation, levelDistance } from "./botMarketExplanation";
 import { buildMarketContext, type MarketContext } from "./botMarketContext";
 import type { ProjectXMarketCandle } from "../../lib/types";
 
@@ -16,6 +16,23 @@ function context(overrides: Partial<MarketContext> = {}): MarketContext {
 }
 
 describe("buildMarketExplanation", () => {
+  it("explains bearish chop and flat higher frames without claiming reversal", () => {
+    const read = buildMarketExplanation(context({ marketRegime: "chop",
+      trend: { label: "5m", direction: "bearish", strength: 0.3, bars: 60 },
+      trends: [{ label: "5m", direction: "bearish", strength: 0.3, bars: 60 }, { label: "15m", direction: "neutral", strength: 0.1, bars: 25 }],
+      nearestResistance: 170,
+    }));
+    expect(read.summary).toContain("bearish tilt");
+    expect(read.conflicting.join(" ")).toContain("does not confirm");
+    expect(read.changes.join(" ")).toContain("not a confirmed structure change");
+  });
+
+  it("calculates level distance from the closed reference with safe missing values", () => {
+    expect(levelDistance(102, 100, 4)).toBe("2.00 pts above · 2.00% · 0.5 ATR");
+    expect(levelDistance(98, 100, null)).toBe("2.00 pts below · 2.00%");
+    expect(levelDistance(null, 100, 4)).toBe("Distance unavailable");
+    expect(levelDistance(1, 0, 0)).toBe("1.00 pts above");
+  });
   it("explains bullish evidence and explicitly calls out opposing VWAP and higher timeframe direction", () => {
     const read = buildMarketExplanation(context({
       trend: { label: "5m", direction: "bullish", strength: 0.6, bars: 60 },

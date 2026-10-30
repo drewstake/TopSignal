@@ -57,6 +57,7 @@ export interface MarketContext {
   vwapLocation: BotVwapLocation;
   vwapDistance: number | null;
   vwapDistancePercent: number | null;
+  vwapCoverage?: { bars: number; start: string; end: string; complete: boolean };
   multiTimeframeAlignment: {
     status: "bullish" | "bearish" | "mixed" | "neutral" | "unavailable";
     alignedTimeframes: number;
@@ -180,8 +181,10 @@ export function aggregateCandles(
 
   const bucketMs = targetSeconds * 1000;
   const buckets = new Map<number, ProjectXMarketCandle>();
+  const members = new Map<number, number[]>();
   for (const row of sorted) {
     const bucketStartMs = Math.floor(row.ms / bucketMs) * bucketMs;
+    members.set(bucketStartMs, [...(members.get(bucketStartMs) ?? []), row.ms]);
     const existing = buckets.get(bucketStartMs);
     if (!existing) {
       buckets.set(bucketStartMs, {
@@ -197,13 +200,19 @@ export function aggregateCandles(
     existing.high = Math.max(existing.high, row.candle.high);
     existing.low = Math.min(existing.low, row.candle.low);
     existing.close = row.candle.close;
-    existing.volume += Number.isFinite(row.candle.volume) ? row.candle.volume : 0;
+    existing.volume = Number.isFinite(existing.volume) && existing.volume >= 0 && Number.isFinite(row.candle.volume) && row.candle.volume >= 0
+      ? existing.volume + row.candle.volume : Number.NaN;
     existing.is_partial = existing.is_partial || row.candle.is_partial;
   }
 
   const aggregated = Array.from(buckets.entries())
     .sort((left, right) => left[0] - right[0])
-    .map(([, candle]) => candle);
+    .map(([start, candle]) => {
+      const times = members.get(start)!;
+      // Every bucket needs contiguous source bars, including its first bar.
+      candle.is_partial ||= times.length !== targetSeconds / sourceSeconds || times.some((time, index) => time !== start + index * sourceSeconds * 1000);
+      return candle;
+    });
 
   // The newest bucket is partial unless its source bars reach the bucket end.
   const last = aggregated[aggregated.length - 1];
@@ -275,8 +284,17 @@ export function buildMarketContext(
   const relativeVolume = computeRelativeVolume(candles);
   const volumeState = classifyVolume(relativeVolume);
 
-  const vwapPoints = buildBotChartVwap(candles, snapshot.strategyType === "topbot_adaptive");
+  const sessionCandles = candles.filter(candle => sessionKeyFor(Date.parse(candle.timestamp)) === sessionKeyFor(Date.parse(latest.timestamp)));
+  const validVolume = sessionCandles.every(candle => Number.isFinite(candle.volume) && candle.volume >= 0);
+  const vwapPoints = validVolume ? buildBotChartVwap(sessionCandles, false) : [];
   const vwap = vwapPoints.length > 0 ? vwapPoints[vwapPoints.length - 1].value : null;
+  const sessionStart = sessionCandles[0].timestamp;
+  const firstHour = easternHourOf(Date.parse(sessionStart));
+  const vwapCoverage = { bars: sessionCandles.length, start: sessionStart,
+    end: new Date(candleEndMs(Date.parse(latest.timestamp), snapshot.unit, snapshot.unitNumber)).toISOString(),
+    complete: validVolume && vwap !== null && intervalSecondsFor(snapshot.unit, snapshot.unitNumber) < 86400 &&
+      firstHour === 18 && new Date(sessionStart).getUTCMinutes() === 0 && new Date(sessionStart).getUTCSeconds() === 0 &&
+      !findCandleGaps(sessionCandles, snapshot.unit, snapshot.unitNumber).some(gap => gap.kind === "data") };
   const vwapDistance = vwap !== null ? lastPrice - vwap : null;
   const vwapDistancePercent = vwap !== null && vwap !== 0 ? ((lastPrice - vwap) / Math.abs(vwap)) * 100 : null;
   const vwapLocation = classifyVwapLocation(lastPrice, vwap, atr);
@@ -346,6 +364,7 @@ export function buildMarketContext(
     vwapLocation,
     vwapDistance,
     vwapDistancePercent,
+    vwapCoverage,
     multiTimeframeAlignment,
     sessionHigh: sessionLevels.sessionHigh,
     sessionLow: sessionLevels.sessionLow,
@@ -405,7 +424,11 @@ export function buildTimeframeTrends(
 
   for (const step of higherSteps) {
     const aggregated = aggregateCandles(closedCandles, unit, unitNumber, step.unit, step.unitNumber);
-    const closes = aggregated.filter((candle) => !candle.is_partial).map((candle) => candle.close);
+    const complete = aggregated.filter((candle) => !candle.is_partial);
+    const last = complete.at(-1);
+    const baseLast = closedCandles.at(-1);
+    if (!last || !baseLast || candleEndMs(Date.parse(baseLast.timestamp), unit, unitNumber) - candleEndMs(Date.parse(last.timestamp), step.unit, step.unitNumber) >= intervalSecondsFor(step.unit, step.unitNumber) * 1000) continue;
+    const closes = complete.map((candle) => candle.close);
     const trend = classifyTrend(closes);
     if (trend) {
       trends.push({
@@ -421,15 +444,15 @@ export function buildTimeframeTrends(
 }
 
 export function averageTrueRange(candles: ProjectXMarketCandle[], period: number): number | null {
-  if (candles.length < 2 || period <= 0) {
+  if (candles.length < period || period <= 0) {
     return null;
   }
 
   const ranges: number[] = [];
-  const start = Math.max(1, candles.length - period);
+  const start = Math.max(0, candles.length - period);
   for (let index = start; index < candles.length; index += 1) {
     const candle = candles[index];
-    const previousClose = candles[index - 1].close;
+    const previousClose = candles[index - 1]?.close ?? candle.close;
     ranges.push(
       Math.max(
         candle.high - candle.low,
@@ -440,7 +463,7 @@ export function averageTrueRange(candles: ProjectXMarketCandle[], period: number
   }
 
   const finite = ranges.filter((value) => Number.isFinite(value) && value >= 0);
-  if (finite.length === 0) {
+  if (finite.length !== period) {
     return null;
   }
   return finite.reduce((sum, value) => sum + value, 0) / finite.length;
@@ -453,12 +476,12 @@ export function computeAtrPercentile(
   lookback = ATR_PERCENTILE_LOOKBACK,
 ): number | null {
   const closed = candles.filter((candle) => !candle.is_partial);
-  if (period <= 0 || closed.length < period + 2) {
+  if (period <= 0 || closed.length < period + 1) {
     return null;
   }
 
   const observations: number[] = [];
-  const firstEnd = Math.max(period + 1, closed.length - Math.max(1, lookback) + 1);
+  const firstEnd = Math.max(period, closed.length - Math.max(1, lookback) + 1);
   for (let end = firstEnd; end <= closed.length; end += 1) {
     const value = averageTrueRange(closed.slice(0, end), period);
     if (value !== null && Number.isFinite(value)) {
@@ -480,7 +503,7 @@ function classifyVolatility(candles: ProjectXMarketCandle[]): VolatilityState | 
   }
 
   const recent = averageTrueRange(candles, 6);
-  const baseline = averageTrueRange(candles.slice(0, -6), Math.min(28, candles.length - 7));
+  const baseline = averageTrueRange(candles.slice(0, -6), Math.min(28, candles.length - 6));
   if (recent === null || baseline === null || baseline <= 0) {
     return null;
   }
@@ -565,7 +588,7 @@ function classifyTimeframeAlignment(trends: TimeframeTrend[]): MarketContext["mu
   }
   const primaryDirection = trends[0].direction;
   if (primaryDirection === "neutral") {
-    return { status: "neutral", alignedTimeframes: 0, conflictingTimeframes: 0 };
+    return { status: trends.every(trend => trend.direction === "neutral") ? "neutral" : "mixed", alignedTimeframes: 0, conflictingTimeframes: trends.filter(trend => trend.direction !== "neutral").length };
   }
   const alignedTimeframes = trends.filter((trend) => trend.direction === primaryDirection).length;
   const conflictingTimeframes = trends.filter((trend) => {
@@ -573,7 +596,7 @@ function classifyTimeframeAlignment(trends: TimeframeTrend[]): MarketContext["mu
     return direction !== "neutral" && direction !== primaryDirection;
   }).length;
   return {
-    status: conflictingTimeframes > 0 ? "mixed" : primaryDirection,
+    status: alignedTimeframes === trends.length ? primaryDirection : "mixed",
     alignedTimeframes,
     conflictingTimeframes,
   };

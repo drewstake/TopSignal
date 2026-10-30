@@ -8,8 +8,10 @@ import type { BotAnalysis, BotCollectedContext, BotConfig, BotEvaluation } from 
 import { buildDisplayAnalysis, currentAnalysisFreshness, type DisplayAnalysis } from "./botAnalysisContract";
 import { buildMarketContext, candleEndMs, isConfirmedClosedCandle, type BotMarketSnapshot } from "./botMarketContext";
 import type { BotChartMarket } from "./botChartData";
-import { buildMarketExplanation } from "./botMarketExplanation";
+import { buildMarketExplanation, levelDistance, regimeMeaning } from "./botMarketExplanation";
 import { BotProbabilisticPanel } from "./BotProbabilisticPanel";
+
+import "./BotAnalysisPanel.css";
 
 interface BotAnalysisPanelProps {
   bot: BotConfig | null;
@@ -20,7 +22,7 @@ interface BotAnalysisPanelProps {
   demoMode?: boolean;
   onEvaluate?: () => void;
 }
-const priceFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+const priceFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const timestampFormatter = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" });
 
 export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, market = null, loading = false, demoMode = false, onEvaluate }: BotAnalysisPanelProps) {
@@ -40,7 +42,7 @@ export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, marke
   const newerBars = analysis ? newerClosedBars(analysis, snapshot, nowMs) : 0;
   const freshnessStatus = newerBars ? "stale" : freshness?.status;
   const hasRead = Boolean(analysis && analysis.provenance.closed_candle_count >= (analysis.provenance.minimum_feature_bars ?? 10));
-  return <Card className="min-w-0">
+  return <Card className="market-analysis-panel min-w-0">
     <CardHeader className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-3">
       <div><CardTitle>Evaluation &amp; market analysis</CardTitle><CardDescription>{bot ? `${bot.symbol ?? bot.contract_id} · closed-candle market read and bot decision` : "Market context from the chart · No trading account required"}</CardDescription></div>
       <div className="flex flex-wrap items-center gap-2">
@@ -62,51 +64,100 @@ export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, marke
         <ChartMarketAnalysis snapshot={snapshot} nowMs={nowMs} />
         <EmptyState title="No evaluation yet" description={demoMode ? "This demo snapshot has no saved evaluation. Live evaluation is disabled." : "Evaluate this bot to explain its latest closed-candle signal and checks."} />
       </> : <>
-          {bot.strategy_type === "topbot_adaptive" && <BotDecisionSummary evaluation={selectedEvaluation} />}
           {analysis && hasRead ? <>
-            <details open={bot.strategy_type !== "topbot_adaptive"}>
-            <summary className="cursor-pointer text-sm text-app-muted">Indicator context only · not model inputs</summary>
-            <div className="grid gap-4 xl:grid-cols-2">
-              <section className="rounded-xl border border-app-border bg-app-bg/40 p-4">
-                <p className="text-xs font-medium text-app-muted">Market interpretation</p>
+            <div className="analysis-overview">
+              <section className="min-w-0 rounded-xl border border-cyan-400/20 bg-cyan-950/10 p-5">
+                <p className="text-xs font-medium uppercase tracking-wider text-cyan-300">Market interpretation</p>
                 <h3 className="mt-2 text-lg font-semibold leading-7">{raw?.explanation?.headline ?? legacyHeadline(analysis)}</h3>
-                <p className="mt-2 text-xs leading-5 text-app-muted">Based on the {analysis.provenance.timeframe.label} candle closed {formatTimestamp(candleClose(analysis))}. This describes the observed market; entry permission comes from the bot’s checks.</p>
-                <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm">
+                <p className="mt-2 text-sm leading-6 text-app-text-soft">{regimeMeaning(analysis.marketRegime, analysis.marketBias)}</p>
+                <p className="mt-3 text-xs leading-5 text-app-muted">Based on the {analysis.provenance.timeframe.label} candle closed {formatTimestamp(candleClose(analysis))}. This describes the observed market; entry permission comes from the bot’s checks.</p>
+                <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 border-t border-app-border pt-3 text-xs">
                   <span><span className="text-app-muted">Direction: </span>{analysis.marketBias === "neutral" ? "No clear direction" : labelize(analysis.marketBias)}</span>
-                  <span><span className="text-app-muted">Strength: </span>{labelize(raw?.features?.trend.strength_label ?? "unavailable")}</span>
+                  <span><span className="text-app-muted">Movement strength: </span>{labelize(raw?.features?.trend.strength_label ?? "unavailable")}</span>
                   <span><span className="text-app-muted">Indicator agreement: </span>{agreementLabel(raw?.features?.trend.agreement)}</span>
                 </div>
               </section>
-              {bot.strategy_type !== "topbot_adaptive" && <BotDecisionSummary evaluation={selectedEvaluation} />}
+              <BotDecisionSummary evaluation={selectedEvaluation} />
             </div>
-            </details>
             {freshnessStatus === "stale" && <p role="status" className="rounded-lg border border-amber-400/25 bg-amber-400/5 p-3 text-sm text-amber-200">This is a saved, stale evaluation{newerBars ? `; the matching chart has ${newerBars} newer closed bar${newerBars === 1 ? "" : "s"}` : ""}. Evaluate again to refresh the market read and bot checks.</p>}
             {freshnessStatus === "market_closed" && <p className="text-xs leading-5 text-app-muted">The scheduled market session is closed. The last completed candle is retained; closed-session time does not count as a feed delay. The configured entry window is checked separately.</p>}
             {freshnessStatus === "unavailable" && <p className="text-xs text-amber-200">The candle close time cannot be verified. Treat this as a recorded interpretation until a fresh evaluation is available.</p>}
-            <Details title="Evidence and interpretation details">
-            <section className="grid gap-4 md:grid-cols-2">
+            <EvaluationMeasurements analysis={analysis} raw={raw} />
+            <section className="analysis-evidence">
               <EvidenceList title="What supports this read" items={raw?.explanation?.supporting_evidence ?? analysis.scoreDrivers[analysis.marketBias]} empty="No supporting evidence was returned." />
-              <EvidenceList title="What conflicts with it" items={raw?.explanation?.conflicting_evidence ?? conflictingEvidence(analysis)} empty="No conflicting evidence was identified in the available inputs. Missing context is not confirmation." />
+              <EvidenceList title="What conflicts with it" items={raw?.explanation?.conflicting_evidence ?? conflictingEvidence(analysis)} empty="No direct conflict reported by these indicators. Unmeasured context may disagree." />
             </section>
-            <section className="mt-4 rounded-xl border border-app-border p-4"><h3 className="text-sm font-semibold">What would change the read</h3>
-              {raw?.explanation?.change_levels.length ? <ul className="mt-2 space-y-2 text-sm leading-6">{raw.explanation.change_levels.map((level, index) => <li key={index}>{level.condition}</li>)}</ul> : <p className="mt-2 text-sm leading-6 text-app-muted">{levelText(analysis)}</p>}
-              <p className="mt-2 text-xs text-app-muted">These are interpretation boundaries, not orders or guaranteed reversal points.</p>
-            </section>
-            </Details>
+            <LevelPanel support={analysis.nearestSupport} resistance={analysis.nearestResistance} current={analysis.priceSource === "closed_bar" ? analysis.currentPrice : null} atr={analysis.expectedMove} timeframe={analysis.provenance.timeframe.label} vwap={analysis.vwap} direction={analysis.marketBias} />
           </> : <>
             <div className="grid gap-4 xl:grid-cols-2">
               <EmptyState title="No directional read yet" description={`This evaluation received ${analysis?.provenance.closed_candle_count ?? 0} closed ${analysis?.provenance.timeframe.label ?? ""} candles. At least ${analysis?.provenance.minimum_feature_bars ?? 10} are needed for the first feature set; partial candles are excluded.`} />
-              {bot.strategy_type !== "topbot_adaptive" && <BotDecisionSummary evaluation={selectedEvaluation} />}
+              <BotDecisionSummary evaluation={selectedEvaluation} />
             </div>
             {snapshot && <SeparateChartContext snapshot={snapshot} bot={bot} nowMs={nowMs} />}
           </>}
           <ContextCoverage analysis={raw} />
-          {analysis && <Details title="Calculations and candle provenance"><CalculationDetails analysis={analysis} raw={raw} ageSeconds={freshness?.ageSeconds ?? null} /></Details>}
-          {raw?.collected_context && <Details title="Observed quotes, profile and external context"><CollectedContextDetails collected={raw.collected_context} /></Details>}
-          {snapshot?.lastPrice != null && <Details title="Live chart quote — separate from this evaluation"><p className="text-sm">Latest chart quote: {formatPrice(snapshot.lastPrice)}. It is not an input to the saved closed-candle interpretation.</p><p className="mt-2 text-xs text-app-muted">Chart refreshed {formatTimestamp(snapshot.updatedAt)}. A quote event timestamp is not supplied by this chart snapshot, so quote freshness is unverified.</p></Details>}
+          <Details title="Technical details & source coverage">
+            {analysis && <CalculationDetails analysis={analysis} raw={raw} ageSeconds={freshness?.ageSeconds ?? null} />}
+            {raw?.collected_context && <div className="mt-5 border-t border-app-border pt-4"><CollectedContextDetails collected={raw.collected_context} /></div>}
+            {snapshot?.lastPrice != null && <p className="mt-4 text-xs text-app-muted">Separate chart quote: {formatPrice(snapshot.lastPrice)} · not an input to this saved read. Quote event time is unavailable.</p>}
+          </Details>
         </>}
     </CardContent>
   </Card>;
+}
+
+function Fact({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return <div className="min-w-0 rounded-xl border border-app-border bg-app-bg/30 p-4"><p className="text-xs text-app-muted">{label}</p><p className="mt-2 break-words text-lg font-semibold tabular-nums">{value}</p><p className="mt-2 text-xs leading-5 text-app-muted">{detail}</p></div>;
+}
+
+function rangeLabel(state: string | null): string {
+  return ({ low: "Cooling ranges", normal: "Stable ranges", elevated: "Expanding ranges", extreme: "Sharply expanding ranges" })[state ?? ""] ?? "Range change unavailable";
+}
+
+function volumeMeaning(ratio: number | null): string {
+  if (ratio == null) return "Latest volume or prior-bar baseline missing";
+  return `${ratio < 0.7 ? "Subdued" : ratio > 1.5 ? "Elevated" : "Typical"} participation vs prior bars; not buyer/seller direction`;
+}
+
+function EvaluationMeasurements({ analysis, raw }: { analysis: DisplayAnalysis; raw: BotAnalysis | null | undefined }) {
+  const frames = raw?.features?.multi_timeframe_alignment.timeframes ?? [];
+  return <section aria-label="Measured candle facts">
+    <p className="mb-2 text-xs font-medium uppercase tracking-wider text-app-muted">Measured candle facts</p>
+    <div className="analysis-measurements">
+      <Fact label={analysis.priceSource === "decision" ? "Decision/reference price" : "Last analyzed close"} value={formatPrice(analysis.currentPrice)} detail={`${analysis.provenance.closed_candle_count} closed bars · ${analysis.provenance.partial_candle_count} excluded · ${analysis.provenance.gap_count} gaps`} />
+      <Fact label="Timeframe agreement" value={labelize(analysis.multiTimeframeStatus)} detail={frames.map(frame => `${frame.timeframe} ${frame.direction}`).join(" · ") || "Complete higher-timeframe history unavailable"} />
+      <Fact label="Observed VWAP" value={formatPrice(analysis.vwap)} detail={analysis.vwap == null ? "Session volume unavailable" : `${labelize(analysis.vwapLocation)} · ${raw?.features?.vwap.complete_session ? "Covered from session start" : "Partial session window"}`} />
+      <Fact label="ATR · recent range" value={formatPrice(analysis.expectedMove)} detail={`${rangeLabel(analysis.volatilityState)} · ${analysis.atrPercentile == null ? "Rank unavailable" : `${Math.round(analysis.atrPercentile)}th percentile`}`} />
+      <Fact label="Relative volume" value={analysis.relativeVolume == null ? "Unavailable" : `${analysis.relativeVolume.toFixed(1)}×`} detail={volumeMeaning(analysis.relativeVolume)} />
+    </div>
+  </section>;
+}
+
+function LevelPanel({ support, resistance, current, atr, timeframe, vwap, direction }: {
+  support: number | null; resistance: number | null; current: number | null; atr: number | null;
+  timeframe: string; vwap: number | null; direction: string;
+}) {
+  return <section className="analysis-levels rounded-xl border border-app-border p-4" aria-label="Key levels and invalidation">
+    <div className="min-w-0">
+      <h3 className="text-sm font-semibold">Key levels · {timeframe}</h3>
+      <p className="mt-1 text-xs text-app-muted">Distance from last analyzed close {formatPrice(current)}.</p>
+      <div className="analysis-level-values mt-4">
+        <Fact label="Nearest support" value={formatPrice(support)} detail={support == null ? "No supported level in this history" : levelDistance(support, current, atr)} />
+        <Fact label="Nearest resistance" value={formatPrice(resistance)} detail={resistance == null ? "No supported level in this history" : levelDistance(resistance, current, atr)} />
+      </div>
+      <p className="mt-3 text-xs leading-5 text-app-muted">Candle-derived reference levels. Resting order size is not measured; these are not strategy stops.</p>
+    </div>
+    <div className="analysis-invalidation min-w-0">
+      <h3 className="text-sm font-semibold">What would change the read</h3>
+      <ul className="mt-3 space-y-2 text-sm leading-6">
+        {resistance != null && <li><span className="font-medium">Above {formatPrice(resistance)}:</span> a completed {timeframe} close crosses resistance{direction === "bearish" ? " and challenges the bearish read" : ""}.</li>}
+        {support != null && <li><span className="font-medium">Below {formatPrice(support)}:</span> a completed {timeframe} close crosses support{direction === "bullish" ? " and challenges the bullish read" : ""}.</li>}
+        {support == null && resistance == null && <li className="text-app-muted">No supported swing boundary is available. Wait for completed swings before setting a structure threshold.</li>}
+        {vwap != null && (direction === "bullish" || direction === "bearish") && <li>A close {direction === "bullish" ? "below" : "above"} observed VWAP ({formatPrice(vwap)}) conflicts with the {direction} tilt; VWAP alone does not establish reversal.</li>}
+      </ul>
+      <p className="mt-3 rounded-lg bg-app-bg/50 p-3 text-xs leading-5 text-app-muted"><span className="font-medium text-app-text-soft">Crossing ≠ confirmed structure change.</span> Look for subsequent closes holding beyond the level and higher lows / highs for a bullish change, or lower highs / lows for a bearish change. That confirmation is not measured here.</p>
+    </div>
+  </section>;
 }
 
 function BotDecisionSummary({ evaluation }: { evaluation: BotEvaluation }) {
@@ -155,6 +206,7 @@ function CalculationDetails({ analysis, raw, ageSeconds }: { analysis: DisplayAn
   const definitions = Object.entries(raw?.score_definitions ?? {});
   return <div className="space-y-4">
     <p className="text-xs leading-5 text-app-muted">{analysis.source === "backend" ? "Calculated by the backend from this evaluation’s closed candles." : "Local fallback calculated from evaluation candles; this is not a new TopBot decision."} Candle quality is separate from context coverage. Heuristic scores are not calibrated probabilities or forecasts.</p>
+    <p className="text-xs leading-5 text-app-muted">Relative volume compares the latest bar with up to 20 preceding bars; it is not time-of-day adjusted. Evaluation levels use recent swings and rolling-window extremes; chart-only levels use confirmed unswept swings, so they may differ. Displayed prices are rounded; calculations retain precision.</p>
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       <Metric label={analysis.priceSource === "decision" ? "Decision/reference price" : "Last analyzed close"} value={formatPrice(analysis.currentPrice)} />
       <Metric label="Candle opened" value={formatTimestamp(p.latest_candle_timestamp)} />
@@ -213,7 +265,7 @@ function CollectedContextDetails({ collected }: { collected: BotCollectedContext
 function ChartMarketAnalysis({ snapshot, nowMs }: { snapshot: BotMarketSnapshot | null; nowMs: number }) {
   const context = useMemo(() => snapshot ? buildMarketContext(snapshot, nowMs) : null, [snapshot, nowMs]);
   if (!context || context.provenance.closedCandleCount < 10) {
-    return <EmptyState title="Waiting for chart candles" description="Market analysis updates automatically after the chart has at least 10 completed candles. A working ProjectX market-data connection is required." />;
+    return <EmptyState title="Waiting for chart candles" description="Market analysis starts after 10 completed chart candles; trend needs 25. A market-data connection is required, but no trading account is needed." />;
   }
   const closedAt = snapshot && context.asOfTimestamp
     ? new Date(candleEndMs(Date.parse(context.asOfTimestamp), snapshot.unit, snapshot.unitNumber)).toISOString()
@@ -230,39 +282,27 @@ function ChartMarketAnalysis({ snapshot, nowMs }: { snapshot: BotMarketSnapshot 
     <section className="rounded-xl border border-app-border bg-app-bg/40 p-4" aria-label="Market interpretation">
       <h3 className="text-lg font-semibold">{explanation.headline}</h3>
       <p className="mt-2 text-sm text-app-muted">{explanation.summary}</p>
-      <div className="mt-4 grid gap-4 md:grid-cols-2">
+      <div className="mt-4 analysis-evidence">
         <EvidenceList title="What supports this read" items={explanation.supporting} empty="No directional evidence is available yet." />
-        <EvidenceList title="What conflicts with it" items={explanation.conflicting} empty="No opposing signal was found in the available candle indicators." />
+        <EvidenceList title="What conflicts with it" items={explanation.conflicting} empty="No direct conflict reported by these candle indicators. Unmeasured context may disagree." />
       </div>
     </section>
-    <section className="rounded-xl border border-app-border p-4" aria-label="Computed chart levels">
-      <h3 className="text-sm font-semibold">Computed levels · {context.provenance.timeframe}</h3>
-      <div className="mt-3 grid grid-cols-2 gap-4">
-        <Metric label="Nearest support" value={formatPrice(context.nearestSupport)} />
-        <Metric label="Nearest resistance" value={formatPrice(context.nearestResistance)} />
-      </div>
-      <p className="mt-3 text-xs leading-5 text-app-muted">Same confirmed swing levels as the chart’s automatic Buy liq and Sell liq lines. Only completed candles are used; a level is unavailable if no qualifying swing remains. Manually moved lines do not change these calculations.</p>
-      <p className="mt-1 text-xs text-app-muted">Inferred from candle highs and lows; resting order size is not measured.</p>
-      {explanation.changes.length > 0 && <div className="mt-4 border-t border-app-border pt-3">
-        <h4 className="text-sm font-medium">What would change the read</h4>
-        <ul className="mt-2 space-y-1 text-sm text-app-text-soft">{explanation.changes.map(change => <li key={change}>{change}</li>)}</ul>
-      </div>}
-    </section>
-    <Details title="Market measurements">
-    <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
-      <Metric label="Direction" value={context.trend ? labelize(context.trend.direction) : "Insufficient trend history"} />
-      <Metric label="Market regime" value={labelize(context.marketRegime)} />
-      <Metric label="Last closed price" value={formatPrice(context.lastPrice)} />
-      <Metric label={snapshot?.strategyType === "topbot_adaptive" ? "TopBot regular-session VWAP" : "VWAP · 18:00 ET"} value={formatPrice(context.vwap)} />
-      <Metric label="Price versus VWAP" value={context.vwapLocation ? labelize(context.vwapLocation) : "Unavailable"} />
-      <Metric label="Volatility (ATR)" value={formatPrice(context.atr)} />
-      <Metric label="Relative volume" value={context.relativeVolume === null ? "Unavailable" : `${context.relativeVolume.toFixed(2)}×`} />
+    <div className="analysis-measurements" aria-label="Measured candle facts">
+      <Fact label="Last closed price" value={formatPrice(context.lastPrice)} detail={`${context.provenance.timeframe} · live quote excluded`} />
+      <Fact label="Timeframe agreement" value={labelize(context.multiTimeframeAlignment.status)} detail={context.trends.map(trend => `${trend.label} ${trend.direction}`).join(" · ") || "Needs 25 complete bars per timeframe"} />
+      <Fact label="Observed VWAP" value={formatPrice(context.vwap)} detail={context.vwap === null ? "Missing session volume" : `${labelize(context.vwapLocation)} · ${context.vwapCoverage?.complete ? "Covered from 18:00 ET" : "Partial session window"}`} />
+      <Fact label="ATR · recent range" value={formatPrice(context.atr)} detail={`${rangeLabel(context.volatilityState)} · ${context.atrPercentile == null ? "Rank unavailable" : `${Math.round(context.atrPercentile)}th percentile`}`} />
+      <Fact label="Relative volume" value={context.relativeVolume == null ? "Unavailable" : `${context.relativeVolume.toFixed(1)}×`} detail={volumeMeaning(context.relativeVolume)} />
     </div>
-    </Details>
+    <LevelPanel support={context.nearestSupport} resistance={context.nearestResistance} current={context.lastPrice} atr={context.atr} timeframe={context.provenance.timeframe} vwap={context.vwap} direction={context.trend?.direction ?? "neutral"} />
     {context.dataQuality.warnings.length > 0 && <div className="space-y-1 text-xs text-amber-200" role="status">
       {context.dataQuality.warnings.map(warning => <p key={warning}>{warning}</p>)}
     </div>}
-    <Details title="Data coverage">
+    <p className="text-xs leading-5 text-app-muted">Coverage: {context.provenance.closedCandleCount} closed bars · {context.provenance.partialCandleCount} incomplete excluded · {context.provenance.detectedGapCount} gaps. {context.dataQuality.missingInputs.length ? `Missing: ${context.dataQuality.missingInputs.join(", ")}.` : "Core candle inputs available."} Order-book, news and related-market data are not inputs.</p>
+    <Details title="Technical details & source coverage">
+      <p className="mb-3 text-xs leading-5 text-app-muted">Trend uses EMA 9/21 spread and slow-EMA slope; regime is a separate range / movement heuristic. Higher timeframes need 25 complete aggregated bars. ATR is the mean of 14 true ranges; rank uses up to 100 rolling observations. Range change compares the latest 6 true ranges with up to 28 prior ranges.</p>
+      <p className="mb-3 text-xs leading-5 text-app-muted">VWAP weights typical candle price by reported volume since 18:00 New York. Window: {formatTimestamp(context.vwapCoverage?.start)}–{formatTimestamp(context.vwapCoverage?.end)}. {context.vwapCoverage?.complete ? "Coverage begins at session start and has no detected gaps through this close." : "Full session coverage is not established."} Volume is participation, not buyer/seller imbalance.</p>
+      <p className="mb-3 text-xs leading-5 text-app-muted">Levels use the chart’s confirmed, unswept swing highs/lows; manual line changes do not affect them. Candle swings do not measure resting orders. Displayed prices are rounded; calculations retain precision.</p>
       <p className="text-sm">Candle quality: {labelize(context.dataQuality.status)}.</p>
       {context.dataQuality.missingInputs.length > 0 && <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-app-muted">
         {context.dataQuality.missingInputs.map(input => <li key={input}>{input}</li>)}
@@ -306,11 +346,6 @@ function decisionHeadline(evaluation: BotEvaluation): string {
 }
 function legacyHeadline(analysis: DisplayAnalysis): string { return analysis.marketBias === "neutral" ? "Closed candles do not establish a clear direction." : `Closed candles lean ${analysis.marketBias}.`; }
 function conflictingEvidence(analysis: DisplayAnalysis): string[] { return analysis.marketBias === "neutral" ? [...analysis.scoreDrivers.bullish, ...analysis.scoreDrivers.bearish] : analysis.scoreDrivers[analysis.marketBias === "bullish" ? "bearish" : "bullish"]; }
-function levelText(analysis: DisplayAnalysis): string {
-  const { nearestSupport: support, nearestResistance: resistance } = analysis;
-  if (support == null && resistance == null) return "No supported price boundaries are available from this candle history.";
-  return [support == null ? "" : `A closed candle below ${formatPrice(support)} support would weaken the bullish case.`, resistance == null ? "" : `A closed candle above ${formatPrice(resistance)} resistance would weaken the bearish case.`].filter(Boolean).join(" ");
-}
 function candleClose(analysis: DisplayAnalysis): string | null {
   const p = analysis.provenance;
   if (p.latest_candle_end_timestamp) return p.latest_candle_end_timestamp;
