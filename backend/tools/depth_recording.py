@@ -85,7 +85,7 @@ class SegmentRecorder:
         self.closed=False
 
     def append(self, contract, kind, payload, *, received_at=None, monotonic_ns=None):
-        if self.closed or not contract.startswith('CON.F.US.MNQ.') or kind not in {'connect','disconnect','gap','roll','quote','trade','depth','end'}:
+        if self.closed or not contract.startswith('CON.F.US.MNQ.') or kind not in {'connect','disconnect','gap','roll','quote','trade','depth','end','book_totals'}:
             raise ValueError('Invalid event or closed recorder')
         received_at=received_at or utc()
         provider_at=payload.get('timestamp') if kind in {'quote','trade','depth'} else None
@@ -134,6 +134,7 @@ class SegmentRecorder:
                     self.maximum_recent_levels[side]=max(self.maximum_recent_levels[side],len(self.recent[side]))
                 self.level2_observed |= all(len(v)>=2 for v in self.recent.values())
         if now-self.last_flush>=1:self.flush()
+        return event
 
     def flush(self):
         if self.handle:

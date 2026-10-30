@@ -4,6 +4,11 @@ TopSignal opens to the account dashboard. The shared navigation includes Dashboa
 
 Run `npm run dev` and open `http://localhost:5173`. This starts the cloud backend, waits for it to be ready, and starts the frontend with the matching API address. The dashboard opens at `/` and `/dashboard`, and Simulation opens at `/simulation` inside the same authenticated workspace.
 
+The dev launcher checks `/ready/dev`. When its local worker and both live-order
+flags are explicitly disabled, this checks database/schema readiness without
+requiring a second worker for runs hosted on another PC. It does not enable
+automation or change saved runs; `/ready` and bot-start checks remain strict.
+
 The account analytics workspace retains its cloud authentication and data protections. It syncs ProjectX/TopstepX account data or imports reviewed trade exports, and provides account management, trade review, expense tracking, and trading-bot controls. `npm run dev:live`, `dev:cloud`, and `dev:local` remain explicit launch options for that workspace.
 
 The retained Bot workspace supports forward testing. The Data tab and

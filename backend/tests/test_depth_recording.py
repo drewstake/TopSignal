@@ -103,11 +103,13 @@ def test_os_lock_releases_without_deleting_lock_file(tmp_path):
     assert path.exists()
 
 
-def test_reconnect_resubscribes_and_preserves_disconnect_boundary(tmp_path,monkeypatch):
+@pytest.mark.parametrize('record_totals', [False, True])
+def test_reconnect_resubscribes_and_preserves_disconnect_boundary(tmp_path,monkeypatch,record_totals):
     import app.services.projectx_hubs as hubs
     import tools.record_market_depth as service
     runtime=tmp_path/'runtime';runtime.mkdir()
-    config=dict(runtime_root=str(runtime),max_bytes=100*1024**2,reserve_bytes=0,review_after_days=30,segment_seconds=60)
+    config=dict(runtime_root=str(runtime),max_bytes=100*1024**2,reserve_bytes=0,review_after_days=30,segment_seconds=60,
+                record_contract_totals=record_totals)
     sockets=[]
     class Client:
         def search_contracts(self,**kwargs):
@@ -137,6 +139,9 @@ def test_reconnect_resubscribes_and_preserves_disconnect_boundary(tmp_path,monke
     status=json.loads((runtime/'status.json').read_text())
     assert status['reconnects']==1 and status['broker_mutation_calls']==0
     assert status['recording']['counts']['depth']==2
+    if record_totals:
+        assert status['recording']['contract_totals']['enabled'] is True
+        assert verify_segments(tmp_path/'data'/'totals')['verified_events'] >= 5
     assert 'fixture-token' not in (runtime/'status.json').read_text()
 
 

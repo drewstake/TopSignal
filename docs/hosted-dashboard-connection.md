@@ -38,8 +38,14 @@ The installer copies the supervisor outside the checkout into the user's
 at 1 MiB. The companion `.ssh` diagnostic log uses the same bound. The helper
 `host-connection-job.ps1` must be installed beside the supervisor. A timestamped
 `.log.status.json` records the latest HTTP observation; stale timestamps are
-not current health. The task runs hidden, without administrator privileges or a time
-limit. Disabling this connection task only stops automatic access from this
+not current health. The installer builds a small Windows-subsystem launcher
+using the Windows .NET Framework compiler. This launcher starts PowerShell with
+`CreateNoWindow`, so Windows Terminal cannot open a window before PowerShell
+processes `-WindowStyle Hidden`. It waits for PowerShell and returns its exit code,
+preserving Task Scheduler recovery. Its executable name includes the source hash,
+so installation can update the next launch while an older instance is running.
+The task runs without administrator privileges or a time limit.
+Disabling this connection task only stops automatic access from this
 PC; it does not disable the production host task.
 
 Installation updates the next-start files and does not stop a healthy running

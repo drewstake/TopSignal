@@ -361,6 +361,58 @@ def test_readiness_fails_closed_for_pending_migration(monkeypatch):
     assert db.rolled_back is True
 
 
+@pytest.fixture
+def disabled_dev_worker(monkeypatch):
+    for name, value in {
+        "TOPSIGNAL_DEV_INSTANCE_ID": "dev-viewer",
+        "TOPSIGNAL_ENV": "development",
+        "TOPSIGNAL_BOT_WORKER_ENABLED": "false",
+        "TOPSIGNAL_LIVE_EXECUTION_ENABLED": "false",
+        "TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION": "false",
+        "TOPSIGNAL_OFFLINE_DEV": "0",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(main_module, "inspect", lambda _bind: _Inspector())
+    monkeypatch.setattr(main_module, "_bot_worker_runtime", _worker_runtime(enabled=False))
+    monkeypatch.setattr(main_module, "inspect_bot_runtime", lambda *_args, **_kwargs: SimpleNamespace(
+        ready=False, failed_checks=("worker_enabled", "worker_task_healthy"),
+    ))
+
+
+def test_dev_api_ready_with_disabled_worker_preserves_trading_readiness(disabled_dev_worker):
+    response = main_module.Response()
+    assert main_module.development_readiness(db=_Session(), response=response) == {"status": "ready"}
+    assert response.headers["x-topsignal-dev-instance"] == "dev-viewer"
+    strict = main_module.readiness(db=_Session())
+    assert strict.status_code == 503
+    assert json.loads(strict.body)["failed_checks"] == ["worker_enabled", "worker_task_healthy"]
+
+
+@pytest.mark.parametrize("name,value", [
+    ("TOPSIGNAL_DEV_INSTANCE_ID", ""),
+    ("TOPSIGNAL_ENV", "production"),
+    ("TOPSIGNAL_BOT_WORKER_ENABLED", "true"),
+    ("TOPSIGNAL_LIVE_EXECUTION_ENABLED", "true"),
+    ("TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION", "true"),
+    ("TOPSIGNAL_BOT_WORKER_ENABLED", None),
+    ("TOPSIGNAL_LIVE_EXECUTION_ENABLED", None),
+    ("TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION", "invalid"),
+])
+def test_dev_api_readiness_requires_explicitly_disabled_automation(disabled_dev_worker, monkeypatch, name, value):
+    if value is None:
+        monkeypatch.delenv(name)
+    else:
+        monkeypatch.setenv(name, value)
+    assert main_module.development_readiness(db=_Session()).status_code == 503
+
+
+def test_dev_api_readiness_checks_actual_worker_and_schema(disabled_dev_worker, monkeypatch):
+    assert main_module.development_readiness(db=_Session(migration_applied=False)).status_code == 503
+    assert main_module.development_readiness(db=_Session(fail=True)).status_code == 503
+    monkeypatch.setattr(main_module, "_bot_worker_runtime", _worker_runtime(enabled=True))
+    assert main_module.development_readiness(db=_Session()).status_code == 503
+
+
 def test_readiness_database_failure_is_actionable_without_leaking_secrets():
     class DisconnectedSession(_Session):
         def execute(self, *_args, **_kwargs):

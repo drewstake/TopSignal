@@ -32,7 +32,7 @@ async function powershell(t, source) {
 
 test('connection scripts parse and retry delays stay bounded', async (t) => {
   await powershell(t, `${extract}
-foreach ($file in @('maintain-host-connection.ps1','install-host-connection-task.ps1','host-connection-job.ps1')) {
+foreach ($file in @('maintain-host-connection.ps1','install-host-connection-task.ps1','host-connection-job.ps1','build-host-connection-launcher.ps1')) {
   $errors=$null
   [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:TOPSIGNAL_TEST_ROOT "scripts/$file"), [ref]$null, [ref]$errors) | Out-Null
   if ($errors.Count) { throw ($errors | Out-String) }
@@ -43,6 +43,32 @@ if (($delays -join ',') -ne '5,10,20,40,60,60,60,60,60,60,60') { throw 'Unbounde
 $rejected=$false
 try { Quote-ConnectionArgument 'bad"argument' } catch { $rejected=$true }
 if (-not $rejected) { throw 'Ambiguous quoting accepted' }
+`);
+});
+
+test('scheduled-task launcher starts PowerShell without a console and returns its exit code', async (t) => {
+  await powershell(t, `
+$launcher = & (Join-Path $env:TOPSIGNAL_TEST_ROOT 'scripts/build-host-connection-launcher.ps1') -OutputDirectory $env:TOPSIGNAL_TEST_DIR
+$bytes = [IO.File]::ReadAllBytes($launcher)
+$peOffset = [BitConverter]::ToInt32($bytes, 60)
+if ([BitConverter]::ToUInt16($bytes, $peOffset + 24 + 68) -ne 2) { throw 'Launcher is not a Windows GUI executable' }
+$fixture = Join-Path $env:TOPSIGNAL_TEST_DIR 'console fixture.ps1'
+$result = Join-Path $env:TOPSIGNAL_TEST_DIR 'console-result.txt'
+Set-Content -LiteralPath $fixture -Value @'
+Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class ConsoleProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'
+[IO.File]::WriteAllText((Join-Path $env:TOPSIGNAL_TEST_DIR 'console-result.txt'), [ConsoleProbe]::GetConsoleWindow().ToInt64().ToString())
+exit 37
+'@
+$info = [Diagnostics.ProcessStartInfo]::new($launcher, ('-NoProfile -NonInteractive -File "' + $fixture + '"'))
+$info.UseShellExecute = $false
+# Do not suppress the outer process's console: the executable itself must do so.
+$info.CreateNoWindow = $false
+$child = [Diagnostics.Process]::Start($info)
+try {
+  if (-not $child.WaitForExit(10000)) { $child.Kill(); throw 'Launcher failed to exit with its child' }
+  if ($child.ExitCode -ne 37) { throw 'Child exit code was lost' }
+  if ((Get-Content -LiteralPath $result -Raw) -ne '0') { throw 'PowerShell acquired a console' }
+} finally { $child.Dispose() }
 `);
 });
 

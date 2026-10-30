@@ -5,6 +5,7 @@ import { RouteErrorPage } from "./RouteErrorPage";
 import { AccountAccess } from "./AccountAccess";
 
 const LogsPage = lazy(() => import("../pages/diagnostics/LogsPage").then(module => ({ default: module.LogsPage })));
+const OrderBookHistoryPage = lazy(() => import("../pages/orderBookHistory/OrderBookHistoryPage").then(module => ({ default: module.OrderBookHistoryPage })));
 
 const DashboardPage = lazy(() =>
   import("../pages/dashboard/DashboardPage").then((module) => ({ default: module.DashboardPage })),
@@ -92,6 +93,11 @@ export const router = createBrowserRouter([
       {
         path: "logs",
         element: <LogsPage />,
+        errorElement: <RouteErrorPage />,
+      },
+      {
+        path: "order-book-history",
+        element: <OrderBookHistoryPage />,
         errorElement: <RouteErrorPage />,
       },
       {

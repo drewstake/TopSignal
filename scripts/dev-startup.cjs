@@ -24,7 +24,7 @@ async function startReadyBackend({ selectPort, start, instanceId, write, retries
       child.once("error", onError);
     });
     try {
-      const url = `http://127.0.0.1:${port}/ready`;
+      const url = `http://127.0.0.1:${port}/ready/dev`;
       write(`[DEV] Waiting for backend readiness at ${url}...`);
       await Promise.race([
         failure,

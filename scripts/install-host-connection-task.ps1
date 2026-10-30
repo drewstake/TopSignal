@@ -17,12 +17,13 @@ New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
 $installPath = (Resolve-Path -LiteralPath $InstallDirectory).Path
 $scriptPath = Join-Path $installPath 'maintain-host-connection.ps1'
 $logPath = Join-Path $installPath 'peteamdpc-host-connection.log'
+$launcherPath = & (Join-Path $PSScriptRoot 'build-host-connection-launcher.ps1') -OutputDirectory $installPath
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'maintain-host-connection.ps1') -Destination $scriptPath -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'host-connection-job.ps1') -Destination $installPath -Force
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -File "{0}" -RemoteTarget "{1}" -KeyPath "{2}" -LogPath "{3}"' -f $scriptPath, $RemoteTarget, $resolvedKey, $logPath
 $arguments += " -FrontendPort $FrontendPort -ApiPort $ApiPort -RemoteFrontendPort $RemoteFrontendPort -RemoteApiPort $RemoteApiPort"
-$action = New-ScheduledTaskAction -Execute (Get-Command powershell.exe).Source -Argument $arguments
+$action = New-ScheduledTaskAction -Execute $launcherPath -Argument $arguments
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
 # Independent fallback for a stopped task, including successful/control exits.
 # IgnoreNew makes this a watchdog for a stopped task, never a periodic restart.
