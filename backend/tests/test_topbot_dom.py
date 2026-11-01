@@ -77,6 +77,9 @@ def dom_entry(db_session, monkeypatch, open_exchange_session):
     monkeypatch.setattr(bot_service,"running_under_tests",lambda:False)
     monkeypatch.setattr(feed,"ensure",lambda *a,**kw:None)
     now = datetime.now(timezone.utc)
+    # These runner/order tests hold the session open independently of wall time.
+    # The real cutoff and overnight behavior are covered by the risk-gate tests below.
+    monkeypatch.setattr("app.services.topbot_session.flat_deadline", lambda *a, **kw: now + timedelta(hours=1))
     observed = observation(now, -.2)
     monkeypatch.setattr(feed,"snapshot",lambda *a,**kw:observed)
     account, config = _add_account_and_config(db_session, enabled=False, execution_mode="live")
@@ -94,6 +97,49 @@ def dom_entry(db_session, monkeypatch, open_exchange_session):
     assert result.order_attempt.status == "submitted", [(r.code,r.message) for r in result.risk_events]
     db_session.commit()
     return result, client, token
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("2026-11-01T18:00", None),  # Sunday reopen after DST changes.
+    ("2026-11-02T02:00", None),
+    ("2026-11-02T09:34", None),
+    ("2026-11-02T15:31", None),
+    ("2026-11-02T16:07:59", None),
+    ("2026-11-02T16:08", "entry_too_close_to_session_close"),
+    ("2026-11-02T16:45", "entry_too_close_to_session_close"),
+    ("2026-11-02T17:30", "exchange_session_closed"),
+    ("2026-11-02T18:00", None),
+    ("2026-11-26T12:57:59", None),
+    ("2026-11-26T12:58", "entry_too_close_to_session_close"),
+    ("2026-11-07T10:00", "exchange_session_closed"),
+])
+def test_dom_entry_session_risk_gate(db_session, monkeypatch, value, expected):
+    from zoneinfo import ZoneInfo
+    from app.services.trading_day import futures_session_is_open
+    now = datetime.fromisoformat(value).replace(tzinfo=ZoneInfo("America/New_York"))
+    account, config = _add_account_and_config(db_session)
+    config.strategy_type = "topbot_adaptive"
+    config.strategy_params = dict(strategy.DEFAULTS)
+    # Previously saved daytime hours must not restrict the DOM model either.
+    config.trading_start_time, config.trading_end_time = "09:35", "15:30"
+    observed = observation(now, -.2)
+    monkeypatch.setattr(feed, "snapshot", lambda *a, **kw: observed)
+    monkeypatch.setattr(bot_service, "futures_session_is_open", futures_session_is_open)
+    decision = SimpleNamespace(raw_payload={"depth_entry": observed})
+    blocks = bot_service.evaluate_risk_gates(
+        db_session, user_id=USER_A, config=config, account=account,
+        latest_candle=None, contract_id=CONTRACT_ID, symbol="MNQ", action="BUY",
+        dry_run=True, confirm_live_order_routing=False, decision=decision, now=now,
+    )
+    codes = {block.code for block in blocks}
+    assert "outside_trading_session" not in codes
+    assert "outside_research_session" not in codes
+    assert "dom_signal_expired" not in codes
+    assert "stale_market_data" not in codes
+    if expected:
+        assert expected in codes
+    else:
+        assert not codes, codes
 
 
 def test_api_entry_has_only_25_point_stop_and_durable_runner(dom_entry):

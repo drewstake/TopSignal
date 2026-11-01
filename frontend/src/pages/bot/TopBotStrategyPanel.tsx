@@ -62,7 +62,8 @@ export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChan
       <p className="topbot-muted">100 observed levels per side · 10% imbalance for 30s · Bid-heavy → short · Ask-heavy → long</p>
     </div><button className="topbot-run-button" disabled={busy || accountId == null || demoMode}
       onClick={() => void act()}>{busy ? "Updating…" : running ? "Stop new entries" : "Start practice bot"}</button></div>
-    <p className="topbot-muted">1 MNQ · Initial stop 25 pts · Trail 25 pts after +25 · No fixed target · Entries 9:35–15:30 New York · Daily loss limit $250 · Up to 4 entries/day</p>
+    <p className="topbot-muted">1 MNQ · Initial stop 25 pts · Trail 25 pts after +25 · No fixed target · All trading sessions, including overnight · Daily loss limit $250 · Up to 4 entries/day</p>
+    <p className="topbot-muted">Entries pause at the daily flatten cutoff (normally 16:08 New York, earlier on early closes) until the next session opens.</p>
     {stats?.depth && <p className="topbot-muted">Entry check: {stats.depth.ready
       ? `${stats.depth.bid_total} bid / ${stats.depth.ask_total} ask · ${((stats.depth.imbalance ?? 0) * 100).toFixed(1)}% imbalance · ${(stats.depth.persistence_seconds ?? 0).toFixed(0)}s sustained`
       : stats.depth.reason}</p>}
