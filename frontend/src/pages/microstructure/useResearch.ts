@@ -11,8 +11,10 @@ export function useResearch(accountId: number) {
   const controllers = useRef(new Set<AbortController>());
   const alive = useRef(true);
   const revision = useRef(0);
-  useEffect(() => { alive.current = true; return () => {
-    alive.current = false; revision.current++; controllers.current.forEach(c => c.abort());
+  useEffect(() => { alive.current = true; revision.current++;
+    const pending = controllers.current;
+    return () => {
+    alive.current = false; pending.forEach(c => c.abort());
   }; }, [accountId]);
   const request = useCallback(async <T,>(path: string, body?: unknown): Promise<T> => {
     const controller = new AbortController(); controllers.current.add(controller);
@@ -51,14 +53,15 @@ export function useResearch(accountId: number) {
     finally { if (alive.current && current === revision.current) setBusy(false); }
   };
   const running = !!job && ['queued', 'running', 'cancelling'].includes(job.state);
+  const jobId = job?.id;
   useEffect(() => {
-    if (!running || !job) return;
+    if (!running || !jobId) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     const current = revision.current;
     const poll = async () => {
       try {
-        const next = await request<Job>(`/jobs/${job.id}?result=true`);
+        const next = await request<Job>(`/jobs/${jobId}?result=true`);
         if (!active || current !== revision.current) return;
         setJob(next);
         if (['queued', 'running', 'cancelling'].includes(next.state)) timer = setTimeout(poll, 1000);
@@ -67,7 +70,7 @@ export function useResearch(accountId: number) {
     };
     timer = setTimeout(poll, 500);
     return () => { active = false; clearTimeout(timer); };
-  }, [job?.id, running, request, report, refresh]); // A status update must not restart the polling lane.
+  }, [jobId, running, request, report, refresh]); // A status update must not restart the polling lane.
   const cancel = async () => {
     if (!job) return;
     const current = revision.current;

@@ -102,6 +102,9 @@ def test_optional_quote_queue_cannot_evict_critical_event(tmp_path, monkeypatch)
     monkeypatch.setenv('TOPSIGNAL_MARKET_ARCHIVE_ENABLED', 'true')
     monkeypatch.setenv('TOPSIGNAL_DATABENTO_CACHE_DIR', str(tmp_path))
     monkeypatch.setattr(events, 'resume', lambda owner: None)
+    # Other lifecycle tests deliberately drain the process-wide recorder.
+    # This test exercises admission while running, not shutdown rejection.
+    monkeypatch.setattr(events, '_closing', False)
     monkeypatch.setattr(events, '_queue', Queue(maxsize=1))
     monkeypatch.setattr(events, '_stats', {})
     for _ in range(2):

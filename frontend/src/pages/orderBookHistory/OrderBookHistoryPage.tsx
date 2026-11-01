@@ -49,7 +49,6 @@ export function HistoryView({ accountId }: { accountId: number }) {
   useEffect(() => {
     let active = true;
     const controller = new AbortController();
-    setBusy(true); setError(null); setData(null);
     void boundedBotRequest(requestJson<BookHistory>(`/api/accounts/${accountId}/order-book-history`, {
       query, signal: controller.signal,
     }), controller, "The recording host took too long to respond. Check its connection and try again.", 30000)
@@ -61,11 +60,17 @@ export function HistoryView({ accountId }: { accountId: number }) {
     return () => { active = false; controller.abort(); };
   }, [accountId, query, refresh]);
 
+  const load = (nextQuery: WindowQuery) => {
+    setBusy(true); setError(null); setData(null);
+    setQuery(nextQuery);
+    setRefresh(value => value + 1);
+  };
+
   const applyRange = (start: Date, end: Date) => {
     if (!Number.isFinite(+start) || !Number.isFinite(+end) || +end <= +start || +end - +start > 3600000) {
       setError("Choose a valid time range of one hour or less."); return;
     }
-    setQuery({ start: start.toISOString(), end: end.toISOString(), scope });
+    load({ start: start.toISOString(), end: end.toISOString(), scope });
   };
   return <>
     <Card className="space-y-4">
@@ -86,13 +91,13 @@ export function HistoryView({ accountId }: { accountId: number }) {
       </form>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="secondary" disabled={busy} onClick={() => setQuery({ scope })}>Latest 15m</Button>
+          <Button size="sm" variant="secondary" disabled={busy} onClick={() => load({ scope })}>Latest 15m</Button>
           {[5,30,60].map(minutes => <Button key={minutes} size="sm" variant="ghost" disabled={busy || !data?.latest}
             onClick={() => { const end = new Date(new Date(data!.latest!).getTime()+1); applyRange(new Date(+end-minutes*60000), end); }}>Latest {minutes === 60 ? "1h" : `${minutes}m`}</Button>)}
           <Button size="sm" variant="ghost" disabled={busy || !data} onClick={() => {
             const end = new Date(data!.start); applyRange(new Date(+end-(+new Date(data!.end)-+end)), end);
           }}>← Earlier window</Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setRefresh(v => v+1)}>Refresh</Button>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => load(query)}>Refresh</Button>
         </div>
         <span className="text-xs text-app-muted">Times in {timezone} · Up to 1 hour per view</span>
       </div>
@@ -144,7 +149,7 @@ export function HistoryExplorer({ data, onInspect }: { data: BookHistory; onInsp
         {flagged} flagged measurements excluded from lines. {data.skipped_segments > 0 && `${data.skipped_segments} unreadable segments skipped.`}
       </p>}
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-app-muted">
-        <span><span className="text-blue-400">● Mid-price</span>　<span className="text-emerald-400">● Bids</span>　<span className="text-rose-400">● Asks</span>　<span className="text-violet-400">● Imbalance</span></span>
+        <span className="flex flex-wrap gap-4"><span className="text-blue-400">● Mid-price</span><span className="text-emerald-400">● Bids</span><span className="text-rose-400">● Asks</span><span className="text-violet-400">● Imbalance</span></span>
         <div className="flex gap-2"><Button size="sm" variant="ghost" onClick={() => {
           const center = selected && selected.time >= range[0] && selected.time <= range[1] ? selected.time : (range[0]+range[1])/2;
           const half = Math.max(1,(range[1]-range[0])/4); setRange([Math.max(initial[0],center-half),Math.min(initial[1],center+half)]);

@@ -3,6 +3,15 @@ import os
 import pytest
 
 
+if os.name == "nt":
+    @pytest.fixture
+    def tmp_path(tmp_path_factory):
+        # Owner/artifact hashes already consume 128 characters. Pytest's full
+        # test-name directory can push these fixtures beyond Windows MAX_PATH.
+        # Numbered directories remain unique and use pytest's normal retention.
+        return tmp_path_factory.mktemp("t")
+
+
 @pytest.fixture(autouse=True)
 def isolated_action_audit(tmp_path, monkeypatch):
     monkeypatch.setenv("TOPSIGNAL_TOPBOT_AUDIT_DIR", str(tmp_path / "action-audit"))
