@@ -18,7 +18,7 @@ from .bot_diagnostics import error_frames, event as diagnostic_event
 from sqlalchemy import case, func, or_
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from .models import (
     Account,
@@ -719,7 +719,8 @@ class BotWorkerRuntime:
         if probe_provider and user_id not in probed_users:
             probed_users.add(user_id)
             try:
-                client.list_accounts(only_active_accounts=False)
+                accounts = client.list_accounts(only_active_accounts=False)
+                self._refresh_account_classifications(user_id, accounts, datetime.now(timezone.utc))
             except Exception as exc:
                 self._schedule_provider_retry(user_id, exc)
                 raise
@@ -901,6 +902,44 @@ class BotWorkerRuntime:
             record(user_id, account_id, "run_resumed", run_id=run_id, reason="Fresh practice classification verified after restart")
         return True
 
+    def _refresh_account_classifications(self, user_id, provider_accounts, observed_at):
+        """Use the existing periodic probe; refresh only owned, armed live accounts.
+
+        Missing/ambiguous/unknown results invalidate prior practice evidence.
+        This never creates, enables, or rearms a run, or replaces entry preflight.
+        """
+        if not isinstance(provider_accounts, list):
+            raise ValueError("invalid_provider_account_collection")
+        from .services.topbot_audit import record
+        with self.session_factory() as db:
+            account_ids = [str(account_id) for (account_id,) in db.query(BotRun.account_id)
+                           .filter(BotRun.user_id == user_id, BotRun.status == "running",
+                                   BotRun.dry_run.is_(False)).distinct().all()]
+            if not account_ids:
+                return
+            accounts = (db.query(Account).options(load_only(
+                Account.external_id, Account.provider_simulated, Account.provider_classification_observed_at))
+                .filter(Account.user_id == user_id, Account.provider == "projectx",
+                        Account.trade_data_source == "projectx", Account.external_id.in_(account_ids))
+                .with_for_update().all())
+            changes = []
+            for account in accounts:
+                matches = [row for row in provider_accounts if isinstance(row, dict)
+                           and row.get("id") == int(account.external_id)]
+                simulated = matches[0].get("simulated") if len(matches) == 1 else None
+                simulated = simulated if isinstance(simulated, bool) else None
+                changes.append((int(account.external_id), simulated))
+                record(user_id, int(account.external_id), "account_classification_observed",
+                       simulated=simulated, observed_at=observed_at,
+                       reason="Periodic provider probe", cloud_transaction="pending_commit")
+                account.provider_simulated = simulated
+                account.provider_classification_observed_at = observed_at if simulated is not None else None
+            db.commit()
+            for account_id, simulated in changes:
+                record(user_id, account_id, "account_classification_committed",
+                       simulated=simulated, observed_at=observed_at,
+                       cloud_transaction="committed", reason="Periodic provider probe")
+
     def _schedule_provider_retry(self, user_id: str, exc: BaseException) -> None:
         if not _is_retryable_provider_failure(exc):
             return
@@ -1035,6 +1074,7 @@ class BotWorkerRuntime:
         with self.session_factory() as db:
             rows = (
                 db.query(BotRun, BotConfig)
+                .options(*_run_status_columns())
                 .join(BotConfig, BotConfig.id == BotRun.bot_config_id)
                 .filter(BotRun.id.in_(run_ids) if run_ids else False)
                 .all()
@@ -1298,8 +1338,8 @@ def inspect_bot_runtime(
         snapshot=snapshot,
         now=observed_at,
     )
-    config_query = db.query(BotConfig).filter(BotConfig.enabled.is_(True))
-    run_query = db.query(BotRun, BotConfig).join(BotConfig, BotConfig.id == BotRun.bot_config_id).filter(
+    config_query = db.query(BotConfig.id).filter(BotConfig.enabled.is_(True))
+    run_query = db.query(BotRun, BotConfig).options(*_run_status_columns()).join(BotConfig, BotConfig.id == BotRun.bot_config_id).filter(
         BotRun.status == "running"
     )
     unresolved_query = db.query(func.count(BotOrderAttempt.id)).filter(
@@ -1350,6 +1390,7 @@ def inspect_bot_runtime(
             continue
         account = (
             db.query(Account)
+            .options(load_only(Account.provider_simulated, Account.provider_classification_observed_at))
             .filter(
                 Account.user_id == str(run.user_id),
                 Account.provider == "projectx",
@@ -1399,7 +1440,7 @@ def inspect_bot_runtime(
         "accounts_simulated": ineligible_live_accounts == 0,
         "provider_healthy": provider_status == "ok" if active_work or user_id is not None else provider_status not in {"error", "throttled"},
         "submissions_reconciled": unresolved == 0,
-        "deployment_submissions_reconciled": _unresolved_live_submission_count(db) == 0,
+        "deployment_submissions_reconciled": (unresolved if user_id is None else _unresolved_live_submission_count(db)) == 0,
         # This is an account admission latch, not worker-process health.  The
         # UI must not arm while false, but /ready should remain healthy so an
         # operator can retry the emergency flatten that clears it.
@@ -1559,9 +1600,20 @@ def _heartbeat_is_stale(
     return _as_utc(value) < _as_utc(now) - timedelta(seconds=stale_after_seconds)
 
 
+def _run_status_columns():
+    """Fresh authorization fields without unrelated strategy/risk configuration."""
+    return (
+        load_only(BotRun.id, BotRun.user_id, BotRun.account_id, BotRun.bot_config_id,
+                  BotRun.status, BotRun.dry_run, BotRun.raw_state),
+        load_only(BotConfig.id, BotConfig.enabled, BotConfig.execution_mode,
+                  BotConfig.timeframe_unit, BotConfig.timeframe_unit_number),
+    )
+
+
 def _active_armed_run_count(db: Session) -> int:
     rows = (
         db.query(BotRun, BotConfig)
+        .options(*_run_status_columns())
         .join(BotConfig, BotConfig.id == BotRun.bot_config_id)
         .filter(BotRun.status == "running", BotConfig.enabled.is_(True))
         .all()
@@ -1663,6 +1715,7 @@ def _select_latest_running_run_ids(db: Session, *, now: datetime) -> list[int]:
 
     rows = (
         db.query(BotRun, BotConfig)
+        .options(*_run_status_columns())
         .join(BotConfig, BotConfig.id == BotRun.bot_config_id)
         .filter(BotRun.status == "running")
         .order_by(

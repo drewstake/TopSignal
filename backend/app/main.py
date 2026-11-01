@@ -30,6 +30,8 @@ from sqlalchemy.engine import make_url
 from cryptography.fernet import Fernet
 from urllib.parse import urlsplit
 
+from .services.readiness_schema import schema_cache
+
 from .input_bounds import MAX_DATABASE_ID, MAX_QUERY_OFFSET, MIN_SUPPORTED_DATE, MAX_SUPPORTED_DATE
 from .local_request_security import anonymous_request_error
 
@@ -732,185 +734,190 @@ def development_readiness(db: Session = Depends(get_db), response: Response = No
     return _readiness(db, response=response, require_bot_runtime=not api_only)
 
 
+def _validate_readiness_schema(db: Session):
+    schema = inspect(db.connection())
+    table_names = set(schema.get_table_names())
+    required_tables = {
+        "account_emergency_actions",
+        "accounts",
+        "bot_backtests",
+        "bot_configs",
+        "bot_order_attempts",
+        "bot_runtime_leases",
+        "expense_suppressions",
+        "projectx_trade_events",
+        "trade_import_batches",
+        "trade_import_previews",
+    }
+    if not required_tables.issubset(table_names):
+        raise _ReadinessFailure("schema_outdated")
+    attempt_column_rows = schema.get_columns("bot_order_attempts")
+    attempt_columns = {column["name"] for column in attempt_column_rows}
+    if not {"execution_mode", "correlation_id", "idempotency_key"}.issubset(attempt_columns):
+        raise _ReadinessFailure("schema_outdated")
+    bot_config_column = next(
+        (column for column in attempt_column_rows if column["name"] == "bot_config_id"),
+        None,
+    )
+    if bot_config_column is None or not bool(bot_config_column.get("nullable")):
+        raise _ReadinessFailure("schema_outdated")
+    account_columns = {column["name"] for column in schema.get_columns("accounts")}
+    if not {
+        "balance",
+        "trade_data_source",
+        "provider_simulated",
+        "provider_classification_observed_at",
+    }.issubset(account_columns):
+        raise _ReadinessFailure("schema_outdated")
+    emergency_action_columns = {
+        column["name"]
+        for column in schema.get_columns("account_emergency_actions")
+    }
+    if not {
+        "id",
+        "user_id",
+        "account_id",
+        "status",
+        "confirmed_flat",
+        "lease_owner_id",
+        "lease_expires_at",
+        "attempt_count",
+        "request_payload",
+        "result_payload",
+        "completed_at",
+    }.issubset(emergency_action_columns):
+        raise _ReadinessFailure("schema_outdated")
+    emergency_action_checks = " ".join(
+        str(check.get("sqltext") or "").lower()
+        for check in schema.get_check_constraints("account_emergency_actions")
+    )
+    if (
+        "confirmed_account_flat" not in emergency_action_checks
+        or "confirmed_flat" not in emergency_action_checks
+        or "completed_at is null" not in emergency_action_checks
+        or "completed_at is not null" not in emergency_action_checks
+        or "lease_owner_id is not null" not in emergency_action_checks
+        or "lease_expires_at is not null" not in emergency_action_checks
+        or "attempt_count >= 1" not in emergency_action_checks
+    ):
+        raise _ReadinessFailure("schema_outdated")
+    emergency_action_indexes = schema.get_indexes("account_emergency_actions")
+    pending_action_index = next(
+        (
+            index
+            for index in emergency_action_indexes
+            if index.get("name") == "uq_account_emergency_actions_one_pending"
+        ),
+        None,
+    )
+    if pending_action_index is None or not bool(pending_action_index.get("unique")):
+        raise _ReadinessFailure("schema_outdated")
+    expense_suppression_columns = {
+        column["name"] for column in schema.get_columns("expense_suppressions")
+    }
+    if not {"user_id", "source", "account_id", "created_at"}.issubset(
+        expense_suppression_columns
+    ):
+        raise _ReadinessFailure("schema_outdated")
+    trade_import_batch_columns = {
+        column["name"]
+        for column in schema.get_columns("trade_import_batches")
+    }
+    if not {
+        "user_id",
+        "account_id",
+        "account_row_id",
+        "account_external_id",
+        "source_file_name",
+        "file_sha256",
+        "total_rows",
+        "inserted_rows",
+        "duplicate_rows",
+        "imported_at",
+    }.issubset(trade_import_batch_columns):
+        raise _ReadinessFailure("schema_outdated")
+    trade_event_columns = {
+        column["name"]
+        for column in schema.get_columns("projectx_trade_events")
+    }
+    if not {
+        "commissions",
+        "fee_scope",
+        "trade_date",
+        "entry_timestamp",
+        "entry_price",
+        "import_batch_id",
+        "account_row_id",
+        "account_external_id",
+    }.issubset(trade_event_columns):
+        raise _ReadinessFailure("schema_outdated")
+    trade_import_preview_columns = {
+        column["name"]
+        for column in schema.get_columns("trade_import_previews")
+    }
+    if not {
+        "token_hash",
+        "user_id",
+        "account_id",
+        "account_row_id",
+        "account_external_id",
+        "normalized_manifest",
+        "dedupe_snapshot",
+        "status",
+        "expires_at",
+        "retention_until",
+        "import_batch_id",
+    }.issubset(trade_import_preview_columns):
+        raise _ReadinessFailure("schema_outdated")
+    trade_event_foreign_keys = schema.get_foreign_keys(
+        "projectx_trade_events"
+    )
+    import_batch_fk = next(
+        (
+            foreign_key
+            for foreign_key in trade_event_foreign_keys
+            if "import_batch_id" in set(foreign_key.get("constrained_columns") or [])
+            and foreign_key.get("referred_table") == "trade_import_batches"
+        ),
+        None,
+    )
+    if import_batch_fk is None:
+        raise _ReadinessFailure("schema_outdated")
+    trade_event_checks = " ".join(
+        str(check.get("sqltext") or "").lower()
+        for check in schema.get_check_constraints("projectx_trade_events")
+    )
+    if "10000" not in trade_event_checks or "import_batch_id is null" not in trade_event_checks:
+        raise _ReadinessFailure("schema_outdated")
+    attempt_checks = schema.get_check_constraints("bot_order_attempts")
+    if not any("submission_unknown" in str(check.get("sqltext")) for check in attempt_checks):
+        raise _ReadinessFailure("schema_outdated")
+    attempt_foreign_keys = schema.get_foreign_keys("bot_order_attempts")
+    config_fk = next(
+        (
+            foreign_key
+            for foreign_key in attempt_foreign_keys
+            if foreign_key.get("constrained_columns") == ["bot_config_id"]
+        ),
+        None,
+    )
+    on_delete = str((config_fk or {}).get("options", {}).get("ondelete") or "").upper()
+    if config_fk is None or on_delete != "SET NULL":
+        raise _ReadinessFailure("schema_outdated")
+    config_checks = " ".join(
+        str(check.get("sqltext") or "").lower()
+        for check in schema.get_check_constraints("bot_configs")
+    )
+    if "10000" not in config_checks or "trunc" not in config_checks:
+        raise _ReadinessFailure("schema_outdated")
+    return table_names
+
+
 def _readiness(db: Session, *, response: Response = None, require_bot_runtime: bool = True):
     failed_checks: list[str] = []
     try:
         db.execute(text("select 1"))
-        schema = inspect(db.connection())
-        table_names = set(schema.get_table_names())
-        required_tables = {
-            "account_emergency_actions",
-            "accounts",
-            "bot_backtests",
-            "bot_configs",
-            "bot_order_attempts",
-            "bot_runtime_leases",
-            "expense_suppressions",
-            "projectx_trade_events",
-            "trade_import_batches",
-            "trade_import_previews",
-        }
-        if not required_tables.issubset(table_names):
-            raise _ReadinessFailure("schema_outdated")
-        attempt_column_rows = schema.get_columns("bot_order_attempts")
-        attempt_columns = {column["name"] for column in attempt_column_rows}
-        if not {"execution_mode", "correlation_id", "idempotency_key"}.issubset(attempt_columns):
-            raise _ReadinessFailure("schema_outdated")
-        bot_config_column = next(
-            (column for column in attempt_column_rows if column["name"] == "bot_config_id"),
-            None,
-        )
-        if bot_config_column is None or not bool(bot_config_column.get("nullable")):
-            raise _ReadinessFailure("schema_outdated")
-        account_columns = {column["name"] for column in schema.get_columns("accounts")}
-        if not {
-            "balance",
-            "trade_data_source",
-            "provider_simulated",
-            "provider_classification_observed_at",
-        }.issubset(account_columns):
-            raise _ReadinessFailure("schema_outdated")
-        emergency_action_columns = {
-            column["name"]
-            for column in schema.get_columns("account_emergency_actions")
-        }
-        if not {
-            "id",
-            "user_id",
-            "account_id",
-            "status",
-            "confirmed_flat",
-            "lease_owner_id",
-            "lease_expires_at",
-            "attempt_count",
-            "request_payload",
-            "result_payload",
-            "completed_at",
-        }.issubset(emergency_action_columns):
-            raise _ReadinessFailure("schema_outdated")
-        emergency_action_checks = " ".join(
-            str(check.get("sqltext") or "").lower()
-            for check in schema.get_check_constraints("account_emergency_actions")
-        )
-        if (
-            "confirmed_account_flat" not in emergency_action_checks
-            or "confirmed_flat" not in emergency_action_checks
-            or "completed_at is null" not in emergency_action_checks
-            or "completed_at is not null" not in emergency_action_checks
-            or "lease_owner_id is not null" not in emergency_action_checks
-            or "lease_expires_at is not null" not in emergency_action_checks
-            or "attempt_count >= 1" not in emergency_action_checks
-        ):
-            raise _ReadinessFailure("schema_outdated")
-        emergency_action_indexes = schema.get_indexes("account_emergency_actions")
-        pending_action_index = next(
-            (
-                index
-                for index in emergency_action_indexes
-                if index.get("name") == "uq_account_emergency_actions_one_pending"
-            ),
-            None,
-        )
-        if pending_action_index is None or not bool(pending_action_index.get("unique")):
-            raise _ReadinessFailure("schema_outdated")
-        expense_suppression_columns = {
-            column["name"] for column in schema.get_columns("expense_suppressions")
-        }
-        if not {"user_id", "source", "account_id", "created_at"}.issubset(
-            expense_suppression_columns
-        ):
-            raise _ReadinessFailure("schema_outdated")
-        trade_import_batch_columns = {
-            column["name"]
-            for column in schema.get_columns("trade_import_batches")
-        }
-        if not {
-            "user_id",
-            "account_id",
-            "account_row_id",
-            "account_external_id",
-            "source_file_name",
-            "file_sha256",
-            "total_rows",
-            "inserted_rows",
-            "duplicate_rows",
-            "imported_at",
-        }.issubset(trade_import_batch_columns):
-            raise _ReadinessFailure("schema_outdated")
-        trade_event_columns = {
-            column["name"]
-            for column in schema.get_columns("projectx_trade_events")
-        }
-        if not {
-            "commissions",
-            "fee_scope",
-            "trade_date",
-            "entry_timestamp",
-            "entry_price",
-            "import_batch_id",
-            "account_row_id",
-            "account_external_id",
-        }.issubset(trade_event_columns):
-            raise _ReadinessFailure("schema_outdated")
-        trade_import_preview_columns = {
-            column["name"]
-            for column in schema.get_columns("trade_import_previews")
-        }
-        if not {
-            "token_hash",
-            "user_id",
-            "account_id",
-            "account_row_id",
-            "account_external_id",
-            "normalized_manifest",
-            "dedupe_snapshot",
-            "status",
-            "expires_at",
-            "retention_until",
-            "import_batch_id",
-        }.issubset(trade_import_preview_columns):
-            raise _ReadinessFailure("schema_outdated")
-        trade_event_foreign_keys = schema.get_foreign_keys(
-            "projectx_trade_events"
-        )
-        import_batch_fk = next(
-            (
-                foreign_key
-                for foreign_key in trade_event_foreign_keys
-                if "import_batch_id" in set(foreign_key.get("constrained_columns") or [])
-                and foreign_key.get("referred_table") == "trade_import_batches"
-            ),
-            None,
-        )
-        if import_batch_fk is None:
-            raise _ReadinessFailure("schema_outdated")
-        trade_event_checks = " ".join(
-            str(check.get("sqltext") or "").lower()
-            for check in schema.get_check_constraints("projectx_trade_events")
-        )
-        if "10000" not in trade_event_checks or "import_batch_id is null" not in trade_event_checks:
-            raise _ReadinessFailure("schema_outdated")
-        attempt_checks = schema.get_check_constraints("bot_order_attempts")
-        if not any("submission_unknown" in str(check.get("sqltext")) for check in attempt_checks):
-            raise _ReadinessFailure("schema_outdated")
-        attempt_foreign_keys = schema.get_foreign_keys("bot_order_attempts")
-        config_fk = next(
-            (
-                foreign_key
-                for foreign_key in attempt_foreign_keys
-                if foreign_key.get("constrained_columns") == ["bot_config_id"]
-            ),
-            None,
-        )
-        on_delete = str((config_fk or {}).get("options", {}).get("ondelete") or "").upper()
-        if config_fk is None or on_delete != "SET NULL":
-            raise _ReadinessFailure("schema_outdated")
-        config_checks = " ".join(
-            str(check.get("sqltext") or "").lower()
-            for check in schema.get_check_constraints("bot_configs")
-        )
-        if "10000" not in config_checks or "trunc" not in config_checks:
-            raise _ReadinessFailure("schema_outdated")
+        table_names = schema_cache.get(db.get_bind(), lambda: _validate_readiness_schema(db))
         if "topsignal_schema_migrations" in table_names:
             migration_applied = db.execute(
                 text(
@@ -952,6 +959,8 @@ def _readiness(db: Session, *, response: Response = None, require_bot_runtime: b
             raise _ReadinessFailure("worker_not_started")
     except Exception as exc:
         reason = exc.reason if isinstance(exc, _ReadinessFailure) else "database_unavailable"
+        if reason == "database_unavailable":
+            schema_cache.invalidate(db.get_bind())
         try:
             db.rollback()
         except Exception:
