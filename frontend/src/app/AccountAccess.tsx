@@ -1,7 +1,10 @@
 ﻿import { Fragment, useEffect, useState, type ReactNode } from "react";
 import type { Session } from "@supabase/supabase-js";
+import { LocalSignIn } from "./LocalSignIn";
+import { localAuthConfigured } from "../lib/localAuth";
 import { isDemoModeEnabled } from "../lib/demoMode";
 import { bootstrapSupabaseSession, hasSupabaseConfig, signInWithGoogle, subscribeSupabaseAuthChanges } from "../lib/supabase";
+const hasAuthConfig = hasSupabaseConfig || localAuthConfigured;
 
 function formatGoogleSignInError(err: unknown): string {
   const fallback = "Failed to start Google sign-in";
@@ -19,17 +22,19 @@ function formatGoogleSignInError(err: unknown): string {
 export function AccountAccess({ children }: { children: ReactNode }) {
   const [demoModeAtStartup] = useState(isDemoModeEnabled);
   const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(hasSupabaseConfig && !demoModeAtStartup);
+  const [loading, setLoading] = useState(hasAuthConfig && !demoModeAtStartup);
   const [error, setError] = useState<string | null>(null);
   const canOpenOfflineWorkspace = import.meta.env.DEV &&
     ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
 
   useEffect(() => {
-    if (!hasSupabaseConfig || demoModeAtStartup) {
+    if (!hasAuthConfig || demoModeAtStartup) {
       return;
     }
 
     let mounted = true;
+    // A restricted Google project must not hide the independent local form.
+    const loadingTimeout = window.setTimeout(() => { if (mounted) setLoading(false); }, 4000);
     void bootstrapSupabaseSession()
       .then((nextSession) => {
         if (!mounted) {
@@ -51,15 +56,17 @@ export function AccountAccess({ children }: { children: ReactNode }) {
         return;
       }
       setSession(nextSession);
+      setLoading(false);
     });
 
     return () => {
       mounted = false;
+      window.clearTimeout(loadingTimeout);
       unsubscribe();
     };
   }, [demoModeAtStartup]);
 
-  if (!hasSupabaseConfig || demoModeAtStartup) {
+  if (!hasAuthConfig || demoModeAtStartup) {
     return <>
       {import.meta.env.DEV && import.meta.env.VITE_OFFLINE_MODE === "true" ? (
         <div role="status" className="border-b border-app-border bg-app-surface px-4 py-2 text-center text-sm text-app-text">
@@ -83,11 +90,12 @@ export function AccountAccess({ children }: { children: ReactNode }) {
       <div className="flex min-h-screen items-center justify-center bg-app-bg p-6 text-app-text">
         <div className="w-full max-w-md space-y-4 rounded-2xl border border-app-border bg-app-surface/70 p-6">
           <h1 className="text-xl font-semibold">Sign in to TopSignal</h1>
-          <p className="text-sm text-app-muted">Use your Supabase account to access your cloud-synced data.</p>
+          <p className="text-sm text-app-muted">Access your connected worker and trading workspace.</p>
           {error ? <p className="text-sm text-app-negative">{error}</p> : null}
+          <LocalSignIn />
           <button
             type="button"
-            className="w-full rounded-lg bg-app-accent px-4 py-2 text-sm font-medium text-app-accent-contrast transition hover:bg-app-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/35"
+            className="w-full rounded-lg border border-app-border px-4 py-2 text-sm font-medium transition hover:bg-app-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/35"
             onClick={() => {
               void signInWithGoogle().catch((err) => setError(formatGoogleSignInError(err)));
             }}

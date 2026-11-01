@@ -45,6 +45,7 @@ import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../
 import { requestTradeImportFilePicker } from "../lib/tradeImportEvents";
 import type { AccountInfo } from "../lib/types";
 import { getCurrentUserEmailSync, hasSupabaseConfig, signOutSupabase } from "../lib/supabase";
+import { localAuthConfigured } from "../lib/localAuth";
 import { useLatestRequestGuard } from "../lib/latestRequest";
 import { reloadPage, replacePagePath } from "./pageNavigation";
 
@@ -532,7 +533,7 @@ export function AppShell() {
           />
         <div className="workspace-sidebar-bottom">
           <div className="workspace-connection"><span className="workspace-status-dot" /><span>{demoMode.enabled ? "Demo workspace" : `${orderedAccounts.length} connected account${orderedAccounts.length === 1 ? "" : "s"}`}</span></div>
-                {hasSupabaseConfig ? (
+                {hasSupabaseConfig || localAuthConfigured ? (
                   <div className="workspace-identity flex min-h-11 w-full min-w-0 max-w-full items-center gap-2 self-end rounded-lg border border-app-border bg-app-surface/60 px-2.5 text-xs text-app-muted sm:h-9 sm:min-h-0 sm:w-auto sm:max-w-[340px] xl:w-[260px] xl:flex-none">
                     <span className="min-w-0 flex-1 truncate" title={sessionIdentityDisplay}>
                       {sessionIdentityDisplay}

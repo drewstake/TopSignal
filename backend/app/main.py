@@ -524,6 +524,10 @@ def _origin_is_allowed(origin: str) -> bool:
     return False
 
 
+from .local_auth import make_router as make_local_auth_router
+app.include_router(make_local_auth_router(_origin_is_allowed))
+
+
 def _append_vary_origin_header(response: Response) -> None:
     existing_vary = response.headers.get("Vary")
     if not existing_vary:
@@ -4689,6 +4693,8 @@ def _runtime_is_local_only() -> bool:
 
 
 def _validate_runtime_security_configuration() -> None:
+    from .local_auth import validate_configuration as validate_local_auth
+    validate_local_auth()
     from .services.probabilistic_observation import enabled as observation_enabled, stop_policy
     observation_enabled()  # Fail startup on incompatible observation/live settings.
     stop_policy()  # An observation-only risk policy must never activate in another mode.
