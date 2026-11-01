@@ -122,6 +122,7 @@ class ProjectXTradeOut(BaseModel):
     position_mfe: float | None = None
     excursion_scope: str = "unavailable"
     excursion_source: str | None = None
+    excursion_note: str | None = None
 
 
 class ProjectXSizingBenchmarkOut(BaseModel):

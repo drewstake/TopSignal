@@ -61,8 +61,8 @@ def test_retired_topbot_config_holds_without_claiming_risk_permission(db_session
     monkeypatch.setattr(bot_service, "fetch_candles_and_evaluate_strategy", actual_strategy)
     result = bot_service.evaluate_bot_config(db_session, user_id=USER_A, config=config, account=account, client=RecordingClient(), dry_run=True)
     assert result.status == "held"
-    assert "EMA/VWAP strategy was removed" in result.analysis["bot_decision"]["summary"]
-    assert result.analysis["bot_decision"]["strategy"]["revision"] == "mnq_ema_vwap_pullback_v6_all_sessions"
+    assert "no strategy configured" in result.analysis["bot_decision"]["summary"]
+    assert result.analysis["bot_decision"]["strategy"]["revision"] == "custom_unconfigured"
     assert next(check for check in result.analysis["bot_decision"]["checks"] if check["id"] == "risk")["status"] == "not_evaluated"
     response = BotEvaluationOut.model_validate(bot_service.serialize_evaluation(result)).model_dump(mode="json")
     research = response["analysis"]["bot_decision"]["probabilistic_research"]

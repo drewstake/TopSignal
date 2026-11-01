@@ -9,6 +9,7 @@ import type { BotMarketSnapshot } from "./botMarketContext";
 
 type ProjectXSignalChartProps = {
   enabled: boolean;
+  monitorOnly?: boolean;
   onMarketData?: (snapshot: BotMarketSnapshot | null) => void;
   onMarketResolved?: (market: BotChartMarket | null) => void;
 };
@@ -20,7 +21,7 @@ export function ProjectXSignalChart(props: ProjectXSignalChartProps) {
     onRetry={() => setRetry(value => value + 1)} />;
 }
 
-function ProjectXChartConnection({ enabled, onMarketData, onMarketResolved, onRetry }: ProjectXSignalChartProps & {
+function ProjectXChartConnection({ enabled, monitorOnly, onMarketData, onMarketResolved, onRetry }: ProjectXSignalChartProps & {
   onRetry: () => void;
 }) {
   const [connection, setConnection] = useState<{ market: BotChartMarket; scope: string } | null>(null);
@@ -76,7 +77,7 @@ function ProjectXChartConnection({ enabled, onMarketData, onMarketResolved, onRe
   }, [enabled]);
 
   if (enabled && connection) {
-    return <BotSignalChart bot={null} market={connection.market} authenticatedCacheScope={connection.scope}
+    return <BotSignalChart monitorOnly={monitorOnly} bot={null} market={connection.market} authenticatedCacheScope={connection.scope}
       activity={null} lastEvaluation={null} refreshToken={0} onMarketData={onMarketData} />;
   }
 

@@ -211,6 +211,34 @@ describe("planBotCandleFetches", () => {
     expect(plan.foreground).toEqual([]);
   });
 
+  it.each([
+    ["weekend", "2026-10-31T11:00:00Z", "2026-10-21T16:40:00Z"],
+    ["maintenance", "2026-10-29T21:30:00Z", "2026-10-29T19:00:00Z"],
+  ])("catches up missing completed candles during %s even with recorded query coverage", (_, now, latest) => {
+    const window = { start: "2026-10-19T00:00:00Z", end: now, limit: 1200 };
+    const plan = planBotCandleFetches({
+      targetWindow: window, initialWindow: window,
+      cache: { candles: [candle(latest)], savedAt: latest, coverage: window },
+      unit: "minute", unitNumber: 5, now: new Date(now),
+    });
+    expect(plan.foreground).toEqual([expect.objectContaining({
+      reason: "missing-tail", repair: false,
+      window: { start: new Date(latest).toISOString(), end: new Date(now).toISOString() },
+    })]);
+    expect(plan.foreground[0].limit).toBeLessThanOrEqual(window.limit);
+  });
+
+  it("backs off a recently checked missing closed-session tail", () => {
+    const now = "2026-10-31T11:00:00Z";
+    const window = { start: "2026-10-19T00:00:00Z", end: now, limit: 1200 };
+    const plan = planBotCandleFetches({
+      targetWindow: window, initialWindow: window,
+      cache: { candles: [candle("2026-10-21T16:40:00Z")], savedAt: now, coverage: window },
+      unit: "minute", unitNumber: 5, now: new Date(now),
+    });
+    expect(plan.foreground).toEqual([]);
+  });
+
   it("plans bounded interior data-gap repair in the background with repair mode", () => {
     const gapTarget = {
       start: "2026-06-09T13:55:00Z",

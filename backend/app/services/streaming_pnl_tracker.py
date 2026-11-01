@@ -114,6 +114,18 @@ class StreamingPnlTracker:
         with self._lock:
             self._point_value_by_symbol = dict(point_value_by_symbol)
 
+    def active_contracts(self) -> set[str]:
+        with self._lock:
+            return {key[2] for key in self.position_by_scope}
+
+    def reset_observations(self) -> None:
+        """A disconnected recorder cannot assert complete live position coverage."""
+        with self._lock:
+            self.position_by_scope.clear()
+            self.tracker_by_scope.clear()
+            self.price_by_contract_id.clear()
+            self.market_update_by_contract_id.clear()
+
     def ingest_market_event(self, payload: Mapping[str, Any]) -> bool:
         update = parse_quote_trade(payload)
         if update is None:

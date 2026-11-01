@@ -92,22 +92,23 @@ def test_scope_is_bound_to_request_and_new_preset_cannot_weaken_model_limits(tmp
                              as_of=NOW, root=tmp_path).action == "HOLD"
     normalized = bot_service._normalize_strategy_params("topbot_adaptive", dict(
         strategy.RULES, minimum_training_paths=2, position_size=10, routing_policy="live"))
-    assert normalized == strategy.RULES
-    assert TOPBOT_SETTINGS["strategy_params"] == strategy.RULES
+    assert normalized == {"revision": "custom_unconfigured"}
+    assert TOPBOT_SETTINGS["strategy_params"]["revision"] == "dom_contrarian_v1"
     assert TOPBOT_SETTINGS["max_daily_loss"] == 250
     assert TOPBOT_SETTINGS["order_size"] == 1
     removed = {"revision": "mnq_ema_vwap_pullback_v6_all_sessions", "ema_period": 20, "stop_points": 50.0}
-    assert bot_service._normalize_strategy_params("topbot_adaptive", removed) == strategy.RULES
+    assert bot_service._normalize_strategy_params("topbot_adaptive", removed) == normalized
 
 
-def test_dispatch_selects_math_and_holds_removed_ema_vwap_configs(monkeypatch):
-    monkeypatch.setattr(strategy, "evaluate", lambda rows, **kw: "math")
-    assert bot_service.evaluate_topbot_adaptive([], strategy_params=strategy.RULES) == "math"
-    for stored in ({"revision": "mnq_ema_vwap_pullback_v6_all_sessions"}, {}, None):
+def test_dispatch_never_calls_retired_model(monkeypatch):
+    monkeypatch.setattr(strategy, "evaluate", lambda *a, **k: pytest.fail("retired model called"))
+    for stored in (strategy.RULES, {"revision": "mnq_ema_vwap_pullback_v6_all_sessions"}, {}, None):
         held = bot_service.evaluate_topbot_adaptive([], strategy_params=stored)
         assert held.action == "HOLD"
-        assert "EMA/VWAP strategy was removed" in held.reason
-        assert held.raw_payload["retired_strategy"] is True
+        assert held.raw_payload["live_routing_allowed"] is False
+        if stored:
+            assert "no strategy configured" in held.reason
+            assert held.raw_payload["strategy_configured"] is False
 
 
 @pytest.mark.parametrize("offset", [-1, 1])
@@ -139,7 +140,7 @@ def test_live_entry_points_require_enabled_worker_before_provider_or_run_changes
     db_session.commit()
     client = RecordingClient()
     monkeypatch.setattr(bot_service, "fetch_candles_and_evaluate_strategy", lambda *a, **k: pytest.fail("no provider fetch"))
-    with pytest.raises(ValueError, match="requires the live worker"):
+    with pytest.raises(ValueError, match="requires the live worker" if operation != "start" else "no strategy configured"):
         if operation == "prepare":
             prepare_topbot(db_session, user_id=USER_A, account_id=config.account_id, dry_run=False, contract_id=CONTRACT)
         elif operation == "start":
@@ -152,7 +153,7 @@ def test_live_entry_points_require_enabled_worker_before_provider_or_run_changes
     assert client.place_order_calls == []
 
 
-def test_selected_forecast_reaches_dry_run_router_and_api_without_second_model_read(db_session, monkeypatch, open_exchange_session, tmp_path):
+def test_retired_forecast_is_blocked_even_if_injected_into_dry_run_router(db_session, monkeypatch, open_exchange_session, tmp_path):
     from app.bot_schemas import BotEvaluationOut
     account, config = _add_account_and_config(db_session)
     config.strategy_type = "topbot_adaptive"
@@ -174,7 +175,8 @@ def test_selected_forecast_reaches_dry_run_router_and_api_without_second_model_r
     monkeypatch.setattr("app.services.probabilistic_shadow.explain_shadow", lambda **k: pytest.fail("must reuse decision forecast"))
     client = RecordingClient()
     result = bot_service.evaluate_bot_config(db_session, user_id=USER_A, config=config, account=account, client=client, dry_run=True)
-    assert result.status == "dry_run_attempt" and result.decision.action == "BUY"
+    assert result.status == "risk_blocked"
+    assert any(block.code == "strategy_not_configured" for block in result.risk_events)
     response = BotEvaluationOut.model_validate(bot_service.serialize_evaluation(result)).model_dump(mode="json")
     explanation = response["analysis"]["bot_decision"]
     assert explanation["strategy"]["name"].startswith("TopBot Mathematical")

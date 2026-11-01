@@ -6,6 +6,7 @@ import * as api from "../../lib/api";
 import type { BotConfig, ProjectXMarketCandle } from "../../lib/types";
 import { BotSignalChart } from "./BotSignalChart";
 import { findCandleGaps, isFuturesSessionOpen } from "./botCandleGaps";
+import { buildBotCandleCacheKey, writeBotCandleCache } from "./botCandleCache";
 import { getDemoApiResponse } from "../../lib/demoData";
 import { DEMO_AS_OF_ISO } from "../../lib/demoScenario";
 import type { BotConfigListResponse } from "../../lib/types";
@@ -46,6 +47,11 @@ beforeEach(() => {
   vi.setSystemTime(new Date("2026-09-04T21:05:00Z"));
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.spyOn(api.botsApi, "getCandles").mockResolvedValue([]);
+  vi.spyOn(api, "requestJson").mockResolvedValue({ timeframe: "5m", aggregate_size: 1,
+    coverage_start: "2019-08-01T00:00:00Z", coverage_end: "2026-09-04T21:00:00Z", candles: [
+      { time: Date.parse("2026-09-04T20:55:00Z") / 1000, end_time: Date.parse("2026-09-04T21:00:00Z") / 1000,
+        open: 100, high: 110, low: 95, close: 105, volume: 1000, contract: "MNQU6", count: 1 },
+    ] });
   vi.spyOn(api.botsApi, "getActivity").mockResolvedValue({config: bot, runs: [], decisions: [], order_attempts: [], risk_events: []});
   vi.spyOn(api, "streamProjectXMarketPrice").mockReturnValue(vi.fn());
 });
@@ -53,6 +59,43 @@ afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstub
 const mount = () => render(<BotSignalChart bot={bot} authenticatedCacheScope="session-test" activity={null}
   lastEvaluation={null} refreshToken={0} />);
 const settle = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(5_000); }); };
+
+it("uses continuous history for daily and intraday monitor charts", async () => {
+  const history = vi.spyOn(api, "requestJson").mockResolvedValue({ timeframe: "1d", aggregate_size: 1, candles: [
+    { time: Date.parse("2025-09-01T22:00:00Z") / 1000, end_time: Date.parse("2025-09-02T22:00:00Z") / 1000,
+      open: 100, high: 110, low: 95, close: 105, volume: 1000, contract: "MNQU5", count: 1 },
+  ] });
+  const snapshot = vi.fn();
+  render(<BotSignalChart monitorOnly bot={bot} authenticatedCacheScope="continuous-test" activity={null}
+    lastEvaluation={null} refreshToken={0} onMarketData={snapshot} />);
+  await settle();
+  vi.mocked(api.botsApi.getCandles).mockClear();
+  fireEvent.click(screen.getByRole("button", { name: "Show 1D candles" }));
+  await settle();
+  expect(history).toHaveBeenCalledWith("/api/market-data/databento/candles", expect.objectContaining({ query: expect.objectContaining({ timeframe: "1d" }) }));
+  expect(screen.getByLabelText("Continuous MNQ daily candlestick and volume chart")).not.toBeNull();
+  expect(api.botsApi.getCandles).not.toHaveBeenCalled();
+  expect(snapshot).toHaveBeenLastCalledWith(null);
+  fireEvent.click(screen.getByRole("button", { name: "Show 1H candles" }));
+  await settle();
+  expect(screen.getByRole("region", { name: "MNQ continuous / 1H candlestick and volume chart" })).not.toBeNull();
+  expect(history).toHaveBeenCalledWith("/api/market-data/databento/candles", expect.objectContaining({ query: expect.objectContaining({ timeframe: "5m" }) }));
+  expect(vi.mocked(api.botsApi.getCandles).mock.calls.every(([query]) => query.contractId === bot.contract_id && query.unit === "hour")).toBe(true);
+});
+
+it("keeps the monitor chart free of drawing tools and redundant timeframe warming", async () => {
+  vi.mocked(api.botsApi.getCandles).mockResolvedValue([{ id: 1, contract_id: bot.contract_id, symbol: bot.symbol,
+    unit: "minute", unit_number: 5, timestamp: "2026-09-04T20:55:00Z", open: 100, high: 101, low: 99,
+    close: 100, volume: 10, is_partial: false, live: false, fetched_at: "2026-09-04T21:00:00Z" }]);
+  render(<BotSignalChart monitorOnly bot={bot} authenticatedCacheScope="monitor-test" activity={null}
+    lastEvaluation={null} refreshToken={0} />);
+  await settle();
+  await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+  expect(screen.queryByLabelText("Chart drawing tools")).toBeNull();
+  expect(screen.queryByText("Stale candles")).toBeNull();
+  expect(screen.getByText("Market closed")).not.toBeNull();
+  expect(vi.mocked(api.botsApi.getCandles).mock.calls.every(([query]) => query.unit === "minute" && query.unitNumber === 5)).toBe(true);
+});
 
 it("loads bounded signal history for the chart range and selected execution mode", async () => {
   vi.mocked(api.botsApi.getCandles).mockResolvedValue([{id: 1, contract_id: bot.contract_id, symbol: bot.symbol,
@@ -138,7 +181,7 @@ it("loads a market chart without a bot or account and avoids warming unrelated t
     contract_id: "CON.F.US.MNQ.U26", symbol: "MNQ", timeframe_unit: "minute", timeframe_unit_number: 5, lookback_bars: 300,
   }} authenticatedCacheScope="market-test" activity={null} lastEvaluation={null} refreshToken={0} />);
   await settle();
-  expect(screen.getByText("MNQ / 5m · Market data only")).not.toBeNull();
+  expect(screen.getByText("MNQU26 / 5m · Market data only")).not.toBeNull();
   expect(api.botsApi.getCandles).toHaveBeenCalled();
   for (const [query] of vi.mocked(api.botsApi.getCandles).mock.calls) {
     expect(query.contractId).toBe("CON.F.US.MNQ.U26");
@@ -176,6 +219,39 @@ it("keeps an explicit chart Refresh available during a closure", async () => {
   await settle();
   expect(vi.mocked(api.botsApi.getCandles).mock.calls.some(([query]) => query.includePartialBar && query.refresh)).toBe(true);
   expect(api.streamProjectXMarketPrice).not.toHaveBeenCalled();
+});
+
+it("replaces an old weekend chart tail with Friday's close and publishes it to analysis", async () => {
+  vi.setSystemTime(new Date("2026-10-31T11:00:00Z"));
+  const scope = "weekend-catchup";
+  const market = { ...bot, contract_id: "CON.F.US.MNQ.Z26", lookback_bars: 300 };
+  const old: ProjectXMarketCandle = {
+    id: null, contract_id: market.contract_id, symbol: "MNQ", live: false,
+    unit: "minute", unit_number: 5, timestamp: "2026-10-21T16:40:00Z",
+    open: 100, high: 102, low: 99, close: 101, volume: 100,
+    is_partial: false, fetched_at: null,
+  };
+  const latest = { ...old, timestamp: "2026-10-30T20:55:00Z" };
+  writeBotCandleCache(buildBotCandleCacheKey({
+    userScope: scope, contractId: market.contract_id, symbol: market.symbol,
+    live: false, unit: "minute", unitNumber: 5,
+  }), [old], 1200, {
+    savedAt: new Date("2026-10-21T16:45:00Z"),
+    coverage: { start: "2026-10-18T00:00:00Z", end: "2026-10-31T11:00:00Z" },
+  });
+  vi.mocked(api.botsApi.getCandles).mockResolvedValue([latest]);
+  const onMarketData = vi.fn();
+  render(<BotSignalChart bot={null} market={market} authenticatedCacheScope={scope}
+    activity={null} lastEvaluation={null} refreshToken={0} onMarketData={onMarketData} />);
+  await settle();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+  expect(api.botsApi.getCandles).toHaveBeenCalled();
+  expect(onMarketData.mock.calls.at(-1)![0].candles.at(-1).timestamp).toBe(latest.timestamp);
+  expect(api.streamProjectXMarketPrice).not.toHaveBeenCalled();
+  expect(vi.mocked(api.botsApi.getCandles).mock.calls.some(([query]) => query.includePartialBar)).toBe(false);
+  const count = vi.mocked(api.botsApi.getCandles).mock.calls.length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(api.botsApi.getCandles).toHaveBeenCalledTimes(count);
 });
 
 it("updates the account-free forming candle from streamed trades before the next REST poll", async () => {

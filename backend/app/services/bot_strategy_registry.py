@@ -214,8 +214,7 @@ _DEFINITIONS = (
     _definition(
         "topbot_adaptive",
         "evaluate_topbot_adaptive",
-        (_fixed("signal", "minute", 5, notes="MNQ candle features for the mathematical model."),),
-        ("regular_session_vwap",),
+        (_configured(notes="No TopBot strategy configured; reserved for custom rules."),),
     ),
     _definition("sma_cross", "evaluate_sma_cross", (_configured(),)),
     _definition(
@@ -425,9 +424,7 @@ def _resolve_minimum_history(
     timeframe_unit_number: int,
 ) -> tuple[HistoryRequirement, ...]:
     if identifier == "topbot_adaptive":
-        from . import topbot_mathematical
-        return (_history("signal", topbot_mathematical.HISTORY_BARS,
-                         notes="Closed 5-minute MNQ features; separately fitted probabilistic model."),)
+        return (_history("signal", 1, notes="Inactive placeholder; no strategy data is acquired."),)
 
     if identifier == "sma_cross":
         hard = slow_period + 1

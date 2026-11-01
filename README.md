@@ -1,5 +1,10 @@
 # TopSignal
 
+TopBot's practice strategy uses contrarian DOM entries, a 25-point initial MNQ
+stop, and a 25-point trailing stop activated at +25. See the
+[strategy and operating notes](docs/topbot-contrarian.md). Retired configurations
+remain inactive; starting a practice run explicitly installs the new preset.
+
 TopSignal opens to the account dashboard. The shared navigation includes Dashboard, Accounts, Trades, Expenses, Bot, Simulation, and Appearance. The Simulation tab contains a playable, browser-local simulated futures exchange: buy and sell BX, BT, and BG against 390 finite, funded bots with a $10,000 simulated account. See [the Get-Funded implementation and validation notes](docs/get-funded-simulation.md).
 
 Run `npm run dev` and open `http://localhost:5173`. This starts the cloud backend, waits for it to be ready, and starts the frontend with the matching API address. The dashboard opens at `/` and `/dashboard`, and Simulation opens at `/simulation` inside the same authenticated workspace.
@@ -977,6 +982,38 @@ Frontend auth behavior:
 - `docs/perf-notes.md`: dashboard and accounts performance findings and fixes
 - `docs/windows-24x7-operations.md`: personal-Windows-laptop deployment, startup, readiness, recovery, and Practice-soak checklist
 - `frontend/README.md`: frontend architecture, routes, API client behavior, and local frontend development
+
+## Trade MAE / MFE recording
+
+The Trades page uses observed live excursions when available, with historical
+one-minute estimates marked `≈`. These values are in dollars before fees.
+Historical calculations use the exact delivery contract and FIFO entry legs;
+partial exits use only the closed quantity. Entry/exit candles may contain moves
+outside the trade, so candle estimates are not tick-exact. Missing coverage stays
+unavailable and retries after five minutes.
+
+From `backend`, backfill an explicitly authorized connected account and enable
+read-only recording with:
+
+```powershell
+.\.venv\Scripts\python.exe tools/backfill_trade_excursions.py --account ACCOUNT_ID --enable-tracking
+```
+
+The independent API recorder resumes enabled accounts on backend startup, verifies
+account ownership, subscribes to position changes and dynamically subscribes to
+their contract quotes. It does not arm bots or route orders. Keep the backend
+running and connected for live coverage; interrupted observations are discarded
+and historical estimates fill the gap after closed trades have synced. It checks
+the latest 1,000 saved closed trades every 30 seconds, with a seven-day maximum
+duration per trade. Refresh Trades to see newly calculated values. `--live` selects
+the provider's live history feed; the default uses its simulated history feed.
+
+Only compact results, position summaries, recording configuration and heartbeat
+state are stored locally under `TOPSIGNAL_DATABENTO_CACHE_DIR/trade-excursions`.
+The default root is `backend/storage/databento`. No historical candle series are
+written to Supabase. Preserve this directory with the backend filesystem backups;
+it is not included in Git or Supabase backups. `tracking_status(owner, account)`
+in `historical_trade_excursions.py` reports recorder health for operations.
 
 ## Summary
 

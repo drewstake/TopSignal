@@ -29,7 +29,7 @@ vi.mock("./BotAnalysisPanel", () => ({
   </div>,
 }));
 
-import { BotPage } from "./BotPage";
+import { BotWorkspace as BotPage } from "./BotWorkspace";
 
 function account(id: number, isMain: boolean): AccountInfo {
   return {

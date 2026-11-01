@@ -102,12 +102,13 @@ def test_bot_config_list_skips_incompatible_legacy_strategy_without_mutating_it(
 
 
 def test_topbot_normalizer_replaces_ensemble_settings_with_code_preset():
-    from app.services.topbot_mathematical import RULES
+    from app.services.topbot_strategy import normalize_params
     params = get_strategy_definition("topbot_adaptive").parameter_normalizer({
         "source_strategies": ["sma_cross"], "minimum_score": 0, "ema_period": 1,
         "time_stop_bars": 1, "enable_trailing_stop": True,
     })
-    assert params == RULES
+    assert params == {"revision": "custom_unconfigured"}
+    assert normalize_params()["revision"] == "dom_contrarian_v1"
     assert "source_strategies" not in params
     assert "enable_trailing_stop" not in params
 
@@ -116,10 +117,9 @@ def test_topbot_normalizer_replaces_ensemble_settings_with_code_preset():
 
 
 
-def test_topbot_acquisition_fetches_one_stream_and_dispatches_only_topbot(monkeypatch):
-    from app.services.topbot_mathematical import HISTORY_BARS
+def test_unconfigured_topbot_skips_acquisition_and_dispatches_only_placeholder(monkeypatch):
     candles = [object()]
-    config = SimpleNamespace(strategy_type="topbot_adaptive", strategy_params={}, contract_id="CON.F.US.MNQ.U26")
+    config = SimpleNamespace(strategy_type="topbot_adaptive", strategy_params={"revision": "custom_unconfigured"}, contract_id="CON.F.US.MNQ.U26")
     fetches, evaluations = [], []
     def fetch(*args, **kwargs):
         fetches.append(kwargs)
@@ -132,9 +132,9 @@ def test_topbot_acquisition_fetches_one_stream_and_dispatches_only_topbot(monkey
     monkeypatch.setattr(bot_service, "evaluate_topbot_adaptive", evaluate)
     monkeypatch.setattr(bot_service, "evaluate_sma_cross", lambda *a, **k: pytest.fail("source evaluator called"))
     rows, signal = bot_service.fetch_candles_and_evaluate_strategy("db", user_id="user", config=config, client="client")
-    assert rows is candles and signal is expected
-    assert len(fetches) == 1 and fetches[0]["minimum_lookback_bars"] == HISTORY_BARS
-    assert evaluations == [candles]
+    assert rows == [] and signal is expected
+    assert fetches == []
+    assert evaluations == [[]]
 
 
 def test_registry_preserves_ema_scalping_configuration_validation():

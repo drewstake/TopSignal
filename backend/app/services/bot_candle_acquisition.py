@@ -66,13 +66,12 @@ def acquire_and_evaluate_strategy(
     strategy_params = service._normalize_strategy_params(strategy_type, config.strategy_params)
 
     if strategy_type == "topbot_adaptive":
-        return _acquire_and_evaluate_topbot(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
+        from .topbot_strategy import CONFIGURED, selected
+        if CONFIGURED and selected(strategy_params):
+            from .topbot_depth import feed
+            feed.ensure(user_id, config.contract_id, client, strategy_params["imbalance_threshold"])
+        return [], service.evaluate_topbot_adaptive([], strategy_params=strategy_params,
+                                                   owner=user_id, contract_id=config.contract_id)
 
     if strategy_type == "delayed_orb_confirmation":
         candle_sets = service.fetch_and_store_delayed_orb_candles(

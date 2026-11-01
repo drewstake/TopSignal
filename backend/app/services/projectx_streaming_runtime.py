@@ -142,6 +142,8 @@ def create_streaming_runtime(
     market_hub_url: str | None = None,
     user_hub_url: str | None = None,
     archive_contracts: tuple[str, ...] = (),
+    lifecycle_sink: Callable[[ClosedPositionLifecycle], None] | None = None,
+    track_positions: bool = False,
 ) -> StreamingRuntime:
     normalized_user_id = user_id.strip()
     if not normalized_user_id:
@@ -157,7 +159,7 @@ def create_streaming_runtime(
         owner_user_id=normalized_user_id,
         owner_account_id=account_id,
         point_value_by_symbol=point_value_lookup,
-        on_lifecycle_closed=_persist_closed_lifecycle,
+        on_lifecycle_closed=lifecycle_sink or _persist_closed_lifecycle,
     )
     from .market_archive_events import capture
     runner = ProjectXHubRunner(
@@ -168,6 +170,7 @@ def create_streaming_runtime(
         market_hub_url=market_hub_url,
         user_hub_url=user_hub_url,
         archive_contracts=archive_contracts,
+        track_positions=track_positions,
         on_archive_event=(lambda kind, payload: capture(normalized_user_id, account_id, kind, payload, archive_contracts)) if archive_contracts else None,
         on_user_account=lambda payload: _persist_account_classification(
             user_id=normalized_user_id,

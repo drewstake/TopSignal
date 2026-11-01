@@ -104,12 +104,14 @@ def test_derive_trade_execution_lifecycles_infers_entry_exit_details_from_open_l
         assert round(float(first_close.duration_minutes or 0.0), 4) == 2.0
         assert round(float(first_close.entry_price or 0.0), 3) == 95.805
         assert round(first_close.exit_price, 3) == 95.58
+        assert first_close.entry_legs == ((_dt(0), 95.805, 1.0),)
 
         assert second_close.entry_timestamp == _dt(1)
         assert second_close.exit_timestamp == _dt(3)
         assert round(float(second_close.duration_minutes or 0.0), 4) == 2.0
         assert round(float(second_close.entry_price or 0.0), 3) == 95.765
         assert round(second_close.exit_price, 3) == 95.58
+        assert second_close.entry_legs == ((_dt(1), 95.765, 1.0),)
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeEvent.__table__])

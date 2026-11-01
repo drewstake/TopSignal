@@ -87,6 +87,8 @@ _ACCOUNT_AUTOMATION_CLASSIFICATION_MAX_AGE = timedelta(minutes=5)
 # every read/mutation make a genuinely active account flatten non-reclaimable.
 _ACCOUNT_EMERGENCY_ACTION_LEASE_DURATION = timedelta(minutes=5)
 _TRANSIENT_LIVE_RISK_CODES = {
+    "dom_signal_expired",
+    "dom_entry_requires_flat",
     "mathematical_exit_pending",
     "entry_too_close_to_session_close",
     "outside_research_session",
@@ -1010,6 +1012,11 @@ def start_bot_run(
 ) -> EvaluationResult:
     correlation_id = new_correlation_id()
     config = _require_bot_config(db, user_id=user_id, bot_config_id=bot_config_id, lock_for_update=True)
+    if str(config.strategy_type) == "topbot_adaptive":
+        from .topbot_strategy import require_configured, selected as dom_selected, MESSAGE
+        require_configured()
+        if not dom_selected(config.strategy_params):
+            raise ValueError(MESSAGE)
     account = _require_owned_account(
         db,
         user_id=user_id,
@@ -1026,7 +1033,7 @@ def start_bot_run(
     if not resolved_dry_run:
         _require_strategy_available(str(config.strategy_type))
         from .topbot_mathematical import selected, require_live_worker
-        if str(config.strategy_type) == "topbot_adaptive" and selected(config.strategy_params):
+        if str(config.strategy_type) == "topbot_adaptive":
             require_live_worker()
             if not continuous or not confirm_live_order_routing:
                 raise ValueError("Experimental Practice routing requires an explicitly confirmed continuous run.")
@@ -1115,6 +1122,10 @@ def start_bot_run(
     # The enabled config and running audit row must be durable before evaluation
     # releases its database connection for market-provider I/O.
     db.commit()
+    if str(config.strategy_type) == "topbot_adaptive":
+        from .topbot_audit import record
+        record(user_id, config.account_id, "run_started", config_id=config.id, run_id=run.id,
+               execution_mode="dry_run" if resolved_dry_run else "practice_api")
     try:
         result = evaluate_bot_config(
             db,
@@ -1201,7 +1212,15 @@ def evaluate_bot_config(
     evaluation_started_at = datetime.now(timezone.utc)
     diagnostic_event(logger, "bot_evaluation_started", **diagnostic_context)
     timing, timing_token = evaluation_timing.begin()
+    from .topbot_strategy import selected as dom_selected
+    from .topbot_audit import record as audit_record, AuditedClient
+    audit_context = dict(owner=str(user_id), account_id=int(config.account_id), config_id=bot_config_id,
+                         run_id=bot_run_id, contract_id=str(config.contract_id), correlation_id=correlation_id)
+    audit_enabled = str(config.strategy_type) == "topbot_adaptive" and dom_selected(config.strategy_params)
     try:
+        if audit_enabled:
+            audit_record(**audit_context, kind="evaluation_started")
+            client = AuditedClient(client, audit_context)
         result = _evaluate_bot_config_impl(
             db,
             user_id=user_id,
@@ -1224,8 +1243,21 @@ def evaluate_bot_config(
         result.analysis['evaluation_config_hash'] = diagnostic_context['config_hash']
         diagnostic_event(logger, "bot_evaluation_timing", **diagnostic_context,
                          evaluation_status=result.status, duration_ms=duration_ms)
+        if audit_enabled:
+            payload = result.decision.raw_payload or {}
+            audit_record(**audit_context, kind="evaluation_result", action=result.decision.action,
+                         reason=result.decision.reason, status=result.status, decision_id=result.decision.id,
+                         order_attempt_id=result.order_attempt.id if result.order_attempt else None,
+                         risk_codes=[r.code for r in result.risk_events], price=result.decision.price,
+                         depth=payload.get("depth_entry"), stop_loss=payload.get("stop_loss"),
+                         persistence="Evaluation produced; cloud transaction may still be pending")
         return result
     except Exception as exc:
+        if audit_enabled:
+            try:
+                audit_record(**audit_context, kind="evaluation_error", error_type=type(exc).__name__)
+            except Exception:
+                logger.critical("topbot_audit_write_failed", extra={"bot_run_id": bot_run_id})
         diagnostic_event(logger, "bot_evaluation_failed", level=logging.ERROR,
                          **diagnostic_context, error_type=type(exc).__name__,
                          error_frames=error_frames(exc),
@@ -1291,7 +1323,8 @@ def _evaluate_bot_config_impl(
         if not resolved_dry_run:
             _require_strategy_available(str(config.strategy_type))
             from .topbot_mathematical import selected, require_live_worker
-            if str(config.strategy_type) == "topbot_adaptive" and selected(config.strategy_params):
+            from .topbot_strategy import selected as dom_selected
+            if str(config.strategy_type) == "topbot_adaptive" and (selected(config.strategy_params) or dom_selected(config.strategy_params)):
                 require_live_worker()
                 if run is None or not isinstance(run.raw_state, dict) or not (
                     run.raw_state.get("continuous") is True and run.raw_state.get("live_routing_confirmed") is True
@@ -1361,6 +1394,10 @@ def _evaluate_bot_config_impl(
                     kind='contract_roll', configured_contract=market_config.contract_id,
                     observed_contract=execution_contract_id,
                     observed_close=_market_candle_close_timestamp(latest_candle).isoformat())
+        from .topbot_strategy import selected as dom_selected
+        if dom_selected(market_config.strategy_params) and not resolved_dry_run and worker_lease_token is None:
+            signal = SignalResult("HOLD", "Waiting for the practice execution worker", None, None,
+                                  {"strategy_type": "topbot_adaptive", "live_routing_allowed": False})
         instrument_spec = None
         if signal.action in {"BUY", "SELL"}:
             instrument_spec = _load_or_resolve_instrument_spec(
@@ -1564,7 +1601,8 @@ def _evaluate_bot_config_impl(
                         perform_live_preflight=False,
                         reconcile_live_submissions=False,
                     )
-                if not resolved_dry_run:
+                from .topbot_strategy import CONFIGURED as topbot_configured
+                if not resolved_dry_run or str(config.strategy_type) == "topbot_adaptive":
                     protection_block = _strategy_protection_block(
                         db,
                         config=config,
@@ -2024,6 +2062,15 @@ def stop_latest_bot_run(
         )
     )
     db.flush()
+    if str(config.strategy_type) == "topbot_adaptive":
+        from .topbot_audit import record
+        try:
+            record(user_id, config.account_id, "stop_requested", run_id=run.id, config_id=config.id,
+                   reason=reason, persistence="Cloud lifecycle record pending commit")
+        except Exception:
+            # A logging fault must never undo the user's stop. The cloud
+            # lifecycle decision above remains the durable fallback.
+            logger.critical("topbot_stop_audit_write_failed", extra={"bot_run_id": run.id})
     return run
 
 
@@ -4210,25 +4257,9 @@ def evaluate_sma_cross(
 
 
 def evaluate_topbot_adaptive(candles, *, strategy_params=None, owner=None, contract_id=None) -> SignalResult:
-    """TopBot's only strategy is the mathematical model.
-
-    A config still carrying a removed revision (for example the retired EMA/VWAP
-    pullback) never trades: its safety gates were keyed to that revision. Stop it
-    and start a new run, which applies the mathematical preset.
-    """
-    from . import topbot_mathematical
-    if topbot_mathematical.selected(strategy_params):
-        return topbot_mathematical.evaluate(candles, owner=owner, contract_id=contract_id)
-    closed = _closed_candles(candles)
-    latest = closed[-1] if closed else None
-    revision = strategy_params.get("revision") if isinstance(strategy_params, dict) else None
-    return SignalResult(
-        action="HOLD",
-        reason="TopBot's EMA/VWAP strategy was removed. Stop this bot and start a new run to use TopBot Mathematical.",
-        candle_timestamp=_as_utc(latest.candle_timestamp) if latest is not None else None,
-        price=float(latest.close_price) if latest is not None else None,
-        raw_payload={"strategy_type": "topbot_adaptive", "strategy_revision": revision, "retired_strategy": True},
-    )
+    """Dispatch only to the user's replacement strategy, including saved revisions."""
+    from . import topbot_strategy
+    return topbot_strategy.evaluate(candles, strategy_params=strategy_params, owner=owner, contract_id=contract_id)
 
 
 def evaluate_ema_scalping(
@@ -11397,6 +11428,22 @@ def evaluate_risk_gates(
                 )
 
     latest_candle_age_seconds = _candle_delivery_delay_seconds(latest_candle, symbol=symbol or contract_id, now=now)
+    from .topbot_strategy import selected as dom_selected
+    if str(config.strategy_type) == "topbot_adaptive" and dom_selected(config.strategy_params) and not position_reducing:
+        from .topbot_depth import feed, utc
+        depth = feed.snapshot(user_id, contract_id, now=now)
+        signal_depth = (decision.raw_payload or {}).get("depth_entry", {}) if decision is not None else {}
+        latest_candle_age_seconds = (now-utc(depth["observed_at"])).total_seconds() if depth.get("ready") else None
+        params = _normalize_strategy_params("topbot_adaptive", config.strategy_params)
+        if (not depth.get("ready") or not depth.get("episode_at") or depth.get("episode_at") != signal_depth.get("episode_at")
+                or abs(depth.get("imbalance", 0)) < params["imbalance_threshold"]
+                or depth.get("persistence_seconds", 0) < params["persistence_seconds"]
+                or (action == "SELL") != (depth.get("imbalance", 0) > 0)):
+            additional_blocks.append(RiskBlock(code="dom_signal_expired", message="Contrarian depth no longer qualifies; entry skipped."))
+        if preflight is not None and abs(preflight.current_position_qty) > 1e-9:
+            additional_blocks.append(RiskBlock(code="dom_entry_requires_flat", message="TopBot does not add to or adopt existing positions."))
+        if order_size != 1 or float(config.max_contracts) != 1:
+            additional_blocks.append(RiskBlock(code="dom_size_invalid", message="This strategy requires one MNQ contract."))
     if order_attempt is not None and not position_reducing:
         protection_block = _order_attempt_protection_block(
             config=config,
@@ -12315,6 +12362,10 @@ def _actionable_candle_timestamp(
     candles: list[ProjectXMarketCandle],
     latest_candle: ProjectXMarketCandle | None,
 ) -> datetime | None:
+    from .topbot_strategy import REVISION
+    payload = getattr(signal, "raw_payload", None) or {}
+    if payload.get("strategy_revision") == REVISION and payload.get("depth_entry", {}).get("episode_at"):
+        return _as_utc(signal.candle_timestamp) if signal.candle_timestamp is not None else None
     eligible = _closed_candles(candles)
     if signal.candle_timestamp is not None:
         signal_timestamp = _as_utc(signal.candle_timestamp)
@@ -12852,6 +12903,10 @@ def _create_order_attempt(
         from .topbot_time_exit import exit_plan
         request_payload["timeExit"] = exit_plan(decision_at=(
             _as_utc(decision.candle_timestamp) + timedelta(minutes=5) if decision.candle_timestamp else None))
+    from .topbot_strategy import selected as dom_selected
+    if execution_mode == "live" and str(config.strategy_type) == "topbot_adaptive" and dom_selected(config.strategy_params):
+        from .topbot_runner import runner_plan
+        request_payload["timeExit"] = runner_plan()
     row = BotOrderAttempt(
         user_id=user_id,
         bot_config_id=int(config.id),
@@ -12874,6 +12929,9 @@ def _create_order_attempt(
 
 def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAttempt) -> None:
     request_payload = order_attempt.raw_request or {}
+    if isinstance(request_payload.get("timeExit", {}).get("runner"), dict):
+        from .topbot_audit import client_for
+        client = client_for(client, order_attempt, reason="Confirmed contrarian DOM entry", market_price=request_payload.get("price"))
     started = perf_counter()
     diagnostic_context = {
         key: getattr(order_attempt, attribute, None) for key, attribute in (
@@ -13374,6 +13432,15 @@ def _strategy_protection_block(
         return None
 
     strategy_type = str(payload.get("strategy_type") or config.strategy_type)
+    if str(config.strategy_type) == "topbot_adaptive":
+        from .topbot_strategy import CONFIGURED, MESSAGE, selected as dom_selected
+        if not CONFIGURED or not dom_selected(config.strategy_params):
+            return RiskBlock(code="strategy_not_configured", message=MESSAGE, severity="critical")
+        if payload.get("live_routing_allowed") is not True or payload.get("protective_stop_ticks") != 100:
+            return RiskBlock(code="dom_signal_invalid", message="A qualifying DOM signal and 100-tick protective stop are required.")
+        if (not re.fullmatch(r"CON\.F\.US\.MNQ\.[A-Z]\d{2}", contract_id) or instrument_spec is None
+                or float(instrument_spec.tick_size) != .25 or float(instrument_spec.tick_value) != .5):
+            return RiskBlock(code="dom_instrument_invalid", message="The strategy requires verified MNQ tick metadata.")
     from .topbot_mathematical import selected
     if strategy_type == "topbot_adaptive" and selected(config.strategy_params) and payload.get("live_routing_allowed") is not True:
         return RiskBlock(code="model_validation_required", message="Live routing requires a passed experiment and reviewed model artifact.", severity="critical")
@@ -14119,10 +14186,8 @@ def _normalize_strategy_params(strategy_type: Any, params: Any) -> dict[str, Any
         return {}
 
     if normalized_strategy_type == _STRATEGY_TOPBOT_ADAPTIVE:
-        # The mathematical model is TopBot's only strategy; saved settings from
-        # removed revisions are replaced with its code-owned preset.
-        from . import topbot_mathematical
-        return topbot_mathematical.normalize_params(raw_params)
+        from .topbot_strategy import normalize_params
+        return normalize_params(raw_params)
 
     if normalized_strategy_type == _STRATEGY_EMA_TREND_PULLBACK:
         long_rsi_min = _bounded_float_param(
