@@ -605,6 +605,10 @@ describe("BotPage account-scoped run controls", () => {
   });
 
   it("uses the backend admission message while the user's connection is being checked", async () => {
+    vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
+      configs: { items: [botA], total: 1 }, cacheScope: "user:test",
+    });
+    vi.spyOn(botsApi, "getActivity").mockResolvedValue(activity(botA));
     const status = healthyRuntimeStatus();
     const message = "Checking your ProjectX connection. Runs will unlock after verification succeeds.";
     status.start_admission = {

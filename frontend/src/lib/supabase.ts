@@ -1,5 +1,6 @@
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import { observeAuthIdentity } from "./authIdentity";
+import { localSessionSync, restoreLocalSession, selectGoogleAuth, signOutLocally, subscribeLocalAuth, usesLocalAuth } from "./localAuth";
 
 const LOCAL_SUPABASE_URLS = new Set(["http://127.0.0.1:54321", "http://localhost:54321"]);
 const SUPABASE_URL_RAW = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -56,6 +57,11 @@ async function getSupabaseClient(): Promise<SupabaseClient | null> {
 }
 
 export async function bootstrapSupabaseSession(): Promise<Session | null> {
+  if (usesLocalAuth()) {
+    const local = await restoreLocalSession();
+    observeAuthIdentity(local?.access_token ?? null);
+    return local;
+  }
   const supabase = await getSupabaseClient();
   if (!supabase) {
     currentAccessToken = null;
@@ -65,6 +71,7 @@ export async function bootstrapSupabaseSession(): Promise<Session | null> {
   }
 
   const { data } = await supabase.auth.getSession();
+  if (usesLocalAuth()) return localSessionSync();
   currentAccessToken = data.session?.access_token ?? null;
   observeAuthIdentity(currentAccessToken);
   currentEmail = data.session?.user?.email ?? null;
@@ -74,13 +81,20 @@ export async function bootstrapSupabaseSession(): Promise<Session | null> {
 export function subscribeSupabaseAuthChanges(onChange: (session: Session | null) => void): () => void {
   let active = true;
   let unsubscribe = () => {};
+  const unsubscribeLocal = subscribeLocalAuth((session) => {
+    currentAccessToken = null;
+    currentEmail = null;
+    observeAuthIdentity(session?.access_token ?? null);
+    onChange(session);
+  });
 
-  void getSupabaseClient().then((supabase) => {
+  void (usesLocalAuth() ? Promise.resolve(null) : getSupabaseClient()).then((supabase) => {
     if (!active || !supabase) {
       return;
     }
 
     const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (usesLocalAuth()) return;
       currentAccessToken = session?.access_token ?? null;
       observeAuthIdentity(currentAccessToken);
       currentEmail = session?.user?.email ?? null;
@@ -90,11 +104,12 @@ export function subscribeSupabaseAuthChanges(onChange: (session: Session | null)
     unsubscribe = () => {
       data.subscription.unsubscribe();
     };
-  });
+  }).catch(() => { /* Google may be unavailable; local authentication remains independent. */ });
 
   return () => {
     active = false;
     unsubscribe();
+    unsubscribeLocal();
   };
 }
 
@@ -113,9 +128,11 @@ export async function signInWithGoogle(): Promise<void> {
   if (error) {
     throw new Error(error.message);
   }
+  selectGoogleAuth();
 }
 
 export async function signOutSupabase(): Promise<void> {
+  if (usesLocalAuth()) return signOutLocally();
   const supabase = await getSupabaseClient();
   if (!supabase) {
     return;
@@ -127,6 +144,7 @@ export async function signOutSupabase(): Promise<void> {
 }
 
 export async function getAccessToken(): Promise<string | null> {
+  if (usesLocalAuth()) return localSessionSync()?.access_token ?? null;
   if (currentAccessToken) {
     return currentAccessToken;
   }
@@ -136,6 +154,7 @@ export async function getAccessToken(): Promise<string | null> {
   }
 
   const { data } = await supabase.auth.getSession();
+  if (usesLocalAuth()) return localSessionSync()?.access_token ?? null;
   currentAccessToken = data.session?.access_token ?? null;
   observeAuthIdentity(currentAccessToken);
   currentEmail = data.session?.user?.email ?? null;
@@ -143,9 +162,11 @@ export async function getAccessToken(): Promise<string | null> {
 }
 
 export function getAccessTokenSync(): string | null {
+  if (usesLocalAuth()) return localSessionSync()?.access_token ?? null;
   return currentAccessToken;
 }
 
 export function getCurrentUserEmailSync(): string | null {
+  if (usesLocalAuth()) return localSessionSync()?.user.email ?? null;
   return currentEmail;
 }

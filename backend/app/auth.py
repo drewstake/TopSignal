@@ -122,6 +122,11 @@ def authenticate_request_token(token: str) -> AuthenticatedUser:
     except (PyJWTError, TypeError, ValueError) as exc:
         raise AuthError("invalid_auth_header") from exc
 
+    from .local_auth import KID as LOCAL_KID, verify as verify_local
+    if header.get("kid") == LOCAL_KID:
+        payload = verify_local(token)
+        return AuthenticatedUser(user_id=payload["sub"], email=payload.get("email"), claims=payload)
+
     algorithm = str(header.get("alg") or "").upper()
     if algorithm not in _allowed_jwt_algorithms():
         raise AuthError("invalid_token_algorithm")
