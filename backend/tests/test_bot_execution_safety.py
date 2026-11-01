@@ -1405,7 +1405,7 @@ def test_live_target_direction_conflict_fails_closed(db_session, monkeypatch):
 
 def test_initial_target_risk_math_uses_provider_delta_without_order_attempt(db_session, monkeypatch):
     _, config = _add_account_and_config(db_session, execution_mode="live")
-    config.strategy_type = "topbot_adaptive"
+    config.strategy_type = "donchian_breakout"
     config.max_contracts = 1
     config.max_open_position = 1
     db_session.commit()
@@ -3146,15 +3146,11 @@ def test_topbot_bracket_entry_only_routes_when_provider_is_flat(db_session, monk
         dry_run=False, confirm_live_order_routing=True,
     )
     assert client.close_position_calls == []
-    if position_qty:
-        assert result.status == "risk_blocked"
-        assert client.place_order_calls == []
-    else:
-        assert result.status == "submitted"
-        assert len(client.place_order_calls) == 1
-        assert client.place_order_calls[0]["size"] == 1
-        assert client.place_order_calls[0]["stop_loss_bracket"]["ticks"] == 200
-        assert client.place_order_calls[0]["take_profit_bracket"]["ticks"] == 200
+    # Retired/unconfigured TopBot entries cannot route, even while flat.
+    # The current DOM entry path is covered in test_topbot_dom.py.
+    assert result.status == "risk_blocked"
+    assert client.place_order_calls == []
+    assert any(event.code == "strategy_not_configured" for event in result.risk_events)
 
 
 def test_exit_label_cannot_bypass_protection_for_exposure_increasing_order(db_session, monkeypatch):

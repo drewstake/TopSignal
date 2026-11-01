@@ -2465,6 +2465,11 @@ async function runBacktestRequest(
 }
 
 export const botsApi = {
+  getTopBotStatistics: (accountId: number, options: RequestSignalOptions = {}) =>
+    requestJson<import("../pages/bot/TopBotStrategyPanel").TopBotStatistics>(`/api/accounts/${accountId}/topbot/statistics`, { signal: options.signal }),
+  getTopBotAudit: (accountId: number, before: number | null = null, options: RequestSignalOptions = {}) =>
+    requestJson<import("../pages/bot/TopBotAuditTrail").AuditPage>(`/api/accounts/${accountId}/topbot/audit`, {
+      query: before == null ? undefined : { before }, signal: options.signal }),
   getManualOrderState: (accountId: number, options: RequestSignalOptions = {}) =>
     requestJson<ManualOrderState>(`/api/accounts/${accountId}/manual-order-tests`, { signal: options.signal }),
   submitManualOrder: (accountId: number, payload: ManualOrderInput) =>

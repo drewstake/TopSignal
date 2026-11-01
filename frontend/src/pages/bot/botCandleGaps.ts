@@ -439,12 +439,29 @@ export function planBotCandleFetches(input: PlanBotCandleFetchesInput): BotCandl
 
   const foreground: BotCandleFetchRequest[] = [];
   const background = buildMissingHistoryRequests(target, coverage.startMs, target.limit);
-  const sessionOpen =
-    Number.isFinite(nowMs) && isFuturesSessionOpen(nowMs, inferCandleSessionSymbol(input.cache.candles));
+  const sessionSymbol = inferCandleSessionSymbol(input.cache.candles);
+  const sessionOpen = Number.isFinite(nowMs) && isFuturesSessionOpen(nowMs, sessionSymbol);
   const uncoveredTailMs = target.endMs - coverage.endMs;
   const normalizedTailBars = Math.max(2, Math.trunc(input.tailBars ?? DEFAULT_TAIL_REVALIDATION_BARS));
 
-  if (sessionOpen && uncoveredTailMs > intervalMs) {
+  // Closing the market pauses live polling, not recovery of already completed
+  // bars. Query coverage alone cannot prove the tail is current: a provider
+  // failure can return older cached rows for an otherwise up-to-date window.
+  const missingClosedSessionTail = !sessionOpen
+    && (isStale || uncoveredTailMs > intervalMs)
+    && countMissingBuckets(
+      cacheBounds.lastMs + intervalMs,
+      Math.floor(Math.min(nowMs, target.endMs) / intervalMs) * intervalMs,
+      intervalMs, input.unit, sessionSymbol,
+    ).missingSessionBars > 0;
+
+  if (missingClosedSessionTail) {
+    const startMs = Math.max(target.startMs, cacheBounds.lastMs);
+    foreground.push(fetchRequest(
+      "missing-tail", "foreground", { startMs, endMs: target.endMs },
+      estimateWindowLimit(startMs, target.endMs, intervalMs, target.limit), false,
+    ));
+  } else if (sessionOpen && uncoveredTailMs > intervalMs) {
     const startMs = Math.max(target.startMs, coverage.endMs - intervalMs);
     foreground.push(
       fetchRequest(

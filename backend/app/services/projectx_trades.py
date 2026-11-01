@@ -57,6 +57,9 @@ class TradeExecutionLifecycle:
     duration_minutes: float | None
     entry_price: float | None
     exit_price: float
+    # Exact FIFO entry legs for historical excursions; the display timestamp
+    # above is quantity-weighted and cannot describe exposure after scale-ins.
+    entry_legs: tuple[tuple[datetime, float, float], ...] = ()
 
 
 @dataclass
@@ -566,6 +569,7 @@ def derive_trade_execution_lifecycles(
         closed_qty = 0.0
         weighted_entry_epoch = 0.0
         weighted_entry_price = 0.0
+        entry_legs = []
 
         while (
             abs(remaining) > epsilon
@@ -582,6 +586,7 @@ def derive_trade_execution_lifecycles(
             closed_qty += close_qty
             weighted_entry_epoch += lot.timestamp.timestamp() * close_qty
             weighted_entry_price += lot.price * close_qty
+            entry_legs.append((lot.timestamp, lot.price, close_qty))
 
             next_lot_qty = lot.qty - (_sign(lot.qty) * close_qty)
             if abs(next_lot_qty) <= epsilon:
@@ -613,6 +618,7 @@ def derive_trade_execution_lifecycles(
                 duration_minutes=duration_minutes,
                 entry_price=entry_price,
                 exit_price=trade_price,
+                entry_legs=tuple(entry_legs) if abs(closed_qty - qty) <= epsilon else (),
             )
 
         if abs(remaining) > epsilon:

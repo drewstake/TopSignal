@@ -136,6 +136,7 @@ class ProjectXHubRunner:
         on_user_disconnect: Callable[[], None] | None = None,
         archive_contracts: tuple[str, ...] = (),
         on_archive_event: Callable[[str, Mapping[str, Any]], None] | None = None,
+        track_positions: bool = False,
     ):
         self._tracker = tracker
         self._client_factory = client_factory
@@ -167,6 +168,8 @@ class ProjectXHubRunner:
         self._on_user_disconnect = on_user_disconnect
         self._archive_contracts = archive_contracts
         self._on_archive_event = on_archive_event
+        self._track_positions = track_positions
+        self.stream_states: dict[str, str] = {}
         self._dispatch_circuits: dict[str, _DispatchCircuit] = {}
 
     async def run_forever(self) -> None:
@@ -292,6 +295,7 @@ class ProjectXHubRunner:
                     subscription_messages = list({json.dumps(m, sort_keys=True): m for m in subscription_messages}.values())
                     for message in subscription_messages:
                         await websocket.send(json.dumps(message) + _SIGNALR_RECORD_SEPARATOR)
+                    self.stream_states[stream_kind] = "connected"
                     self._archive_connection_event(stream_kind, 'connected_subscriptions_sent')
                     for frame in initial_frames:
                         self._dispatch_frame(stream_kind, frame)
@@ -305,6 +309,8 @@ class ProjectXHubRunner:
                         else None
                     )
                     tasks = {receiver, *([refresh] if refresh is not None else [])}
+                    if stream_kind == "market" and self._track_positions:
+                        tasks.add(asyncio.create_task(self._track_position_contracts(websocket)))
                     try:
                         done, _pending = await asyncio.wait(
                             tasks,
@@ -319,11 +325,17 @@ class ProjectXHubRunner:
                             task.cancel()
                         await asyncio.gather(*tasks, return_exceptions=True)
             except asyncio.CancelledError:
+                self.stream_states[stream_kind] = "disconnected"
+                if self._track_positions:
+                    self._tracker.reset_observations()
                 self._archive_connection_event(stream_kind, 'disconnected_cancelled')
                 if stream_kind == "user":
                     self._notify_user_disconnect()
                 raise
             except Exception as exc:
+                self.stream_states[stream_kind] = "disconnected"
+                if self._track_positions:
+                    self._tracker.reset_observations()
                 self._archive_connection_event(stream_kind, 'disconnected_' + type(exc).__name__)
                 if stream_kind == "user":
                     self._notify_user_disconnect()
@@ -343,6 +355,19 @@ class ProjectXHubRunner:
             for frame in _decode_signalr_frames(raw_message):
                 self._dispatch_frame(stream_kind, frame)
         raise ConnectionError(f"ProjectX {stream_kind} hub closed the connection")
+
+    async def _track_position_contracts(self, websocket: Any) -> None:
+        subscribed = set(self._archive_contracts)
+        while True:
+            wanted = self._tracker.active_contracts() | set(self._archive_contracts)
+            for contract in sorted(wanted - subscribed):
+                await websocket.send(json.dumps({"type": 1, "target": "SubscribeContractQuotes",
+                                                 "arguments": [contract]}) + _SIGNALR_RECORD_SEPARATOR)
+            for contract in sorted(subscribed - wanted):
+                await websocket.send(json.dumps({"type": 1, "target": "UnsubscribeContractQuotes",
+                                                 "arguments": [contract]}) + _SIGNALR_RECORD_SEPARATOR)
+            subscribed = wanted
+            await asyncio.sleep(0.1)
 
     async def _refresh_user_account_loop(self, websocket: Any) -> None:
         while True:
@@ -382,7 +407,7 @@ class ProjectXHubRunner:
                         self._on_archive_event(target_name, archived)
                     except Exception as exc:
                         logger.error("market_archive_hub_callback_failed", extra={"error_type": type(exc).__name__})
-            if target_name == "GatewayQuote":
+            if target_name == "GatewayQuote" and not self._track_positions:
                 return
 
         if stream_kind == "market" and len(arguments) >= 2 and isinstance(arguments[0], str) and isinstance(arguments[1], Mapping):

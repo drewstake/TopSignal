@@ -389,6 +389,16 @@ class ProjectXClient:
             "request_payload": payload,
         }
 
+    def modify_stop_order(self, *, account_id: int, order_id: str | int, stop_price: float) -> dict[str, Any]:
+        """Tighten an existing stop in place; caller verifies ownership and result."""
+        normalized_id = _safe_int(order_id)
+        if normalized_id is None or normalized_id <= 0 or not _is_finite_number(stop_price) or stop_price <= 0:
+            raise ProjectXClientError("A valid order ID and positive finite stop price are required.")
+        payload = {"accountId": int(account_id), "orderId": normalized_id, "stopPrice": stop_price}
+        data = self._request("POST", "/api/Order/modify", payload=payload, with_auth=True)
+        _require_mutation_acknowledgement(data, endpoint="Order/modify")
+        return {"success": True, "raw_payload": data}
+
     def cancel_order(self, *, account_id: int, order_id: str | int) -> dict[str, Any]:
         """Cancel one order and reject an acknowledgement with unknown shape.
 

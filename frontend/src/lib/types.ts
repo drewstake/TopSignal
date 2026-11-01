@@ -162,6 +162,7 @@ export interface AccountTrade {
   position_mfe?: number | null;
   excursion_scope?: "trade" | "position" | "ambiguous" | "unavailable";
   excursion_source?: string | null;
+  excursion_note?: string | null;
   order_id: string;
   source_trade_id: string | null;
 }

@@ -24,6 +24,9 @@ import {
 } from "lightweight-charts";
 
 import { Button } from "../../components/ui/Button";
+import { ContinuousMnqDailyChart } from "./ContinuousMnqDailyChart";
+import { loadContinuousMnqIntraday } from "./continuousMnqIntraday";
+import { sameMnqDelivery } from "./continuousMnqDaily";
 import { APP_SCALE_CHANGED_EVENT, getAppScale } from "../../lib/appScale";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { botsApi, buildUserScopedProjectXCandleRequestKey, streamProjectXMarketPrice, type CandleQuery } from "../../lib/api";
@@ -45,13 +48,14 @@ import {
   buildGapRangeKey,
   buildGapRepairWindows,
   findCandleGaps,
+  intervalSecondsFor,
   isFuturesSessionOpen,
   isGapCoveredByRepairWindows,
   planBotCandleFetches,
   type BotCandleFetchRequest,
   type CandleGap,
 } from "./botCandleGaps";
-import { isConfirmedClosedCandle, type BotMarketSnapshot } from "./botMarketContext";
+import { candleEndMs, openSessionElapsedSeconds, isConfirmedClosedCandle, type BotMarketSnapshot } from "./botMarketContext";
 import { BotChartStateOverlay, BotChartStatus } from "./BotChartStatus";
 import {
   ChartToolButton,
@@ -182,7 +186,7 @@ const candleRequestScheduler = new PrioritizedRequestScheduler<string>({
   minBackgroundStartIntervalMs: BACKGROUND_CANDLE_START_INTERVAL_MS,
 });
 
-function requestProjectXCandles(
+function requestExactContractCandles(
   authenticatedCacheScope: string,
   query: CandleQuery,
   priority: RequestPriority,
@@ -191,6 +195,14 @@ function requestProjectXCandles(
   return candleRequestScheduler.schedule(
     buildUserScopedProjectXCandleRequestKey(authenticatedCacheScope, query),
     (sharedSignal) => botsApi.getCandles(query, { signal: sharedSignal }),
+    { priority, signal },
+  );
+}
+
+function requestContinuousCandles(scope: string, query: CandleQuery, priority: RequestPriority, signal?: AbortSignal) {
+  return candleRequestScheduler.schedule(
+    buildUserScopedProjectXCandleRequestKey(scope, query),
+    sharedSignal => loadContinuousMnqIntraday(scope, query, sharedSignal),
     { priority, signal },
   );
 }
@@ -253,6 +265,8 @@ interface ChartHandles {
 }
 
 interface BotSignalChartProps {
+  /** Monitoring view: candles, volume and recorded executions; no manual TA tools. */
+  monitorOnly?: boolean;
   bot: BotConfig | null;
   /** Read-only market chart when no saved bot is selected. Never authorizes execution. */
   market?: BotChartMarket | null;
@@ -328,7 +342,28 @@ interface LiquidityDragState {
   pointerId: number;
 }
 
-export function BotSignalChart({ bot: savedBot, market, demoMode = false, authenticatedCacheScope, activity, lastEvaluation, refreshToken, onMarketData }: BotSignalChartProps) {
+export function BotSignalChart(props: BotSignalChartProps) {
+  const market = props.bot ?? props.market;
+  return props.monitorOnly && !props.demoMode && /(?:^|\.)MNQ(?:\.|$)/i.test(market?.contract_id ?? "")
+    ? <MonitorChart key={`${props.authenticatedCacheScope}:${market?.contract_id}:${market?.id}`} {...props} />
+    : <BotSignalChartCore {...props} />;
+}
+
+function MonitorChart(props: BotSignalChartProps) {
+  const [timeframe, setTimeframe] = useState(() => defaultChartTimeframeIdForBot(props.bot ?? props.market ?? null));
+  const market = (props.bot ?? props.market)!;
+  if (timeframe === "1d") return <ContinuousMnqDailyChart market={market} scope={props.authenticatedCacheScope}
+    onTimeframeChange={setTimeframe} onMarketData={props.onMarketData} />;
+  return <BotSignalChartCore key="latest" {...props} continuousHistory
+    authenticatedCacheScope={props.authenticatedCacheScope ? `${props.authenticatedCacheScope}:mnq-continuous-v1:latest` : null}
+    initialTimeframeId={timeframe} onTimeframeSelected={setTimeframe} onContinuousDaily={() => setTimeframe("1d")} />;
+}
+
+function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMode = false, authenticatedCacheScope, activity, lastEvaluation, refreshToken, onMarketData, initialTimeframeId, onContinuousDaily, continuousHistory = false, onTimeframeSelected }: BotSignalChartProps & {
+  initialTimeframeId?: BotChartTimeframeId; onContinuousDaily?: () => void; continuousHistory?: boolean;
+  onTimeframeSelected?: (timeframe: BotChartTimeframeId) => void;
+}) {
+  const requestProjectXCandles = continuousHistory ? requestContinuousCandles : requestExactContractCandles;
   const pageVisible = usePageVisibility();
   const bot = savedBot ?? market ?? null;
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -397,14 +432,14 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
   const [freshnessTick, setFreshnessTick] = useState(0);
   const [liquidityPriceOverrides, setLiquidityPriceOverrides] = useState<LiquidityPriceOverrides>({});
   const [visibleChartLayers, setVisibleChartLayers] = useState<Record<ChartLayerId, boolean>>({
-    fastSma: true,
-    slowSma: true,
-    vwap: true,
+    fastSma: !monitorOnly,
+    slowSma: !monitorOnly,
+    vwap: !monitorOnly,
     volume: true,
     buySignals: true,
     sellSignals: true,
-    buyLiquidity: true,
-    sellLiquidity: true,
+    buyLiquidity: !monitorOnly,
+    sellLiquidity: !monitorOnly,
   });
   const [drawingTool, setDrawingTool] = useState<DrawingTool>("cursor");
   const [drawings, setDrawings] = useState<DrawingShape[]>([]);
@@ -417,7 +452,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
   const botTimeframeSelectionKey = buildBotTimeframeSelectionKey(bot);
   const [timeframeSelection, setTimeframeSelection] = useState<ChartTimeframeSelection>(() => ({
     key: buildBotTimeframeSelectionKey(bot),
-    id: defaultChartTimeframeIdForBot(bot),
+    id: initialTimeframeId ?? defaultChartTimeframeIdForBot(bot),
   }));
   const selectedTimeframeId =
     timeframeSelection.key === botTimeframeSelectionKey ? timeframeSelection.id : defaultChartTimeframeIdForBot(bot);
@@ -625,7 +660,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
   const liquidityDragContextKey = chartViewportKey;
   const drawingStorageScope = useMemo<BotDrawingStorageScope | null>(
     () =>
-      savedBot && authenticatedCacheScope
+      !monitorOnly && savedBot && authenticatedCacheScope
         ? {
             userScope: authenticatedCacheScope,
             botId: savedBot.id,
@@ -633,7 +668,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
             timeframe: selectedTimeframeId,
           }
         : null,
-    [authenticatedCacheScope, savedBot, selectedTimeframeId],
+    [authenticatedCacheScope, monitorOnly, savedBot, selectedTimeframeId],
   );
   const drawingStorageScopeKey = drawingStorageScope ? buildBotDrawingStorageKey(drawingStorageScope) : null;
   const chartViewportKeyRef = useRef(chartViewportKey);
@@ -744,12 +779,13 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
         unit: config.timeframe_unit,
         unitNumber: config.timeframe_unit_number,
         strategyType: config.strategy_type,
-        candles: mergeLiveCandle(candlesRef.current, liveCandleRef.current),
+        candles: mergeLiveCandle(candlesRef.current, liveCandleRef.current).filter(row =>
+          !continuousHistory || row.contract_id === config.contract_id || sameMnqDelivery(row.contract_id, config.contract_id)),
         lastPrice: livePriceRef.current,
         updatedAt: chartNow(demoMode).toISOString(),
       });
     }, MARKET_SNAPSHOT_THROTTLE_MS);
-  }, [chartConfig, demoMode, onMarketData, pageVisible, visibleCandles]);
+  }, [chartConfig, continuousHistory, demoMode, onMarketData, pageVisible, visibleCandles]);
 
   useEffect(() => {
     return () => {
@@ -1088,7 +1124,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
           });
       }
     },
-    [authenticatedCacheScope, commitCandleFetch],
+    [authenticatedCacheScope, commitCandleFetch, requestProjectXCandles],
   );
 
   const loadCandles = useCallback(
@@ -1289,7 +1325,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
         }
       }
     },
-    [authenticatedCacheScope, chartConfig, chartViewportKey, commitCandleFetch, demoMode, scheduleBackgroundCandleFetches],
+    [authenticatedCacheScope, chartConfig, chartViewportKey, commitCandleFetch, demoMode, requestProjectXCandles, scheduleBackgroundCandleFetches],
   );
 
   const loadLivePrice = useCallback(async ({ force = false, allowClosedSession = false }: LoadLivePriceOptions = {}) => {
@@ -1414,7 +1450,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
       requestTimeoutIdsRef.current.delete(timeoutId);
       liveRequestsRef.current.finish(request);
     }
-  }, [authenticatedCacheScope, chartConfig, chartViewportKey, commitCandleFetch]);
+  }, [authenticatedCacheScope, chartConfig, chartViewportKey, commitCandleFetch, requestProjectXCandles]);
 
   const loadOlderCandles = useCallback(async () => {
     if (document.hidden) return;
@@ -1508,7 +1544,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
         setHistoryLoading(false);
       }
     }
-  }, [authenticatedCacheScope, commitCandleFetch]);
+  }, [authenticatedCacheScope, commitCandleFetch, requestProjectXCandles]);
 
   const repairDataGaps = useCallback(async () => {
     if (document.hidden) return;
@@ -1617,7 +1653,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
         setRepairVersion((current) => current + 1);
       }
     }
-  }, [authenticatedCacheScope, queueViewportRestore]);
+  }, [authenticatedCacheScope, queueViewportRestore, requestProjectXCandles]);
 
   const applyLiveStreamPrice = useCallback(
     (price: ProjectXMarketPrice) => {
@@ -2745,11 +2781,13 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
       pendingViewportRestoreRef.current = null;
       handles.chart.timeScale().setVisibleRange(timeframeViewport.range);
       timeframeViewportRef.current = null;
+    } else if (monitorOnly) {
+      handles.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, closedChartCandles.length - 100), to: closedChartCandles.length + 3 });
     } else {
       handles.chart.timeScale().fitContent();
     }
     fittedViewportRef.current = { key: chartViewportKey, candleCount: closedChartCandles.length };
-  }, [bot, chartViewportKey, closedChartCandles.length, historyViewportReadyKey]);
+  }, [bot, chartViewportKey, closedChartCandles.length, historyViewportReadyKey, monitorOnly]);
 
   useEffect(() => {
     const handles = chartHandlesRef.current;
@@ -2815,7 +2853,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
   useEffect(() => {
     warmTimeframesControllerRef.current?.abort();
     const selectedBot = warmBotRef.current;
-    if (demoMode || !pageVisible || !selectedBot || !authenticatedCacheScope) {
+    if (monitorOnly || demoMode || !pageVisible || !selectedBot || !authenticatedCacheScope) {
       warmTimeframesControllerRef.current = null;
       return;
     }
@@ -2905,7 +2943,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
         warmTimeframesControllerRef.current = null;
       }
     };
-  }, [authenticatedCacheScope, commitCandleFetch, demoMode, pageVisible, warmContractKey]);
+  }, [authenticatedCacheScope, commitCandleFetch, demoMode, monitorOnly, pageVisible, requestProjectXCandles, warmContractKey]);
 
   useEffect(() => {
     if (
@@ -3058,7 +3096,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
   }, [bot, demoMode, loadLivePrice, pageVisible]);
 
   const subtitle = bot
-    ? buildChartSubtitle(bot, chartTimeframe)
+    ? continuousHistory ? `MNQ continuous / ${chartTimeframe.label}` : buildChartSubtitle(bot, chartTimeframe)
     : "No bot selected";
   const toggleChartLayer = useCallback((layer: ChartLayerId) => {
     setVisibleChartLayers((current) => ({
@@ -3067,7 +3105,10 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
     }));
   }, []);
   const dataAgeMs = lastLoadedAt ? nowMs - lastLoadedAt.getTime() : null;
-  const dataIsStale = servedFromCacheOnly || (dataAgeMs !== null && dataAgeMs > STALE_DATA_AFTER_MS);
+  const closedBarEnd = latestClosedCandle ? candleEndMs(Date.parse(latestClosedCandle.timestamp), chartTimeframe.unit, chartTimeframe.unitNumber) : null;
+  const staleAfterSeconds = Math.max(60, intervalSecondsFor(chartTimeframe.unit, chartTimeframe.unitNumber) * 3);
+  const monitorCandlesStale = closedBarEnd !== null && openSessionElapsedSeconds(closedBarEnd, nowMs, bot?.symbol ?? bot?.contract_id ?? "", staleAfterSeconds) > staleAfterSeconds;
+  const dataIsStale = servedFromCacheOnly || (monitorOnly ? monitorCandlesStale : dataAgeMs !== null && dataAgeMs > STALE_DATA_AFTER_MS);
   const freshnessTitle = lastLoadedAt
     ? `Closed candles loaded ${lastLoadedFormatter.format(lastLoadedAt)} ET${
         servedFromCacheOnly ? ". Last refresh failed; showing cached data." : ""
@@ -3102,7 +3143,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
       : "No computed liquidity levels are available yet";
   const drawingToolsDisabled = !bot || chartCandles.length === 0;
   const connectionState =
-    !bot || livePrice === null ? "unavailable" : livePriceIsStale ? "stale" : streamActive ? "live" : "delayed";
+    !bot ? "unavailable" : !chartSessionOpen ? "closed" : livePrice === null ? "unavailable" : livePriceIsStale ? "stale" : streamActive ? "live" : "delayed";
   const latestBarState = latestOhlcCandle ? (latestOhlcCandle.isPartial ? "partial" : "closed") : "none";
   const keyboardHelpId = `bot-chart-keyboard-help-${bot?.id ?? "none"}`;
   const chartViewState = resolveBotChartViewState({
@@ -3203,7 +3244,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
             <CardTitle>Signal Chart</CardTitle>
-            <CardDescription className="mt-1">{subtitle}</CardDescription>
+            {!monitorOnly && <CardDescription className="mt-1">{subtitle}</CardDescription>}
             {savedBot && <div className="mt-2 flex flex-wrap gap-2 text-xs text-app-muted">
               <label>Signals <select aria-label="Signal execution mode" value={signalMode} onChange={e => setSignalMode(e.target.value as typeof signalMode)} className="rounded border border-app-border bg-app-surface p-1">
                 <option value="all">All modes</option><option value="dry_run">Dry Run</option><option value="live">Practice Live</option>
@@ -3258,7 +3299,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
               </span>
             ) : null}
             {!demoMode && bot && confirmedEmptyGapCount > 0 ? (
-              <span className="text-xs text-app-muted" title={`ProjectX returned no missing candles for ${confirmedEmptyGapCount} checked gap(s).`}>
+              <span className="text-xs text-app-muted" title={`${continuousHistory ? "The data sources" : "ProjectX"} returned no missing candles for ${confirmedEmptyGapCount} checked gap(s).`}>
                 {confirmedEmptyGapCount} gap{confirmedEmptyGapCount === 1 ? "" : "s"} unavailable
               </span>
             ) : null}
@@ -3288,6 +3329,8 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
                     aria-label={`Show ${option.label} candles`}
                     onClick={() => {
                       if (active) return;
+                      if (option.id === "1d" && onContinuousDaily) { onContinuousDaily(); return; }
+                      onTimeframeSelected?.(option.id);
                       const range = chartHandlesRef.current?.chart.timeScale().getVisibleRange();
                       timeframeViewportRef.current = range
                         ? { key: `${warmContractKey}:${option.id}`, range: { ...range } }
@@ -3306,7 +3349,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
                 );
               })}
             </div>
-            <div className="inline-flex min-h-11 overflow-hidden rounded-md border border-app-border-strong/70 bg-app-surface/95 shadow-[0_10px_24px_-22px_rgb(var(--theme-shadow-color)/0.55)] sm:min-h-9" aria-label="Chart drawing tools">
+            {!monitorOnly && <div className="inline-flex min-h-11 overflow-hidden rounded-md border border-app-border-strong/70 bg-app-surface/95 shadow-[0_10px_24px_-22px_rgb(var(--theme-shadow-color)/0.55)] sm:min-h-9" aria-label="Chart drawing tools">
               <ChartToolButton
                 label="Cursor"
                 active={drawingTool === "cursor"}
@@ -3358,10 +3401,10 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
               >
                 <ClearDrawingsIcon />
               </ChartToolButton>
-            </div>
+            </div>}
           </div>
           <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-            <Button
+            {!monitorOnly && <Button
               variant="secondary"
               size="sm"
               className="disabled:cursor-not-allowed disabled:opacity-50"
@@ -3371,7 +3414,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
             >
               <ComputeLiquidityIcon />
               <span>Compute liq</span>
-            </Button>
+            </Button>}
             <Button
               variant="secondary"
               size="sm"
@@ -3410,7 +3453,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
         </div>
       </CardHeader>
       <CardContent className="flex min-h-0 flex-col">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-app-border bg-app-bg/35 px-3 py-2 text-xs text-app-muted">
+        {!monitorOnly && <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-app-border bg-app-bg/35 px-3 py-2 text-xs text-app-muted">
           {showAverageLayers ? (
             <>
               <LegendDot
@@ -3453,7 +3496,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
             label="Sell-side liquidity"
             onClick={() => toggleChartLayer("sellLiquidity")}
           />
-        </div>
+        </div>}
         <div className="bot-chart-viewport relative overflow-hidden rounded-xl border border-app-border bg-app-bg/45">
           <div
             ref={containerRef}
@@ -3726,7 +3769,9 @@ function compactMeridiem(value: string): string {
 }
 
 function buildChartSubtitle(bot: BotChartMarket, chartTimeframe: BotChartTimeframe): string {
-  const market = bot.symbol ?? bot.contract_id;
+  const contract = bot.contract_id.trim();
+  const delivery = contract.match(/(?:^|\.)([A-Z0-9]+)\.([FGHJKMNQUVXZ]\d{1,4})$/i);
+  const market = delivery ? `${delivery[1]}${delivery[2]}`.toUpperCase() : contract || bot.symbol;
   if (bot.id === undefined) return `${market} / ${chartTimeframe.label} · Market data only`;
   const botTimeframeLabel = formatTimeframeLabel(bot.timeframe_unit, bot.timeframe_unit_number);
   if (botTimeframeLabel === chartTimeframe.label) {

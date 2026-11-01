@@ -116,7 +116,9 @@ function formatFee(value: number) {
 
 function excursionLabel(trade: AccountTrade, kind: "mae" | "mfe"): string {
   const value = trade[kind];
-  if (value !== null && value !== undefined) return formatCurrency(value);
+  if (value !== null && value !== undefined) {
+    return `${trade.excursion_source === "historical_1m_estimate" ? "≈" : ""}${formatCurrency(value)}`;
+  }
   const positionValue = kind === "mae" ? trade.position_mae : trade.position_mfe;
   return positionValue !== null && positionValue !== undefined ? `${formatCurrency(positionValue)} (position)` : "—";
 }
@@ -1008,7 +1010,7 @@ export function TradesPage() {
                           <th className="px-3 py-2 text-right font-medium">Exit Price</th>
                           <th className="px-3 py-2 text-right font-medium">Fees</th>
                           <th className="px-3 py-2 text-right font-medium">PnL</th>
-                          <th className="px-3 py-2 text-right font-medium" title="Maximum adverse / favorable excursion observed while streaming">MAE / MFE</th>
+                          <th className="px-3 py-2 text-right font-medium" title="Maximum adverse / favorable excursion before fees. ≈ indicates a historical candle estimate.">MAE / MFE</th>
                           <th className="px-3 py-2 text-right font-medium">Trade ID</th>
                         </tr>
                       </thead>
@@ -1027,12 +1029,7 @@ export function TradesPage() {
                               <td className="px-3 py-2 text-left text-slate-300">{formatTimestamp(exitTime)}</td>
                               <td className="px-3 py-2 text-right text-slate-300">{formatDurationCompact(trade.duration_minutes)}</td>
                               <td className="px-3 py-2 text-left font-semibold text-slate-100">
-                                <div className="flex items-center gap-2">
-                                  <span>{getDisplayTradeSymbol(trade.symbol, trade.contract_id)}</span>
-                                  <span className="truncate text-[10px] font-normal text-slate-500">
-                                    {trade.contract_id || getDemoTradeId(trade.order_id)}
-                                  </span>
-                                </div>
+                                {getDisplayTradeSymbol(trade.symbol, trade.contract_id)}
                               </td>
                               <td className="px-3 py-2 text-center">
                                 <Badge variant={tradeDirectionBadgeVariant(trade.side)}>{direction}</Badge>
@@ -1042,7 +1039,7 @@ export function TradesPage() {
                               <td className="px-3 py-2 text-right font-mono text-slate-200">{formatTradePrice(exitPrice)}</td>
                               <td className="px-3 py-2 text-right text-slate-300">{formatFee(trade.fees)}</td>
                               <td className={cn("px-3 py-2 text-right font-semibold", pnlClass(pnlValue))}>{formatPnl(pnlValue)}</td>
-                              <td className="px-3 py-2 text-right text-slate-300" title="Observed stream coverage. Position values cover the entire position, including partial fills; — means unavailable.">
+                              <td className="px-3 py-2 text-right text-slate-300" title={trade.excursion_note || "Observed stream coverage. Position values cover the entire position, including partial fills; — means unavailable."}>
                                 {excursionLabel(trade, "mae")} / {excursionLabel(trade, "mfe")}
                               </td>
                               <td className="px-3 py-2 text-right font-mono text-[11px] text-slate-400">
@@ -1215,8 +1212,8 @@ function TradeFeedCard({ trade }: TradeFeedCardProps) {
         <CompactFeedPill label="Qty" value={formatInteger(trade.size)} />
         <CompactFeedPill label="Entry Px" value={formatTradePrice(entryPrice)} />
         <CompactFeedPill label="Exit Px" value={formatTradePrice(exitPrice)} />
-        <CompactFeedPill label="MAE" value={excursionLabel(trade, "mae")} />
-        <CompactFeedPill label="MFE" value={excursionLabel(trade, "mfe")} />
+        <CompactFeedPill label="MAE" value={excursionLabel(trade, "mae")} title={trade.excursion_note ?? undefined} />
+        <CompactFeedPill label="MFE" value={excursionLabel(trade, "mfe")} title={trade.excursion_note ?? undefined} />
       </div>
     </article>
   );
@@ -1225,11 +1222,12 @@ function TradeFeedCard({ trade }: TradeFeedCardProps) {
 interface CompactFeedPillProps {
   label: string;
   value: string;
+  title?: string;
 }
 
-function CompactFeedPill({ label, value }: CompactFeedPillProps) {
+function CompactFeedPill({ label, value, title }: CompactFeedPillProps) {
   return (
-    <div className="rounded-[13px] border border-slate-800/75 bg-slate-950/55 px-2 py-1.5">
+    <div title={title} className="rounded-[13px] border border-slate-800/75 bg-slate-950/55 px-2 py-1.5">
       <span className="block text-[9px] uppercase tracking-[0.16em] text-slate-500">{label}</span>
       <span className="mt-0.5 block truncate font-medium text-slate-200">{value}</span>
     </div>

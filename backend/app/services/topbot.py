@@ -1,4 +1,4 @@
-"""TopBot's code-owned MNQ preset and account-scoped preparation.
+"""TopBot's MNQ practice preset and account-scoped preparation.
 
 Tune TOPBOT_SETTINGS here; each new run applies these values. Stored configs
 remain the execution/audit snapshots, rather than an operator-facing editor.
@@ -18,8 +18,7 @@ from .bot_service import (
     update_bot_config,
 )
 from .projectx_client import ProjectXClient
-from .topbot_mathematical import HISTORY_BARS, normalize_params, require_live_worker
-from .probabilistic_protocol import protocol
+from .topbot_strategy import normalize_params, require_configured
 
 
 TOPBOT_SETTINGS = {
@@ -28,20 +27,20 @@ TOPBOT_SETTINGS = {
     "strategy_params": normalize_params(),
     "timeframe_unit": "minute",
     "timeframe_unit_number": 5,
-    "lookback_bars": HISTORY_BARS,
+    "lookback_bars": 300,
     "fast_period": 9,
     "slow_period": 21,
     "order_size": 1,
     "max_contracts": 1,
-    "max_daily_loss": protocol()["max_daily_loss_usd"],
+    "max_daily_loss": 250,
     "max_open_position": 1,
-    "max_trades_per_day": protocol()["max_entries_per_day"],
+    "max_trades_per_day": 4,
     "allowed_contracts": ["MNQ", "F.US.MNQ"],
-    "trading_start_time": protocol()["entry_window_et"][0],
-    "trading_end_time": protocol()["entry_window_et"][1],
-    "cooldown_seconds": protocol()["cooldown_seconds"],
-    "max_data_staleness_seconds": 600,
-    "allow_market_depth": False,
+    "trading_start_time": "09:35",
+    "trading_end_time": "15:30",
+    "cooldown_seconds": 60,
+    "max_data_staleness_seconds": 2,
+    "allow_market_depth": True,
 }
 
 
@@ -68,6 +67,8 @@ def prepare_topbot(
     if not re.fullmatch(r"CON\.F\.US\.MNQ\.[A-Z]\d{2}", contract_id):
         raise ValueError("TopBot requires an MNQ contract.")
     if not dry_run:
+        require_configured()
+        from .topbot_mathematical import require_live_worker
         require_live_worker()
     configs = (
         db.query(BotConfig)
@@ -98,6 +99,10 @@ def prepare_topbot(
 
     existing = next((config for config in configs if config.strategy_type == "topbot_adaptive"), None)
     values = deepcopy(TOPBOT_SETTINGS)
+    # This account's explicit restart preference survives Stop / Start and rolls.
+    from .topbot_strategy import selected
+    if existing is not None and selected(existing.strategy_params):
+        values["strategy_params"]["practice_auto_resume"] = existing.strategy_params.get("practice_auto_resume") is True
     values.update(
         account_id=account_id, execution_mode="dry_run" if dry_run else "live",
         enabled=False, contract_id=contract_id,

@@ -65,12 +65,23 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
         return True
     request = dict(entry.raw_request)
     plan = dict(request["timeExit"])
+    is_runner = isinstance(plan.get("runner"), dict)
+    if is_runner:
+        from .topbot_audit import record, scope, client_for
+        client = client_for(client, entry, reason="Position protection, reconciliation, or session exit")
+        record(**scope(entry), kind="management_check", entry_status=entry.status, deadline=plan["deadline"])
 
     def save():
         # Keep the ORM's prior JSON snapshot independent of subsequent nested
         # plan edits, including the cancel audit and final retry/completion.
         entry.raw_request = {**request, "timeExit": deepcopy(plan)}
         db.flush()
+        if is_runner:
+            record(**scope(entry), kind="management_decision", state=plan.get("runner"),
+                   status=plan.get("status"), reason=plan.get("last_error") or plan.get("runner_exit_reason")
+                   or plan.get("outcome") or plan.get("runner", {}).get("decision_reason")
+                   or plan.get("runner", {}).get("management_status") or "Awaiting broker reconciliation",
+                   retry_at=plan.get("retry_at"))
 
     deadline = service._as_utc(datetime.fromisoformat(plan["deadline"]))
     if plan.get("retry_at") and now < service._as_utc(datetime.fromisoformat(plan["retry_at"])):
@@ -117,6 +128,8 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
         save()
         return False
     if not live_execution_environment_enabled() or worker_lease_token is None:
+        if is_runner:
+            record(**scope(entry), kind="management_blocked", reason="Execution environment or worker lease unavailable")
         return False
 
     audit = service._BrokerActionAuditAttempt(raw_request={})
@@ -162,6 +175,9 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
                 raise ValueError("Entry cancellation is unconfirmed; reconcile the original order before closing.")
             _record_entry_order(entry, terminal)
             cancellation["terminal_status"] = terminal["status"]
+            if is_runner:
+                record(**scope(entry), kind="entry_terminal_verified", order_id=entry.provider_order_id,
+                       terminal_status=terminal["status"])
         quantity = service._provider_contract_position_qty(
             client.search_open_positions(account_id=entry.account_id),
             account_id=entry.account_id, contract_id=entry.contract_id,
@@ -174,6 +190,9 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
             filled = service._finite_optional_float(original.get("fillVolume"))
             if filled is None or filled < abs(quantity) or filled > float(entry.size):
                 raise ValueError("Reconciled entry has no verified fill matching this exposure; manual reconciliation is required.")
+        if is_runner and not quantity:
+            from .topbot_runner import initialize
+            initialize(entry, plan, client, now)
         if quantity:
             plan["position_observed_at"] = now.isoformat()
             orders = client.search_open_orders(account_id=entry.account_id)
@@ -198,8 +217,18 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
                     raw_payload={"entry_order_attempt_id": entry.id},
                 ))
             if now < deadline and stops:
-                save()
-                return False
+                flatten_runner = False
+                if is_runner:
+                    from .topbot_runner import manage
+                    flatten_runner = manage(db, entry=entry, plan=plan, client=client, stops=stops,
+                                            worker_lease_token=worker_lease_token, now=now)
+                if not flatten_runner:
+                    save()
+                    return False
+            if is_runner and now >= deadline:
+                plan["runner_exit_reason"] = "session_cutoff"
+            elif is_runner and not stops:
+                plan["runner_exit_reason"] = "missing_protective_stop"
         elif now < deadline and not plan.get("position_observed_at") and entry.status != "cancelled":
             # An accepted market order can still be settling. Zero exposure is
             # not proof that an unobserved entry has already exited.
@@ -210,18 +239,30 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
             db=db, token=worker_lease_token, user_id=entry.user_id, account_id=entry.account_id,
         )
         fence.require()
+        if is_runner:
+            record(**scope(entry), kind="flatten_decision", quantity=quantity,
+                   reason=plan.get("runner_exit_reason") or "Reconcile flat position and remaining orders")
         block = service._execute_verified_reduce_only_flatten(
             client=client, account_id=entry.account_id, contract_id=entry.contract_id,
             order_attempt=audit, before_provider_mutation=fence.require,
         )
         plan["audit"] = audit.raw_response
         if block is None:
+            if is_runner:
+                record(**scope(entry), kind="flat_verified", reason="Broker position flat and remaining working orders cleared")
             observed_flat = now + timedelta(seconds=max(0, perf_counter() - started))
             plan.update(status="complete", outcome="verified_flat", completed_at=observed_flat.isoformat())
             plan["exit_observation_kind"] = "timed_close_verified" if quantity and now >= deadline else "protective_flatten_verified" if quantity else "already_flat_observed"
             plan["exit_drift_seconds"] = (observed_flat - deadline).total_seconds() if quantity and now >= deadline else None
             plan.pop("last_error", None)
             plan.pop("retry_at", None)
+            if is_runner:
+                from .topbot_runner import finalize
+                if not finalize(entry, plan, client, observed_flat):
+                    # Keep the obligation until fills reconcile so a later
+                    # entry cannot contaminate this position's trade statistics.
+                    plan["status"] = "pending"
+                    plan["last_error"] = "Awaiting unambiguous broker exit fills"
         else:
             plan["last_error"] = block.code
     except Exception as exc:
@@ -229,14 +270,17 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
         # re-reads broker state; it never blindly repeats an entry/close order.
         plan["last_error"] = service.sanitize_error(exc, max_length=180)
         plan["audit"] = audit.raw_response
+        if is_runner:
+            plan["status"] = "pending"
     if plan.get("last_error"):
-        plan["retry_at"] = (now + timedelta(seconds=min(300, 5 * 2 ** min(plan["attempts"], 6)))).isoformat()
+        delay = 5 if is_runner else min(300, 5 * 2 ** min(plan["attempts"], 6))
+        plan["retry_at"] = (now + timedelta(seconds=delay)).isoformat()
     if plan.get("last_error") and prior_error is None:
         db.add(BotRiskEvent(
             user_id=entry.user_id, bot_config_id=entry.bot_config_id,
             bot_run_id=entry.bot_run_id, account_id=entry.account_id, severity="critical",
             code="mathematical_time_exit_pending",
-            message="The 15-minute exit is not confirmed. New entries are blocked; check the position in ProjectX.",
+            message="Position management needs reconciliation. New entries are blocked; check the position in ProjectX.",
             raw_payload={"entry_order_attempt_id": entry.id, "deadline": plan["deadline"],
                          "reason": plan["last_error"]},
         ))

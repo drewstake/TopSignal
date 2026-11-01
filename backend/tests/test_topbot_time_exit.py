@@ -13,6 +13,10 @@ from test_bot_execution_safety import (
 
 @pytest.fixture
 def live_entry(db_session, monkeypatch, open_exchange_session):
+    # Build an obligation that predates the reset, then verify exits with the
+    # strategy disabled. This is a synthetic client and SQLite fixture only.
+    from app.services import topbot_strategy
+    monkeypatch.setattr(topbot_strategy, "CONFIGURED", True)
     for key in ("TOPSIGNAL_LIVE_EXECUTION_ENABLED", "TOPSIGNAL_BOT_WORKER_ENABLED",
                 "TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION"):
         monkeypatch.setenv(key, "true")
@@ -29,23 +33,26 @@ def live_entry(db_session, monkeypatch, open_exchange_session):
         "live_routing_allowed": True,
     })
     client = RecordingClient()
-    result = bot_service.start_bot_run(
-        db_session, user_id=USER_A, bot_config_id=config.id, client=client,
-        dry_run=False, confirm_live_order_routing=True, continuous=True,
-    )
-    assert result.order_attempt is None
-    assert result.decision.reason == "worker_lease_required"
-    result = bot_service.evaluate_bot_config(
-        db_session, user_id=USER_A, config=config, account=account, client=client,
-        run=result.run, dry_run=False, confirm_live_order_routing=True,
-        worker_lease_token=lease(db_session),
-    )
-    assert result.order_attempt is not None, [(r.code, r.message) for r in result.risk_events]
-    assert result.order_attempt.status == "submitted", [r.code for r in result.risk_events]
-    assert len(client.place_order_calls) == 1
-    assert client.place_order_calls[0]["stop_loss_bracket"] == {"ticks": 16, "type": 4}
-    assert client.place_order_calls[0]["take_profit_bracket"] == {"ticks": 24, "type": 1}
-    db_session.commit()
+    # Seed an already-submitted legacy obligation. New production entries must
+    # never reopen the retired model merely to exercise exit recovery.
+    from types import SimpleNamespace
+    from app.models import BotRun, BotOrderAttempt
+    from app.services.topbot_time_exit import exit_plan
+    config.enabled = True
+    run = BotRun(user_id=USER_A, bot_config_id=config.id, account_id=config.account_id,
+                 status="running", dry_run=False,
+                 raw_state={"continuous": True, "live_routing_confirmed": True})
+    db_session.add(run); db_session.flush()
+    entry = BotOrderAttempt(user_id=USER_A, bot_config_id=config.id, bot_run_id=run.id,
+        account_id=config.account_id, contract_id=CONTRACT_ID, execution_mode="live", side="BUY",
+        order_type="market", size=1, status="submitted", provider_order_id="provider-order-1",
+        raw_request={"customTag": "topsignal-legacy-test", "timeExit": exit_plan(),
+                     "stopLossBracket": {"ticks":16,"type":4}, "takeProfitBracket":{"ticks":24,"type":1}},
+        raw_response={"accepted":True})
+    db_session.add(entry); db_session.commit()
+    client.place_order(account_id=config.account_id,contract_id=CONTRACT_ID,size=1,side=0)
+    result = SimpleNamespace(config=config, run=run, order_attempt=entry)
+    monkeypatch.setattr(topbot_strategy, "CONFIGURED", False)
     return result, client
 
 

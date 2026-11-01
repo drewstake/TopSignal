@@ -1,4 +1,7 @@
-"""Selected candle-probability strategy for forward Dry Run decisions.
+"""Retired candle-probability adapter, retained for offline research and audits.
+
+TopBot's runtime entry point is now topbot_strategy.py and does not call this
+model. Stored mathematical revisions do not re-enable it.
 
 The research model remains pure. This adapter turns supported proposals into
 ordinary signals, so the existing account, risk and idempotency gates apply.

@@ -127,6 +127,14 @@ def transition_bot_run(
                      account_id=getattr(run, "account_id", None),
                      previous_state=current_status, state=normalized_target,
                      reason_code=reason, persistence="pending_commit")
+    if getattr(run, "user_id", None) is not None and getattr(run, "account_id", None) is not None:
+        try:
+            from .topbot_audit import record
+            record(str(run.user_id), int(run.account_id), "run_transition_requested", run_id=getattr(run,"id",None),
+                   previous_status=current_status, status=normalized_target, reason=run.stop_reason,
+                   persistence="Cloud run state pending commit")
+        except Exception:
+            logging.getLogger(__name__).critical("bot_run_transition_audit_failed")
     return run
 
 

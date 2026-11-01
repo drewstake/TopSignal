@@ -580,6 +580,16 @@ class BotWorkerRuntime:
                            "failure_count": failures,
                            "retry_delay_seconds": max(0, self._retry_not_before_by_run[run_id] - monotonic())},
                 )
+                try:
+                    from .services.topbot_audit import record
+                    with self.session_factory() as audit_db:
+                        audit_run = audit_db.get(BotRun, run_id)
+                        if audit_run:
+                            record(str(audit_run.user_id), audit_run.account_id, "worker_run_error",
+                                   run_id=run_id, error_type=type(exc).__name__, reason=last_error_code,
+                                   retry_seconds=max(0, self._retry_not_before_by_run[run_id]-monotonic()))
+                except Exception:
+                    logger.critical("topbot_audit_write_failed", extra={"bot_run_id": run_id})
         if probe_due:
             self._last_provider_probe = monotonic()
 
@@ -674,6 +684,11 @@ class BotWorkerRuntime:
                     self.settings.max_schedule_jitter_seconds,
                 )
             )
+            from .services.topbot_strategy import selected as dom_selected
+            dom_run = str(config.strategy_type) == "topbot_adaptive" and dom_selected(config.strategy_params)
+            dom_params = dict(config.strategy_params or {})
+            last_dom_episode = state.get("dom_episode_evaluated")
+            resume_pending = state.get("practice_auto_resume_pending") is True
             db.commit()
             if (user_id, account_id) in blocked_accounts:
                 return {"evaluated": False, "provider_ok": False}
@@ -686,6 +701,21 @@ class BotWorkerRuntime:
             self._schedule_provider_retry(user_id, exc)
             raise
         provider_ok = False
+        if resume_pending:
+            if not self._validate_practice_resume(run_id, user_id, account_id, client, now):
+                return {"evaluated": False, "provider_ok": False}
+            provider_ok = True
+            probed_users.add(user_id)
+        if dom_run:
+            from .services.topbot_depth import feed
+            feed.ensure(user_id, archive_contract, client, dom_params.get("imbalance_threshold", .1))
+            depth = feed.snapshot(user_id, archive_contract, now=now)
+            # Record each qualifying episode once. Idle decisions retain the
+            # existing candle cadence rather than writing depth ticks to SQL.
+            evaluation_due = evaluation_due or bool(depth.get("ready") and depth.get("episode_at")
+                and depth["episode_at"] != last_dom_episode
+                and abs(depth.get("imbalance", 0)) >= dom_params.get("imbalance_threshold", .1)
+                and depth.get("persistence_seconds", 0) >= dom_params.get("persistence_seconds", 30))
         if probe_provider and user_id not in probed_users:
             probed_users.add(user_id)
             try:
@@ -755,6 +785,8 @@ class BotWorkerRuntime:
                     else:
                         state["worker_last_scheduled_close_at"] = scheduled_close.isoformat()
                         state["phase"] = "idle"
+                        if dom_run and depth.get("episode_at") and depth.get("persistence_seconds", 0) >= dom_params.get("persistence_seconds", 30):
+                            state["dom_episode_evaluated"] = depth["episode_at"]
                     result.run.raw_state = state
                 committed_context = {
                     "bot_run_id": run_id, "bot_config_id": current_config.id,
@@ -784,6 +816,9 @@ class BotWorkerRuntime:
                 commit_started = monotonic()
                 db.commit()
                 commit_ms = round((monotonic() - commit_started) * 1000, 3)
+                if dom_run:
+                    from .services.topbot_audit import record
+                    record(user_id, account_id, "evaluation_committed", **committed_context)
                 if prepared_archive is not None:
                     archive_started = monotonic()
                     from .services.market_archive import record_decision
@@ -826,6 +861,45 @@ class BotWorkerRuntime:
             return {"evaluated": False, "provider_ok": provider_ok, "lease_lost": True}
         self._clear_provider_retry(user_id)
         return {"evaluated": True, "provider_ok": True, "lease_lost": False}
+
+    def _validate_practice_resume(self, run_id, user_id, account_id, client, now):
+        # Network I/O occurs outside row locks. Unknown/unavailable classification
+        # leaves recovery pending for the normal bounded retry path.
+        from .services.topbot_audit import record
+        record(user_id, account_id, "resume_verification_started", run_id=run_id)
+        try:
+            rows = client.list_accounts(only_active_accounts=False)
+        except Exception as exc:
+            record(user_id, account_id, "resume_verification_error", run_id=run_id, error_type=type(exc).__name__)
+            raise
+        provider = next((row for row in rows if row.get("id") == account_id), None)
+        if (provider is None or provider.get("simulated") is not True
+                or provider.get("can_trade") is not True or provider.get("status") != "ACTIVE"):
+            record(user_id, account_id, "resume_blocked", run_id=run_id, reason="Practice account not verified active and tradable")
+            raise ValueError("practice_auto_resume_account_unverified")
+        with self.session_factory() as db:
+            run = db.get(BotRun, run_id)
+            if run is None:
+                return False
+            config = db.query(BotConfig).filter_by(id=run.bot_config_id).with_for_update().one()
+            run = db.query(BotRun).filter_by(id=run_id).populate_existing().with_for_update().one()
+            # A manual stop/config change while checking the provider always wins.
+            if (not _practice_auto_resume_authorized(run, config)
+                    or str(run.user_id) != user_id or int(run.account_id) != account_id):
+                return False
+            account = db.query(Account).filter_by(user_id=user_id, provider="projectx",
+                                                 external_id=str(account_id)).with_for_update().one_or_none()
+            if account is None or account.trade_data_source != "projectx":
+                raise ValueError("practice_auto_resume_account_unverified")
+            account.provider_simulated = True
+            account.provider_classification_observed_at = datetime.now(timezone.utc)
+            state = dict(run.raw_state)
+            state.pop("practice_auto_resume_pending", None)
+            state["practice_auto_resumed_at"] = now.isoformat()
+            run.raw_state = state
+            db.commit()
+            record(user_id, account_id, "run_resumed", run_id=run_id, reason="Fresh practice classification verified after restart")
+        return True
 
     def _schedule_provider_retry(self, user_id: str, exc: BaseException) -> None:
         if not _is_retryable_provider_failure(exc):
@@ -1495,11 +1569,19 @@ def _active_armed_run_count(db: Session) -> int:
     return sum(_run_disarm_reason(run, config) is None for run, config in rows)
 
 
-def _disarm_recovered_live_runs(db: Session, *, now: datetime) -> None:
-    """Leave stopped live configurations available for explicit rearming.
+def _practice_auto_resume_authorized(run: BotRun, config: BotConfig) -> bool:
+    from .services.topbot_strategy import selected
+    return (not bool(run.dry_run) and _run_disarm_reason(run, config) is None
+            and str(run.user_id) == str(config.user_id) and run.account_id == config.account_id
+            and config.strategy_type == "topbot_adaptive" and selected(config.strategy_params)
+            and config.strategy_params.get("practice_auto_resume") is True)
 
-    A persisted confirmation is an audit record, never authority to route after
-    a restart or lease takeover. Lock configs before runs, matching start/stop,
+
+def _disarm_recovered_live_runs(db: Session, *, now: datetime) -> None:
+    """Keep opted-in TopBot runs pending fresh practice verification; disarm others.
+
+    Ordinary live confirmation alone never grants restart authorization.
+    Lock configs before runs, matching start/stop,
     so clearing the enabled flag cannot race a newer run. Include prior recovery
     stops to repair the enabled flag left behind by earlier worker versions.
     """
@@ -1548,6 +1630,15 @@ def _disarm_recovered_live_runs(db: Session, *, now: datetime) -> None:
             BotRun.id.in_(running_live_ids),
             BotRun.status == "running", BotRun.dry_run.is_(False),
         ).with_for_update().all():
+            if latest_run.id == run.id and _practice_auto_resume_authorized(run, config):
+                from .services.topbot_audit import record
+                record(str(run.user_id), run.account_id, "recovery_requested", run_id=run.id,
+                       config_id=config.id, reason="Worker restart or lease takeover; practice verification pending")
+                state = dict(run.raw_state)
+                state["practice_auto_resume_pending"] = True
+                state["phase"] = "resume_validation"
+                run.raw_state = state
+                continue
             transition_bot_run(run, "stopped", reason=recovery_reason, now=now)
             state = dict(run.raw_state) if isinstance(run.raw_state, dict) else {}
             state["live_routing_confirmed"] = False

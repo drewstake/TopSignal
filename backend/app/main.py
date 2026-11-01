@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -439,6 +440,9 @@ async def app_lifespan(_: FastAPI):
     except Exception as exc:
         _log_trade_import_preview_cleanup_failure(exc)
     cleanup_task = asyncio.create_task(_trade_import_preview_cleanup_loop())
+    from .services.historical_trade_excursions import ExcursionRecorder
+    excursion_recorder = ExcursionRecorder(SessionLocal, _projectx_client_for_user_without_open_transaction)
+    excursion_recorder.start()
     try:
         _start_streaming_runtime_if_enabled()
         _bot_worker_runtime = BotWorkerRuntime(
@@ -448,6 +452,9 @@ async def app_lifespan(_: FastAPI):
         await _bot_worker_runtime.start()
         yield
     finally:
+        recorder_stopped = await asyncio.to_thread(excursion_recorder.stop)
+        if not recorder_stopped:
+            logger.error("trade_excursion_recorder_shutdown_incomplete")
         try:
             if _bot_worker_runtime is not None:
                 if await _bot_worker_runtime.stop() is False:
@@ -468,7 +475,7 @@ async def app_lifespan(_: FastAPI):
                 drained = await asyncio.to_thread(market_observation_writer.shutdown, timeout_seconds=5.0)
                 if not drained:
                     logger.warning("market_observation_shutdown_incomplete")
-                if _bot_worker_runtime is None:
+                if _bot_worker_runtime is None and recorder_stopped:
                     engine.dispose()
 
 
@@ -3266,6 +3273,33 @@ def _validate_bot_start_admission(db: Session, body: BotStartIn) -> None:
             )
 
 
+@app.get("/api/accounts/{account_id}/topbot/statistics")
+def get_topbot_statistics(account_id: int, db: Session = Depends(get_db)):
+    from .services.topbot_runner import statistics
+    user_id = get_authenticated_user_id()
+    try:
+        _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="account_not_found") from exc
+    return statistics(db, user_id=user_id, account_id=account_id)
+
+
+@app.get("/api/accounts/{account_id}/topbot/audit")
+def get_topbot_audit(account_id: int, before: int | None = Query(default=None, ge=1), db: Session = Depends(get_db)):
+    import sqlite3
+    from .services.topbot_audit import page
+    user_id = get_authenticated_user_id()
+    try:
+        _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="account_not_found") from exc
+    db.rollback()
+    try:
+        return page(user_id, account_id, before=before)
+    except (OSError, sqlite3.Error) as exc:
+        raise HTTPException(status_code=503, detail="audit_storage_unavailable") from exc
+
+
 @app.post("/api/accounts/{account_id}/topbot/start", response_model=BotEvaluationOut)
 def start_account_topbot(
     account_id: int,
@@ -3285,6 +3319,8 @@ def start_account_topbot(
         account = _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
         if account.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT:
             raise HTTPException(status_code=409, detail="csv_import_accounts_cannot_run_bots")
+        from .services.topbot_strategy import require_configured
+        require_configured()
         if not payload.dry_run:
             from .services.topbot_mathematical import require_live_worker
             require_live_worker()
@@ -4419,7 +4455,14 @@ def list_projectx_account_trades(
             )
             for row in rows
         ]
-        return attach_trade_excursions(db, user_id=user_id, account_id=account_id, trades=serialized)
+        serialized = attach_trade_excursions(db, user_id=user_id, account_id=account_id, trades=serialized)
+        from .services.historical_trade_excursions import attach_cached
+        try:
+            return attach_cached(user_id, account_id, serialized, lifecycles=lifecycle_by_trade_id,
+                                 imported_ids={row.id for row in rows if row.entry_timestamp is not None})
+        except (OSError, sqlite3.Error):
+            logger.warning("trade_excursion_local_cache_unavailable")
+            return serialized
     except ProjectXClientError as exc:
         raise _to_http_exception(exc) from exc
 

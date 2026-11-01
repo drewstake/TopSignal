@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 
 import type { BotChartViewState } from "./botChartViewState";
 
-export type BotChartConnectionState = "live" | "delayed" | "stale" | "unavailable";
+export type BotChartConnectionState = "live" | "delayed" | "stale" | "unavailable" | "closed";
 export type BotChartBarState = "partial" | "closed" | "none";
 
 export interface BotChartStatusProps {
@@ -33,7 +33,7 @@ export function BotChartStatus({
         ? "Delayed / polling"
         : connection === "stale"
           ? "Stale price feed"
-          : "Live unavailable";
+          : connection === "closed" ? "Market closed" : "Live unavailable";
   const connectionTone =
     connection === "live"
       ? "border-app-positive/35 bg-app-positive/10 text-app-positive"

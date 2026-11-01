@@ -39,10 +39,8 @@ def test_preset_is_mnq_only_and_reused_with_code_defaults(db):
     assert config.strategy_type == "topbot_adaptive"
     assert config.trading_start_time == "09:35"
     assert config.trading_end_time == "15:30"
-    assert config.strategy_params["revision"] == "mnq_bayesian_payoff_v1"
-    assert config.strategy_params["model_version"] == "bayesian_cells_v1"
-    assert config.strategy_params["exit_policy"] == "bracket_or_15_minute_horizon"
-    assert config.strategy_params["routing_policy"] == "experimental_practice"
+    from app.services.topbot_strategy import DEFAULTS
+    assert config.strategy_params == DEFAULTS
     assert "ema_period" not in config.strategy_params
     assert "source_strategies" not in config.strategy_params
     assert _is_contract_allowed(config, contract_id="CON.F.US.MNQ.U26", symbol="F.US.MNQ")
@@ -57,11 +55,21 @@ def test_preset_is_mnq_only_and_reused_with_code_defaults(db):
     assert config.id == original_id
     assert config.contract_id == "CON.F.US.MNQ.Z26"
     assert config.order_size == config.max_contracts == 1
-    assert config.strategy_params["minimum_training_paths"] == 300
+    assert config.strategy_params == DEFAULTS
     assert "minimum_score" not in config.strategy_params
     assert config.execution_mode == "dry_run"
     assert config.enabled is False
     assert db.query(BotConfig).count() == 1
+
+
+def test_restart_preference_survives_new_run_preparation(db):
+    config = prepare_topbot(db, user_id=USER, account_id=101, dry_run=True, contract_id="CON.F.US.MNQ.U26")
+    config.strategy_params = {**config.strategy_params, "practice_auto_resume": True}
+    db.commit()
+    updated = prepare_topbot(db, user_id=USER, account_id=101, dry_run=True, contract_id="CON.F.US.MNQ.Z26")
+    assert updated.strategy_params["practice_auto_resume"] is True
+    other = prepare_topbot(db, user_id=USER, account_id=102, dry_run=True, contract_id="CON.F.US.MNQ.Z26")
+    assert other.strategy_params["practice_auto_resume"] is False
 
 
 def test_account_and_user_isolation(db):
@@ -72,6 +80,30 @@ def test_account_and_user_isolation(db):
     with pytest.raises(LookupError):
         prepare_topbot(db, user_id="another-user", account_id=101, dry_run=True, contract_id="CON.F.US.MNQ.U26")
     assert first.execution_mode == "dry_run"
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_saved_bot_cannot_restart_even_with_old_strategy_params(db, dry_run):
+    from app.services.bot_service import start_bot_run
+    config = prepare_topbot(db, user_id=USER, account_id=101, dry_run=True, contract_id="CON.F.US.MNQ.U26")
+    config.strategy_params = {"revision": "mnq_bayesian_payoff_v1"}
+    db.commit()
+    with pytest.raises(ValueError, match="no strategy configured"):
+        start_bot_run(db, user_id=USER, bot_config_id=config.id, client=object(), dry_run=dry_run,
+                      continuous=True, confirm_live_order_routing=not dry_run)
+    assert config.enabled is False
+    assert db.query(BotRun).count() == 0
+
+
+def test_blank_strategy_rejects_entries_but_preserves_protective_exit_path():
+    from app.services.bot_service import SignalResult, _strategy_protection_block
+    config = BotConfig(strategy_type="topbot_adaptive", strategy_params={"revision": "mnq_bayesian_payoff_v1"})
+    for action in ("BUY", "SELL"):
+        signal = SignalResult(action, "old model", None, 25000, {"live_routing_allowed": True})
+        block = _strategy_protection_block(None, config=config, signal=signal, contract_id="CON.F.US.MNQ.U26", symbol="MNQ")
+        assert block.code == "strategy_not_configured"
+    exit_signal = SignalResult("SELL", "protective exit", None, 25000, {"signal_category": "exit"})
+    assert _strategy_protection_block(None, config=config, signal=exit_signal, contract_id="CON.F.US.MNQ.U26", symbol="MNQ") is None
 
 
 @pytest.mark.parametrize("running_row", [False, True])
@@ -95,30 +127,20 @@ def test_start_schema_requires_explicit_live_confirmation_and_forbids_tuning():
     assert TopBotStartIn(dry_run=False, confirm_live_order_routing=True).dry_run is False
 
 
-def test_account_start_reuses_existing_continuous_execution_checks(monkeypatch):
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_account_start_rejects_blank_strategy_before_provider_or_config_changes(monkeypatch, dry_run):
+    from app.services import topbot_strategy
+    monkeypatch.setattr(topbot_strategy, "CONFIGURED", False)
     monkeypatch.setattr(main, "get_authenticated_user_id", lambda: USER)
-    calls = []
-    monkeypatch.setattr(main, "_require_owned_projectx_account", lambda *args, **kwargs: type("Account", (), {"trade_data_source": "projectx"})())
-    monkeypatch.setattr(main, "_projectx_client_for_user", lambda *args, **kwargs: object())
-    monkeypatch.setattr(main, "resolve_topbot_contract", lambda client: "CON.F.US.MNQ.U26")
-    monkeypatch.setattr(main, "_validate_bot_start_admission", lambda db, body: calls.append("admission"))
-
-    def prepare(db, **kwargs):
-        calls.append(("prepare", kwargs))
-        return type("Config", (), {"id": 42})()
-
-    def start(config_id, body, db):
-        calls.append(("start", config_id, body))
-        return {"status": "held"}
-
-    monkeypatch.setattr(main, "prepare_topbot", prepare)
-    monkeypatch.setattr(main, "start_trading_bot", start)
-    assert main.start_account_topbot(101, TopBotStartIn(), db=type("Db", (), {"commit": lambda self: None})()) == {"status": "held"}
-    assert calls[0] == "admission"
-    assert calls[1][1] == {"user_id": USER, "account_id": 101, "dry_run": True, "contract_id": "CON.F.US.MNQ.U26"}
-    assert calls[2][1] == 42
-    assert calls[2][2].continuous is True
-    assert calls[2][2].confirm_live_order_routing is False
+    monkeypatch.setattr(main, "_require_owned_projectx_account", lambda *a, **k: type("Account", (), {"trade_data_source": "projectx"})())
+    monkeypatch.setattr(main, "_validate_bot_start_admission", lambda *a: None)
+    monkeypatch.setattr(main, "_projectx_client_for_user", lambda *a, **k: pytest.fail("no provider access"))
+    monkeypatch.setattr(main, "prepare_topbot", lambda *a, **k: pytest.fail("no config writes"))
+    with pytest.raises(HTTPException) as error:
+        main.start_account_topbot(101, TopBotStartIn(dry_run=dry_run, confirm_live_order_routing=not dry_run),
+                                 db=type("Db", (), {"rollback": lambda self: None})())
+    assert error.value.status_code == 409
+    assert "no strategy configured" in error.value.detail
 
 
 def test_unavailable_worker_does_not_prepare_a_config(monkeypatch):

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { botsApi } from "../../lib/api";
 import type { AccountInfo, BotConfig } from "../../lib/types";
 import { BotProjectXAccountNotice, BotProviderWorkspaceBoundary } from "./BotAccountGate";
-import { BotPage } from "./BotPage";
+import { BotWorkspace as BotPage } from "./BotWorkspace";
 import {
   filterBotConfigsByAccount,
   getBotProviderAccountId,
