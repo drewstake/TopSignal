@@ -11431,6 +11431,13 @@ def evaluate_risk_gates(
     from .topbot_strategy import selected as dom_selected
     if str(config.strategy_type) == "topbot_adaptive" and dom_selected(config.strategy_params) and not position_reducing:
         from .topbot_depth import feed, utc
+        from .topbot_session import runner_entry_boundary_reason
+        boundary = runner_entry_boundary_reason(now, symbol=symbol or "MNQ")
+        if boundary:
+            additional_blocks.append(RiskBlock(
+                code=boundary,
+                message="New entries pause at TopBot's daily flatten cutoff until the next trading session.",
+            ))
         depth = feed.snapshot(user_id, contract_id, now=now)
         signal_depth = (decision.raw_payload or {}).get("depth_entry", {}) if decision is not None else {}
         latest_candle_age_seconds = (now-utc(depth["observed_at"])).total_seconds() if depth.get("ready") else None

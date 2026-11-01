@@ -14,8 +14,12 @@ observed book is not claimed to be a certified complete exchange snapshot.
 Unchanged qualifying episodes use a stable order-idempotency key. A later entry
 requires a new qualifying episode; the previous position must reconcile flat.
 
-One MNQ contract only. Entries retain the 09:35–15:30 New York session,
-60-second cooldown, four-entry daily maximum and $250 daily loss budget. Existing
+One MNQ contract only. Entries are eligible throughout all open trading sessions,
+including overnight; the saved window is 00:00–23:59 New York. The DOM execution
+path already bypassed the old 09:35–15:30 preset, which was misleading in the UI.
+New entries pause at the runner's daily flatten cutoff (normally 16:08 New York,
+earlier on early closes) until the next session opens. Exchange closure checks,
+60-second cooldown, four-entry daily maximum and $250 daily loss budget remain. Existing
 provider classification, account ownership, daily realized/unrealized P&L,
 working-order and deployment-lease checks remain mandatory. No funded-account
 routing. No averaging down, reversal, or adoption of a pre-existing position.

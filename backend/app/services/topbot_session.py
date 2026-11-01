@@ -1,4 +1,4 @@
-"""Shared entry/exit boundaries for the registered MNQ regular-session rule."""
+"""Session boundaries for TopBot runners and the legacy regular-session rule."""
 from datetime import datetime, time, timedelta, timezone
 
 from .trading_day import TRADING_TZ, as_utc, futures_holiday_schedule, futures_session_is_open, trading_day_date
@@ -15,6 +15,17 @@ def flat_deadline(now: datetime, *, symbol: str = "MNQ") -> datetime:
     if holiday and holiday.full_close:
         close = time(0)
     return datetime.combine(day, min(close, TOPSTEP_FLAT_TIME), TRADING_TZ).astimezone(timezone.utc)
+
+
+def runner_entry_boundary_reason(now: datetime, *, symbol: str = "MNQ") -> str | None:
+    """Allow overnight entries, but never open a runner already due to flatten.
+
+    Exchange closures are checked independently by the common risk gate. The
+    runner has no fixed holding horizon or regular-hours research restriction.
+    """
+    if as_utc(now) >= flat_deadline(now, symbol=symbol) - CLOSE_BUFFER:
+        return "entry_too_close_to_session_close"
+    return None
 
 
 def entry_boundary_reason(now: datetime, *, decision_at: datetime | None = None,

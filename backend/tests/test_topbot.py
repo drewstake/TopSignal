@@ -37,8 +37,8 @@ def test_preset_is_mnq_only_and_reused_with_code_defaults(db):
     assert config.enabled is False
     assert config.execution_mode == "dry_run"
     assert config.strategy_type == "topbot_adaptive"
-    assert config.trading_start_time == "09:35"
-    assert config.trading_end_time == "15:30"
+    assert config.trading_start_time == "00:00"
+    assert config.trading_end_time == "23:59"
     from app.services.topbot_strategy import DEFAULTS
     assert config.strategy_params == DEFAULTS
     assert "ema_period" not in config.strategy_params
