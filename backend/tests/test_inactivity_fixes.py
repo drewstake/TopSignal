@@ -79,7 +79,10 @@ def test_readiness_on_holds_and_signals_durable_admission_and_no_broker_mutation
     client = RecordingClient()
     result = bot_service.evaluate_bot_config(db_session, user_id=USER_A, config=config, account=account,
                                              client=client, run=run, dry_run=True)
-    assert result.status == ('dry_run_attempt' if action == 'BUY' else 'held')
+    assert result.status == ('risk_blocked' if action == 'BUY' else 'held')
+    if action == 'BUY':
+        assert 'strategy_not_configured' in [risk.code for risk in result.risk_events]
+        assert result.order_attempt is None
     explanation = result.analysis['bot_decision']
     assert explanation['simulation_eligibility']['status'] == 'eligible'
     assert explanation['broker_readiness']['status'] == 'blocked'
@@ -89,10 +92,10 @@ def test_readiness_on_holds_and_signals_durable_admission_and_no_broker_mutation
     report = paper.report(USER_A, config.account_id, config.id, now=AT)
     assert report['evaluations'] == 1
     assert report['recent'][0]['details']['paper_readiness']['status'] == 'eligible'
-    assert bool(report['account']['position']) == (action == 'BUY')
+    assert report['account']['position'] is None
     assert report['comparison']['cohorts'][0]['accounts']['always_long']['position']
     if action == 'BUY':
-        assert report['account']['position']['next_bar'] == (CLOSE+BAR).isoformat()
+        # A retired proposal must not become a fill when later bars arrive.
         future = [SimpleNamespace(**{**vars(rows[-1]), 'candle_timestamp': CLOSE+i*BAR,
                          'open_price':20000., 'high_price':20001., 'low_price':19999., 'close_price':20000.}) for i in range(3)]
         for _ in range(2):
@@ -100,11 +103,13 @@ def test_readiness_on_holds_and_signals_durable_admission_and_no_broker_mutation
                          run=run.id, candles=future, forecast={}, action='HOLD', status='held', reason='maturity',
                          risk_codes=[], now=CLOSE+3*BAR)
         report = paper.report(USER_A, config.account_id, config.id, now=CLOSE+3*BAR)
-        assert report['account']['trades'] == 1 and report['account']['net_usd'] == pytest.approx(-3.22)
+        assert report['account']['trades'] == 0 and report['account']['net_usd'] == 0
         with sqlite3.connect(paper.location(USER_A, config.account_id, config.id)) as db:
-            assert db.execute('SELECT count(*) FROM trades').fetchone()[0] == 1
-        assert db_session.query(BotOrderAttempt).count() == 1
-    assert config.enabled and run.status == 'running' and account.account_state == state
+            assert db.execute('SELECT count(*) FROM trades').fetchone()[0] == 0
+        assert db_session.query(BotOrderAttempt).count() == 0
+    assert config.enabled == (action != 'BUY')
+    assert run.status == ('blocked' if action == 'BUY' else 'running')
+    assert account.account_state == state
     assert client.place_order_calls == client.cancel_order_calls == client.close_position_calls == []
 
 
@@ -136,7 +141,7 @@ def test_missing_evidence_never_infers_eligibility_from_empty_risk_codes(tmp_pat
     assert all(a['position'] is None for a in result['comparison']['cohorts'][0]['accounts'].values())
 
 
-def test_broker_visibility_change_during_fetch_does_not_disarm_simulation(db_session, monkeypatch):
+def test_retired_signal_blocks_independently_of_broker_visibility(db_session, monkeypatch):
     account, config, run, rows, f = setup(db_session, monkeypatch, state='ACTIVE')
     original=bot_service.fetch_candles_and_evaluate_strategy
     def fetch(*args,**kwargs):
@@ -145,7 +150,8 @@ def test_broker_visibility_change_during_fetch_does_not_disarm_simulation(db_ses
     monkeypatch.setattr(bot_service,'fetch_candles_and_evaluate_strategy',fetch)
     client=RecordingClient()
     result=bot_service.evaluate_bot_config(db_session,user_id=USER_A,config=config,account=account,client=client,run=run,dry_run=True)
-    assert result.status=='dry_run_attempt' and config.enabled and run.status=='running'
+    assert result.status=='risk_blocked' and not config.enabled and run.status=='blocked'
+    assert 'strategy_not_configured' in [risk.code for risk in result.risk_events]
     assert client.place_order_calls==[]
 
 

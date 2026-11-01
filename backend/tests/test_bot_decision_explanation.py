@@ -196,7 +196,8 @@ def test_optional_explanation_failure_preserves_routing_result_and_api_contract(
 
 def test_topbot_does_not_stitch_different_contracts():
     from app.services.topbot_mathematical import evaluate
-    started = datetime(2026, 9, 1, 13, 30, tzinfo=timezone.utc)
+    decision_at = datetime(2026, 9, 2, 13, 35, tzinfo=timezone.utc)
+    started = decision_at - timedelta(minutes=5*200)
     rows = []
     for index in range(200):
         row = candle(started+timedelta(minutes=5*index))
@@ -205,7 +206,7 @@ def test_topbot_does_not_stitch_different_contracts():
         row.user_id = USER_A
         rows.append(row)
     assert len(bot_service._closed_candles(rows)) == 1
-    result = evaluate(rows, contract_id="CON.F.US.MNQ.U26", as_of=started+timedelta(minutes=5))
+    result = evaluate(rows, contract_id="CON.F.US.MNQ.U26", as_of=decision_at)
     assert result.action == "HOLD"
     assert "contract does not match" in result.reason
 

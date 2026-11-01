@@ -32,3 +32,31 @@ hashed against the committed revision before activation. Activation retains the
 prior release for rollback and checks API, frontend, worker and readiness health.
 Private manifests and activation evidence remain outside Git in the deployment
 staging directory.
+
+## Follow-up: remaining test failures resolved
+
+The complete backend suite now passes with its normal command from `backend`:
+`python -m pytest -q` reports **2,827 passed, 9 skipped, 8 subtests passed**.
+Eight skips require a disposable PostgreSQL database; one requires an optional
+workspace capture. No failing tests were skipped or marked expected failures.
+The frontend suite reports **1,359 passed**; repository-wide frontend lint and
+the TypeScript/Vite production build also pass.
+
+Corrections:
+
+- Restrict pytest discovery to source tests, and use short, unique temporary
+  directories on Windows so hashed model paths stay within the path limit.
+- Assert that retired mathematical proposals block the run and never become
+  paper fills. Seed historical paper records directly when testing delivery-roll
+  handling for positions that existed before retirement.
+- Keep the registered opening-drive replay's original settings independent of
+  the current practice preset, with a regression check for preset changes.
+- Use a closed candle during an eligible session in the contract-isolation test.
+  Treat out-of-policy stops as rejected Python forecasts and HOLD in FX replay,
+  while retaining numerical parity checks for supported stops.
+- Isolate the recorder's shutdown flag in the queue-capacity test.
+- Reset history loading state in request handlers and correct research/replay
+  effect dependencies. A refresh regression verifies stale results disappear
+  while the replacement request is pending.
+
+These fixes do not change TopBot's practice entry or risk-management rules.

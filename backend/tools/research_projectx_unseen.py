@@ -204,8 +204,15 @@ def complete_five_minute_bars(minutes):
 
 def make_config(fixture):
     from app.models import BotConfig
-    from app.services.topbot import TOPBOT_SETTINGS
-    settings = deepcopy(TOPBOT_SETTINGS)
+    # This registered replay predates the live DOM preset. Its economics must
+    # not change when an operator edits TopBot's current practice strategy.
+    settings = dict(symbol="MNQ", strategy_type="topbot_adaptive",
+        timeframe_unit="minute", timeframe_unit_number=5, lookback_bars=200,
+        fast_period=9, slow_period=21, order_size=1, max_contracts=1,
+        max_daily_loss=250, max_open_position=1, max_trades_per_day=3,
+        allowed_contracts=["MNQ", "F.US.MNQ"], trading_start_time="09:35",
+        trading_end_time="16:00", cooldown_seconds=300,
+        max_data_staleness_seconds=600, allow_market_depth=False)
     settings.update(fixture.get_settings("opening_drive"))
     settings["lookback_bars"] = max(int(settings["lookback_bars"]), int(fixture.required_warmup_bars("opening_drive")))
     require(all(settings[k] == 1 for k in ("order_size", "max_contracts", "max_open_position")), "one contract required")

@@ -98,9 +98,11 @@ export function Replay({ data, initialAt, onBookmark }: { data: WindowResult; in
   const [range,setRange]=useState<[number,number]>([+new Date(data.start)/1000,+new Date(data.end)/1000]);
   const [playing,setPlaying]=useState(false),[speed,setSpeed]=useState(4),[window,setWindow]=useState(5);
   const [note,setNote]=useState(''),[saved,setSaved]=useState(false),[saving,setSaving]=useState(false);
+  const playhead=useRef(selectedTime);
+  useEffect(()=>{playhead.current=selectedTime;},[selectedTime]);
   useEffect(()=>{
     if(!playing)return;
-    const start=performance.now(), at=selectedTime;
+    const start=performance.now(), at=playhead.current;
     const timer=setInterval(()=>{const t=at+(performance.now()-start)/1000*speed;
       if(t>=points.at(-1)!.time){setPlaying(false);setSelectedTime(points.at(-1)!.time);}else setSelectedTime(t);
     },100);return()=>clearInterval(timer);

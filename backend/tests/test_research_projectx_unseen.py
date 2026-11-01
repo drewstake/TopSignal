@@ -104,6 +104,16 @@ def test_predeclared_same_source_warmup_has_exactly_200_bars_at_first_decision()
     assert sum(bar.nominal_close_time <= adapter.START for bar in bars) == 8
 
 
+def test_registered_replay_is_independent_of_live_topbot_preset(monkeypatch):
+    from app.services import topbot
+    from tools.fixtures import topbot_research
+    monkeypatch.setattr(topbot, "TOPBOT_SETTINGS", {"lookback_bars": 9999, "order_size": 50})
+    config = adapter.make_config(topbot_research)
+    assert (config.lookback_bars, config.order_size, config.max_contracts) == (200, 1, 1)
+    assert (config.max_daily_loss, config.max_trades_per_day, config.cooldown_seconds) == (250, 3, 300)
+    assert config.strategy_params == topbot_research.get_settings("opening_drive")["strategy_params"]
+
+
 @pytest.mark.parametrize("slip", [1,2,4])
 def test_synthetic_engine_first_decision_clock_fees_and_fresh_state(slip):
     minutes = synthetic_first_session()

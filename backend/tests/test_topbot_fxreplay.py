@@ -21,11 +21,16 @@ def check_parity(model, payload, directory):
             stop = max(4, np.ceil(sigma * np.sqrt(3) / .25) * .25)
             values = (0, 1 if cell & 2 else -1, 1 if cell & 1 else -1, 0)
             f = Features(values, stop, sigma, model.trained_through + timedelta(days=1), "unused")
-            expected = model.forecast(f)
+            if stop > 25:
+                with pytest.raises(ValueError, match="training policy"):
+                    model.forecast(f)
+                expected = None
+            else:
+                expected = model.forecast(f)
             cases.append({"f": {"sigma": sigma, "values": values, "stop": stop,
                                  "target": np.ceil(stop * 1.5 / .25) * .25, "cell": cell},
                           "expected": expected,
-                          "action": expected["research_action"] if stop <= 25 else "HOLD"})
+                          "action": expected["research_action"] if expected else "HOLD"})
     feature_cases = []
     for i in range(20):
         candles = []
@@ -62,6 +67,8 @@ for (const c of data.cases) {
   const result = topbotForecast(data.model, c.f);
   assert.equal(result.action, c.action === 'NO_TRADE' ? 'HOLD' : c.action);
   if (result.action === 'BUY') buys++; else if (result.action === 'SELL') sells++; else holds++;
+  // Unsupported stops must HOLD; Python intentionally refuses their forecast.
+  if (c.expected === null) continue;
   for (const action of ['BUY', 'SELL']) {
     near(result[action].mean, c.expected.forecasts[action].expected_net_usd);
     near(result[action].lower, c.expected.forecasts[action].lower_utility_usd);

@@ -44,3 +44,18 @@ it("does not show a late response after the account view is replaced",async()=>{
   await act(async()=>resolve(data));
   expect(screen.queryByText("Source: peteamdpc")).toBeNull();
 });
+
+it("clears the previous window while a refresh is pending",async()=>{
+  vi.mocked(requestJson).mockResolvedValueOnce(data);
+  render(<HistoryView accountId={123}/>);
+  await screen.findByText("Source: peteamdpc");
+  let resolve:(value:BookHistory)=>void=()=>{};
+  vi.mocked(requestJson).mockImplementationOnce(()=>new Promise(r=>{resolve=r;}));
+  fireEvent.click(screen.getByRole("button",{name:"Refresh"}));
+  expect(screen.getByRole("status").textContent).toContain("Reading saved order book");
+  expect(screen.queryByText("Source: peteamdpc")).toBeNull();
+  expect(screen.getByRole("button",{name:"Refresh"})).toHaveProperty("disabled",true);
+  await act(async()=>resolve({...data,source:"Refreshed recording"}));
+  expect(await screen.findByText("Source: Refreshed recording")).toBeTruthy();
+  expect(screen.getByRole("button",{name:"Refresh"})).toHaveProperty("disabled",false);
+});

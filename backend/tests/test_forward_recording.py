@@ -198,12 +198,15 @@ def test_prior_outcome_resolution_preserves_new_recording_receipt(tmp_path, monk
 
 @pytest.mark.parametrize('trailing_partial', [False, True])
 def test_service_roll_marks_existing_paper_and_comparisons_unknown(db_session, monkeypatch, trailing_partial):
-    account, config, run, rows, _ = setup(db_session, monkeypatch)
+    account, config, run, rows, forecast = setup(db_session, monkeypatch)
     client = RecordingClient()
-    result = bot_service.evaluate_bot_config(db_session, user_id=USER_A, config=config, account=account,
-                                             client=client, run=run, dry_run=True)
-    prepared = paper.prepare_committed_record(result); db_session.commit()
-    paper.record_committed(prepared=prepared)
+    # Seed an already-approved historical record: retirement prevents creating
+    # this position today, but an existing paper position must still roll safely.
+    paper.ingest(owner=USER_A, account=config.account_id, config=config.id, contract=config.contract_id,
+                 run=run.id, candles=rows, forecast=forecast, action='BUY', status='dry_run_attempt',
+                 reason='Historical approved paper fixture', risk_codes=[], now=AT,
+                 simulation_eligibility=eligible(CLOSE, owner=USER_A, account=config.account_id,
+                                                  config=config.id, contract=config.contract_id))
     before = paper.report(USER_A, config.account_id, config.id, now=AT)
     assert before['account']['position']
     replacement = 'CON.F.US.MNQ.H27'

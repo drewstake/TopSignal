@@ -26,7 +26,7 @@ export function ResearchPage() {
 
 export function ResearchView({accountId}:{accountId:number}) {
   const research=useResearch(accountId);
-  const {job,notebook,busy,error,request,report}=research;
+  const {job,notebook,busy,error,request,report,open}=research;
   const [coverage,setCoverage]=useState<Coverage|null>(null);
   const [from,setFrom]=useState(''),[until,setUntil]=useState(''),[scope,setScope]=useState('10');
   const [ticks,setTicks]=useState('1,5,10,20');
@@ -41,8 +41,8 @@ export function ResearchView({accountId}:{accountId:number}) {
   const mode=location.pathname==='/event-study'?'study':location.pathname==='/research-notebook'?'notebook':'observe';
   const restored=useRef<string|null>(null);
   const currentAt=useRef<string|null>(null);
-  useEffect(()=>{let active=true;void request<Coverage>('/coverage').then(c=>{if(!active)return;setCoverage(c);if(c.latest&&!at&&!jobId){const end=new Date(c.latest);setUntil(localInput(end.toISOString()));setFrom(localInput(new Date(+end-300000).toISOString()));}}).catch(report);return()=>{active=false;};},[request,report]);
-  useEffect(()=>{if(jobId)void research.open(jobId);},[jobId,research.open]);
+  useEffect(()=>{let active=true;void request<Coverage>('/coverage').then(c=>{if(!active)return;setCoverage(c);if(c.latest&&!at&&!jobId){const end=new Date(c.latest);setUntil(localInput(end.toISOString()));setFrom(localInput(new Date(+end-300000).toISOString()));}}).catch(report);return()=>{active=false;};},[request,report,at,jobId]);
+  useEffect(()=>{if(jobId)void open(jobId);},[jobId,open]);
   useEffect(()=>{
     if(!at||currentAt.current===at)return;currentAt.current=at;
     const t=new Date(at);if(!Number.isFinite(+t))return;
