@@ -6,6 +6,7 @@ param(
     [int]$Port = 8000,
     [int]$FrontendPort = 4173,
     [int]$HealthIntervalSeconds = 10,
+    [int]$ReadinessIntervalSeconds = 60,
     [int]$HealthFailureThreshold = 3,
     [int]$WorkerHealthStartupGraceSeconds = 120,
     [int]$WorkerHealthRestartAfterSeconds = 300,
@@ -121,6 +122,9 @@ if ($Port -eq $FrontendPort) {
 }
 if ($HealthIntervalSeconds -lt 5 -or $HealthFailureThreshold -lt 1) {
     throw "Health interval must be at least 5 seconds and failure threshold must be positive."
+}
+if ($ReadinessIntervalSeconds -lt $HealthIntervalSeconds) {
+    throw "Readiness interval must be at least the process-health interval."
 }
 if ($WorkerHealthStartupGraceSeconds -lt 30) {
     throw "Worker-health startup grace must be at least 30 seconds."
@@ -475,6 +479,7 @@ try {
             $workerHealthFailureStartedAt = $null
             $lastWorkerHealthIndicator = [DateTimeOffset]::MinValue
             $lastReadinessIndicator = [DateTimeOffset]::MinValue
+            $lastReadinessProbe = [DateTimeOffset]::MinValue
             $workerHealthGraceEndsAt = $startedAt.AddSeconds($WorkerHealthStartupGraceSeconds)
 
             while ($true) {
@@ -548,9 +553,14 @@ try {
                     }
                 }
 
-                if (-not (Test-Endpoint $readyUrl) -and ($now - $lastReadinessIndicator).TotalSeconds -ge 60) {
-                    Write-SupervisorLog "Readiness is degraded; inspect authenticated runtime status and application logs. Readiness is an operator signal and does not itself trigger restart."
-                    $lastReadinessIndicator = $now
+                # Database-backed readiness is an operator signal. Fast process
+                # and worker liveness checks above remain on their own cadence.
+                if (($now - $lastReadinessProbe).TotalSeconds -ge $ReadinessIntervalSeconds) {
+                    $lastReadinessProbe = $now
+                    if (-not (Test-Endpoint $readyUrl) -and ($now - $lastReadinessIndicator).TotalSeconds -ge 60) {
+                        Write-SupervisorLog "Readiness is degraded; inspect authenticated runtime status and application logs. Readiness is an operator signal and does not itself trigger restart."
+                        $lastReadinessIndicator = $now
+                    }
                 }
             }
         }
