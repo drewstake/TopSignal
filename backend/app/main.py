@@ -3292,6 +3292,13 @@ def _validate_bot_start_admission(db: Session, body: BotStartIn) -> None:
             )
 
 
+@app.get("/api/topbot/depth")
+def get_topbot_depth(response: Response, contract_id: str = Query(min_length=1, max_length=120)):
+    from .services.topbot_depth import feed
+    response.headers["Cache-Control"] = "no-store"
+    return feed.observation(get_authenticated_user_id(), contract_id)
+
+
 @app.get("/api/accounts/{account_id}/topbot/statistics")
 def get_topbot_statistics(account_id: int, db: Session = Depends(get_db)):
     from .services.topbot_runner import statistics

@@ -2465,6 +2465,9 @@ async function runBacktestRequest(
 }
 
 export const botsApi = {
+  getTopBotDepth: (contractId: string, options: RequestSignalOptions = {}) =>
+    requestJson<import("../pages/bot/TopBotLiveImbalance").TopBotDepthObservation>("/api/topbot/depth", {
+      query: { contract_id: contractId }, signal: options.signal }),
   getTopBotStatistics: (accountId: number, options: RequestSignalOptions = {}) =>
     requestJson<import("../pages/bot/TopBotStrategyPanel").TopBotStatistics>(`/api/accounts/${accountId}/topbot/statistics`, { signal: options.signal }),
   getTopBotAudit: (accountId: number, before: number | null = null, options: RequestSignalOptions = {}) =>

@@ -10,6 +10,7 @@ import { TopBotBiasStrip } from "./TopBotBiasStrip";
 import { TopBotActivity, TopBotEvaluation, TopBotThinking } from "./TopBotEvaluation";
 import { TopBotPosition } from "./TopBotPosition";
 import { TopBotStrategyPanel } from "./TopBotStrategyPanel";
+import { TopBotLiveImbalance } from "./TopBotLiveImbalance";
 import { useTopBotMonitor } from "./useTopBotMonitor";
 import { usePageVisibility } from "./usePageVisibility";
 import { timeLabel } from "./topBotPresentation";
@@ -74,7 +75,12 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
       <aside className="topbot-book-shell"><Depth key={market?.contract_id ?? "none"} contractId={market?.contract_id} symbol={market?.symbol} demoMode={demoMode} /></aside>
     </div>
     <div className="topbot-insight-grid">
-      <TopBotThinking activity={strategyActivity} status={monitor.status} snapshot={matchingSnapshot} now={now} error={monitor.error} strategyUnconfigured={strategyUnconfigured} />
+      <TopBotThinking activity={strategyActivity} status={monitor.status} snapshot={matchingSnapshot} now={now} error={monitor.error} strategyUnconfigured={strategyUnconfigured}
+        liveImbalance={monitor.bot?.strategy_params?.revision === "dom_contrarian_v1" && <TopBotLiveImbalance
+          key={`${accountId}:${monitor.bot.id}:${monitor.bot.contract_id}`} contractId={monitor.bot.contract_id}
+          threshold={Number(monitor.bot.strategy_params.imbalance_threshold) || .1}
+          requiredSeconds={Number(monitor.bot.strategy_params.persistence_seconds) || 30}
+          enabled={!demoMode && !pending && !unavailable && accountId != null} />} />
       <TopBotEvaluation activity={strategyActivity} now={now} failed={Boolean(monitor.error)} strategyUnconfigured={strategyUnconfigured} />
     </div>
     <TopBotActivity activity={monitor.activity} />
