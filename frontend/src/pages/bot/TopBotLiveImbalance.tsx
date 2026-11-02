@@ -85,8 +85,8 @@ export function TopBotLiveImbalance({ contractId, threshold, requiredSeconds, en
     </div>
     <div className="topbot-imbalance-labels"><span>Ask-heavy / long</span><span>0%</span><span>Bid-heavy / short</span></div>
     <dl className="topbot-imbalance-totals">
-      <div><dt>Bid contracts</dt><dd>{contracts(depth?.bid_total)}</dd><small>{depth?.bid_levels ?? 0} levels · up to 100</small></div>
-      <div><dt>Ask contracts</dt><dd>{contracts(depth?.ask_total)}</dd><small>{depth?.ask_levels ?? 0} levels · up to 100</small></div>
+      <div><dt>Bid contracts</dt><dd>{contracts(depth?.bid_total)}</dd><small>{depth?.bid_levels ?? 0} levels (up to 100)</small></div>
+      <div><dt>Ask contracts</dt><dd>{contracts(depth?.ask_total)}</dd><small>{depth?.ask_levels ?? 0} levels (up to 100)</small></div>
       <div><dt>Time above threshold</dt><dd>{fresh && depth?.ready ? `${sustained.toFixed(1)} / ${requiredSeconds}s` : "â€”"}</dd><small>{qualified ? sustained >= requiredSeconds ? "Duration met Â· other entry checks still apply" : "Building persistence" : "Not qualifying"}</small></div>
     </dl>
     <p className="topbot-muted">{!fresh ? "Waiting for fresh worker depth. Entry qualification is not confirmed."

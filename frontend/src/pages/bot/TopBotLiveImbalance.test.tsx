@@ -44,7 +44,7 @@ it("shows a qualified 99-level book without requiring 100 levels", async () => {
   vi.spyOn(botsApi, "getTopBotDepth").mockResolvedValue(reading({ ready: true, bid_levels: 99, imbalance: -.2, persistence_seconds: 31 }));
   render(<TopBotLiveImbalance {...props} />); await flush();
   expect(screen.getByText("-20.0%")).toBeTruthy();
-  expect(screen.getByText("99 levels · up to 100")).toBeTruthy();
+  expect(screen.getByText("99 levels (up to 100)")).toBeTruthy();
   expect(screen.getByText("Live")).toBeTruthy();
   expect(screen.getByText("31.0 / 30s")).toBeTruthy();
   expect(screen.getByText(/Duration met/)).toBeTruthy();
