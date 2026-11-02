@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { localAuthStatus, signInLocally } from "../lib/localAuth";
+import { continueOnThisDevice, localAuthStatus, signInLocally, type LocalAuthStatus } from "../lib/localAuth";
 
 export function LocalSignIn() {
-  const [status, setStatus] = useState<{ enabled: boolean; needs_setup: boolean } | null>(null);
+  const [status, setStatus] = useState<LocalAuthStatus | null>(null);
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [code, setCode] = useState("");
@@ -18,6 +18,17 @@ export function LocalSignIn() {
   if (status?.enabled === false) return null;
   if (!status) return <div className="text-sm text-app-muted">
     {error ? <><p role="alert">{error}</p><button type="button" className="mt-2 underline" onClick={() => setRetry((v) => v + 1)}>Retry local sign-in</button></> : "Connecting to local sign-in…"}
+  </div>;
+  if (status.mode === "trusted_device") return <div className="space-y-4">
+    <p className="text-sm leading-5 text-app-muted">Use your existing accounts and live trading features through this computer’s worker connection. No password or setup code needed.</p>
+    {error && <p role="alert" className="text-sm text-app-negative">{error}</p>}
+    <button type="button" disabled={busy} className="w-full rounded-lg bg-app-accent px-4 py-2 text-sm font-medium text-app-accent-contrast disabled:opacity-50" onClick={() => {
+      setBusy(true); setError("");
+      void continueOnThisDevice().catch((err: unknown) => setError(err instanceof Error ? err.message : "Could not connect"))
+        .finally(() => setBusy(false));
+    }}>{busy ? "Connecting…" : "Continue on this device"}</button>
+    <p className="text-xs leading-5 text-app-muted">Your session survives refreshes for up to 12 hours. Signing out does not stop TopBot.</p>
+    <div className="border-t border-app-border pt-3 text-center text-xs text-app-muted">Or use your Google account</div>
   </div>;
   const setup = status.needs_setup;
   const inputClass = "mt-1 w-full rounded-lg border border-app-border bg-app-bg px-3 py-2 text-app-text focus:outline-none focus:ring-2 focus:ring-app-accent/40";

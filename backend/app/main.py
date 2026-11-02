@@ -639,6 +639,12 @@ async def api_auth_middleware(request: Request, call_next):
     else:
         user = get_authenticated_user_or_default()
 
+    if user is not None and user.claims.get("amr") == ["trusted_device"]:
+        local_error = anonymous_request_error(request, _origin_is_allowed)
+        if local_error:
+            response = JSONResponse(status_code=403, content={"detail": local_error})
+            return _with_timing_headers(_apply_cors_headers(request, response))
+
     context_token = bind_authenticated_user(user)
     try:
         response = await call_next(request)

@@ -15,6 +15,8 @@ import sqlite3
 from threading import BoundedSemaphore
 import time
 from uuid import UUID
+from urllib.parse import urlsplit
+from ipaddress import ip_address
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -33,6 +35,24 @@ def enabled() -> bool:
     return bool(os.getenv("TOPSIGNAL_LOCAL_AUTH_DB", "").strip())
 
 
+def mode() -> str:
+    value = os.getenv("TOPSIGNAL_LOCAL_AUTH_MODE", "password").strip()
+    if value not in {"password", "trusted_device"}:
+        raise RuntimeError("Invalid TOPSIGNAL_LOCAL_AUTH_MODE")
+    return value
+
+
+def _local_origin(origin: str) -> bool:
+    try:
+        parsed = urlsplit(origin)
+        return bool(parsed.scheme in {"http", "https"} and not parsed.username
+                    and not parsed.password and not parsed.path and not parsed.query
+                    and not parsed.fragment and parsed.hostname
+                    and (parsed.hostname == "localhost" or ip_address(parsed.hostname).is_loopback))
+    except ValueError:
+        return False
+
+
 @contextmanager
 def connect():
     path = Path(os.environ.get("TOPSIGNAL_LOCAL_AUTH_DB", ""))
@@ -48,6 +68,10 @@ def connect():
 
 
 def validate_configuration() -> None:
+    if mode() == "trusted_device":
+        from .auth import auth_required
+        if not enabled() or not auth_required():
+            raise RuntimeError("Trusted-device access requires an owner store and AUTH_REQUIRED=true")
     if not enabled():
         return
     with connect() as db:
@@ -119,11 +143,11 @@ def _reserve_attempt(db) -> sqlite3.Row:
     return owner
 
 
-def _session(db, owner) -> dict:
+def _session(db, owner, *, method: str = "password") -> dict:
     now = int(time.time())
     jti = secrets.token_urlsafe(32)
     claims = dict(sub=owner["user_id"], email=owner["email"], iss=ISSUER,
-                  aud=AUDIENCE, iat=now, exp=now + SESSION_SECONDS, jti=jti)
+                  aud=AUDIENCE, iat=now, exp=now + SESSION_SECONDS, jti=jti, amr=[method])
     token = jwt.encode(claims, owner["signing_key"], algorithm="HS256", headers={"kid": KID})
     # Only expired authentication sessions are pruned; audit events are retained.
     db.execute("DELETE FROM sessions WHERE expires<=?", (now,))
@@ -142,6 +166,8 @@ def verify(token: str) -> dict:
             claims = jwt.decode(token, owner["signing_key"], algorithms=["HS256"],
                                 issuer=ISSUER, audience=AUDIENCE,
                                 options={"require": ["sub", "iat", "exp", "jti", "iss", "aud"]})
+            if claims.get("amr") == ["trusted_device"] and mode() != "trusted_device":
+                raise AuthError("trusted_device_access_disabled")
             if (claims["sub"] != owner["user_id"] or not isinstance(claims["jti"], str)
                     or not db.execute("SELECT 1 FROM sessions WHERE id=? AND expires>?",
                                       (_digest(claims["jti"]), int(time.time()))).fetchone()):
@@ -167,6 +193,10 @@ class SetupInput(LoginInput):
     setup_code: str = Field(min_length=1, max_length=128)
 
 
+class DeviceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
 def make_router(origin_allowed) -> APIRouter:
     def boundary(request: Request, response: Response):
         response.headers["Cache-Control"] = "no-store"
@@ -181,10 +211,26 @@ def make_router(origin_allowed) -> APIRouter:
     def status():
         with connect() as db:
             owner = db.execute("SELECT password_hash FROM owner WHERE id=1").fetchone()
-            return dict(enabled=True, needs_setup=owner["password_hash"] is None)
+            return dict(enabled=True, mode=mode(), needs_setup=mode() == "password" and owner["password_hash"] is None)
+
+    @router.post("/device")
+    def device(body: DeviceInput, request: Request):
+        if mode() != "trusted_device":
+            raise HTTPException(404, "Trusted-device access is not enabled")
+        # Explicit Origin + non-simple header prevent drive-by form/navigation
+        # requests. Loopback peer/Host and the origin allowlist are checked above.
+        if (not _local_origin(request.headers.get("origin", ""))
+                or request.headers.get("x-topsignal-local-access") != "device"):
+            raise HTTPException(403, "Use Continue on this device from the local app")
+        with connect() as db:
+            owner = db.execute("SELECT * FROM owner WHERE id=1").fetchone()
+            _event(db, "trusted_device_sign_in")
+            return _session(db, owner, method="trusted_device")
 
     @router.post("/setup")
     def setup(body: SetupInput):
+        if mode() != "password":
+            raise HTTPException(404, "Password sign-in is not enabled")
         with connect() as db:
             owner = _reserve_attempt(db)
             if (owner["password_hash"] is not None or not owner["setup_hash"]
@@ -204,6 +250,8 @@ def make_router(origin_allowed) -> APIRouter:
 
     @router.post("/login")
     def login(body: LoginInput):
+        if mode() != "password":
+            raise HTTPException(404, "Password sign-in is not enabled")
         with connect() as db:
             owner = _reserve_attempt(db)
             if owner["password_hash"] is None:
