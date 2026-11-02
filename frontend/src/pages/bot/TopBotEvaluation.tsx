@@ -1,13 +1,14 @@
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import type { BotActivity } from "../../lib/types";
 import type { MonitorStatus } from "./useTopBotMonitor";
 import { buildMarketContext, candleEndMs, type BotMarketSnapshot } from "./botMarketContext";
 import { buildMarketExplanation } from "./botMarketExplanation";
 import { decisionIsStale, latestDecision, priceLabel, recordedEvents, timeLabel } from "./topBotPresentation";
 
-export function TopBotThinking({ activity, status, snapshot, now, error, strategyUnconfigured = false }: {
+export function TopBotThinking({ activity, status, snapshot, now, error, strategyUnconfigured = false, liveImbalance }: {
   activity: BotActivity | null; status: MonitorStatus; snapshot: BotMarketSnapshot | null; now: number; error: string | null;
   strategyUnconfigured?: boolean;
+  liveImbalance?: ReactNode;
 }) {
   const decision = latestDecision(activity);
   const context = useMemo(() => buildMarketContext(snapshot, now), [snapshot, now]);
@@ -16,7 +17,9 @@ export function TopBotThinking({ activity, status, snapshot, now, error, strateg
   const state = status.color !== "green" ? status.color === "red" ? "Inactive" : "Status uncertain"
     : !decision || stale ? "Waiting for an update" : decision.action === "HOLD" ? "Waiting for a setup" : "Signal recorded";
   return <section className="topbot-panel topbot-thinking" aria-label="What TopBot sees">
-    <div className="topbot-section-heading"><h2>What TopBot sees</h2><span className="topbot-eyebrow">RECORDED RATIONALE</span></div>
+    <div className="topbot-section-heading"><h2>What TopBot sees</h2></div>
+    {liveImbalance}
+    <div className="topbot-context-divider"><span>RECORDED RATIONALE</span></div>
     <div className="topbot-thinking-state"><span className={`topbot-dot topbot-dot-${status.color}`} /><strong>{state}</strong></div>
     <p className="topbot-main-reason">{strategyUnconfigured ? "No strategy configured. Ready for your entry, exit, and risk rules." : decision?.reason ?? "No bot evaluation has been recorded for this account yet."}</p>
     <p className="topbot-muted">{decision ? `${stale || error ? "Stale record" : "Last decision"} · ${timeLabel(decision.created_at)}` : "Market data remains available while TopBot is inactive."}</p>

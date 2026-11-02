@@ -155,6 +155,19 @@ class DepthFeed:
             stream = self.streams.get((str(owner),contract))
             return stream["state"].snapshot(now or datetime.now(timezone.utc)) if stream else {"ready": False, "reason": "Waiting for worker depth subscription"}
 
+    def observation(self, owner, contract, *, now=None):
+        """Read-only UI telemetry from the same state used by entry checks.
+
+        Never creates/touches a subscription or reads the application database.
+        In particular, a browser viewer must not keep an inactive feed alive.
+        """
+        with self.lock:
+            at = now or datetime.now(timezone.utc)
+            stream = self.streams.get((str(owner), contract))
+            return {"contract_id": contract, "as_of": at.isoformat(),
+                    "threshold": stream["state"].threshold if stream else None,
+                    "depth": self.snapshot(owner, contract, now=at)}
+
     def track(self, owner, contract, entry_id, initial, end_at=None):
         with self.lock:
             stream = self.streams.get((str(owner),contract))

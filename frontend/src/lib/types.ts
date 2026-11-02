@@ -1247,6 +1247,8 @@ export interface BotAnalysis {
 }
 
 export interface BotStrategyParams {
+  imbalance_threshold?: number;
+  persistence_seconds?: number;
   revision?: string;
   model_version?: string;
   routing_policy?: string;
