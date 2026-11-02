@@ -6,6 +6,33 @@ cloud user, disable API authentication, or alter worker routing or strategy.
 Google remains available. Account data and credentials still use the configured
 application database; this feature does not remove a Supabase quota restriction.
 
+## Continue on this device
+
+For a single-owner worker reached only through loopback and an authenticated SSH
+tunnel, set `TOPSIGNAL_LOCAL_AUTH_MODE=trusted_device` in its protected environment
+file. Keep the existing `TOPSIGNAL_LOCAL_AUTH_DB`, `AUTH_REQUIRED=true` and frontend
+`VITE_LOCAL_AUTH_ENABLED=true`. The page then shows **Continue on this device**
+instead of password/setup fields. No password or setup-code entry is required.
+
+The trust boundary is access to the local machine/tunnel, not a hardware device
+fingerprint. Anyone or any process with access to that trusted connection can
+sign in as the configured owner. A repository clone has neither that connection
+nor the protected owner store, signing key or broker credentials. Do not use this
+mode on shared/untrusted computers, expose it through a public proxy, or forward
+its ports on a non-loopback interface.
+
+The session-creation endpoint requires a loopback peer and Host, an explicitly
+allowed loopback browser Origin, and a custom request header. It rejects browser
+supplied owner IDs. The issued JWT retains the same owner, expiry and server-side
+revocation checks as password login; API requests using it also enforce the local
+connection boundary. The worker records the sign-in without logging the token.
+Google remains optional, and signing out does not stop the worker.
+
+Password/setup endpoints are disabled in trusted-device mode. Existing password
+hashes and audit records are preserved. Setting the mode back to `password`
+immediately rejects trusted-device sessions on that worker. A fresh deployment
+defaults to password mode; invalid mode values fail startup.
+
 ## Provisioning
 
 1. On the worker, create a protected directory outside the release tree. On

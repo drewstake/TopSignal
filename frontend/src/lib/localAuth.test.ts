@@ -9,6 +9,21 @@ describe("local authentication", () => {
   beforeEach(() => { vi.resetModules(); sessionStorage.clear(); vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
+  it("exchanges only the trusted connection for a session, then restores and logs out", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(nextSession()))));
+    vi.stubGlobal("fetch", fetchMock);
+    const local = await import("./localAuth");
+    await local.continueOnThisDevice();
+    expect(fetchMock.mock.calls[0][0].pathname).toBe("/auth/local/device");
+    expect(fetchMock.mock.calls[0][1].headers["X-TopSignal-Local-Access"]).toBe("device");
+    expect(fetchMock.mock.calls[0][1].body).toBe("{}");
+    const apiAuth = await import("./supabase");
+    expect(await apiAuth.getAccessToken()).toBe(token);
+    expect((await local.restoreLocalSession())?.user.id).toBe("existing-owner");
+    await local.signOutLocally();
+    expect(await apiAuth.getAccessToken()).toBeNull();
+  });
+
   it("prefers local sign-in on a configured fresh tab without contacting Google", async () => {
     vi.stubEnv("VITE_LOCAL_AUTH_ENABLED", "true");
     const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);

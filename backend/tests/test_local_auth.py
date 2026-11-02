@@ -19,6 +19,7 @@ def local(tmp_path, monkeypatch):
     path = tmp_path / "auth.sqlite3"
     code = local_auth.provision(path, OWNER, "owner@example.test")
     monkeypatch.setenv("TOPSIGNAL_LOCAL_AUTH_DB", str(path))
+    monkeypatch.setenv("TOPSIGNAL_LOCAL_AUTH_MODE", "password")
     app = FastAPI()
     app.include_router(local_auth.make_router(lambda origin: origin == "http://127.0.0.1:4173"))
     with TestClient(app, base_url="http://127.0.0.1:8000", client=("127.0.0.1", 1234)) as client:
@@ -125,3 +126,87 @@ def test_real_api_middleware_preserves_owner_and_requires_auth(local, monkeypatc
     assert response.status_code == 200, response.text
     assert response.json()["user_id"] == OWNER
     client.close()
+
+
+DEVICE_HEADERS = {"Origin": "http://127.0.0.1:4173", "X-TopSignal-Local-Access": "device"}
+
+
+def test_device_access_is_opt_in_and_preserves_owner_without_password(local, monkeypatch):
+    client, _, path = local
+    assert client.post("/auth/local/device", json={}, headers=DEVICE_HEADERS).status_code == 404
+    monkeypatch.setenv("TOPSIGNAL_LOCAL_AUTH_MODE", "trusted_device")
+    assert client.get("/auth/local/status").json() == dict(enabled=True, mode="trusted_device", needs_setup=False)
+    response = client.post("/auth/local/device", json={}, headers=DEVICE_HEADERS)
+    assert response.status_code == 200
+    token = response.json()["access_token"]
+    assert authenticate_request_token(token).user_id == OWNER
+    assert authenticate_request_token(token).claims["amr"] == ["trusted_device"]
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT password_hash FROM owner").fetchone()[0] is None
+        assert db.execute("SELECT count(*) FROM events WHERE kind='trusted_device_sign_in'").fetchone()[0] == 1
+    assert client.post("/auth/local/login", json={"password": PASSWORD}).status_code == 404
+    assert client.post("/auth/local/setup", json={"password": PASSWORD,"setup_code":local[1]}).status_code == 404
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.get("/auth/local/session", headers=headers).status_code == 200
+    assert client.post("/auth/local/logout", headers=headers).status_code == 200
+    assert client.get("/auth/local/session", headers=headers).status_code == 401
+
+
+@pytest.mark.parametrize("headers", [
+    {}, {"Origin": "http://127.0.0.1:4173"}, {"X-TopSignal-Local-Access": "device"},
+    {**DEVICE_HEADERS, "Origin": "https://hostile.example"},
+    {**DEVICE_HEADERS, "Origin": "null"}, {**DEVICE_HEADERS, "Host": "hostile.example"},
+    {**DEVICE_HEADERS, "Origin": "https://hostile.example", "X-Forwarded-Host": "localhost"},
+])
+def test_device_rejects_cross_origin_or_simple_requests(local, monkeypatch, headers):
+    monkeypatch.setenv("TOPSIGNAL_LOCAL_AUTH_MODE", "trusted_device")
+    assert local[0].post("/auth/local/device", json={}, headers=headers).status_code == 403
+
+
+def test_device_never_accepts_browser_selected_owner(local, monkeypatch):
+    monkeypatch.setenv("TOPSIGNAL_LOCAL_AUTH_MODE", "trusted_device")
+    assert local[0].post("/auth/local/device", json={"user_id": OWNER}, headers=DEVICE_HEADERS).status_code == 422
+
+
+def test_device_rejects_remote_peer_even_with_forwarded_loopback(local, monkeypatch):
+    monkeypatch.setenv("TOPSIGNAL_LOCAL_AUTH_MODE", "trusted_device")
+    app = FastAPI()
+    app.include_router(local_auth.make_router(lambda origin: True))
+    with TestClient(app, base_url="http://localhost", client=("192.0.2.1", 1234)) as client:
+        assert client.post("/auth/local/device", json={}, headers={**DEVICE_HEADERS,"X-Forwarded-For":"127.0.0.1"}).status_code == 403
+
+
+def test_device_rejects_public_origin_even_if_cors_allows_it(local, monkeypatch):
+    monkeypatch.setenv("TOPSIGNAL_LOCAL_AUTH_MODE", "trusted_device")
+    app = FastAPI()
+    app.include_router(local_auth.make_router(lambda origin: True))
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 1234)) as client:
+        assert client.post("/auth/local/device", json={}, headers={**DEVICE_HEADERS,"Origin":"https://public.example"}).status_code == 403
+
+
+def test_device_session_api_boundary_and_disabling_mode(local, monkeypatch):
+    from app.main import app
+    monkeypatch.setenv("TOPSIGNAL_LOCAL_AUTH_MODE", "trusted_device")
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    token = local[0].post("/auth/local/device", json={}, headers=DEVICE_HEADERS).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    client = TestClient(app, base_url="http://127.0.0.1:8000", client=("127.0.0.1", 1234))
+    assert client.get("/api/auth/me", headers=headers).json()["user_id"] == OWNER
+    assert client.get("/api/auth/me", headers={**headers,"Origin":"https://hostile.example"}).status_code == 403
+    client.close()
+    remote = TestClient(app, base_url="http://localhost", client=("192.0.2.1", 1234))
+    assert remote.get("/api/auth/me", headers=headers).status_code == 403
+    remote.close()
+    monkeypatch.setenv("TOPSIGNAL_LOCAL_AUTH_MODE", "password")
+    with pytest.raises(AuthError): authenticate_request_token(token)
+
+
+def test_device_configuration_fails_closed(local, monkeypatch):
+    monkeypatch.setenv("TOPSIGNAL_LOCAL_AUTH_MODE", "typo")
+    with pytest.raises(RuntimeError): local_auth.validate_configuration()
+    monkeypatch.setenv("TOPSIGNAL_LOCAL_AUTH_MODE", "trusted_device")
+    monkeypatch.setenv("AUTH_REQUIRED", "false")
+    with pytest.raises(RuntimeError): local_auth.validate_configuration()
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    monkeypatch.delenv("TOPSIGNAL_LOCAL_AUTH_DB")
+    with pytest.raises(RuntimeError): local_auth.validate_configuration()
