@@ -40,13 +40,14 @@ it("shows the contrarian long side and only the worker-observed persistence", as
   expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBeNull();
 });
 
-it("displays partial totals but never qualifies an incomplete book", async () => {
-  vi.spyOn(botsApi, "getTopBotDepth").mockResolvedValue(reading({ ready: false, bid_levels: 99, imbalance: .2, persistence_seconds: 31 }));
+it("shows a qualified 99-level book without requiring 100 levels", async () => {
+  vi.spyOn(botsApi, "getTopBotDepth").mockResolvedValue(reading({ ready: true, bid_levels: 99, imbalance: -.2, persistence_seconds: 31 }));
   render(<TopBotLiveImbalance {...props} />); await flush();
-  expect(screen.getByText("+20.0%")).toBeTruthy();
-  expect(screen.getByText("99/100 levels")).toBeTruthy();
-  expect(screen.getByText("Partial book")).toBeTruthy();
-  expect(screen.queryByText(/Duration met/)).toBeNull();
+  expect(screen.getByText("-20.0%")).toBeTruthy();
+  expect(screen.getByText("99 levels · up to 100")).toBeTruthy();
+  expect(screen.getByText("Live")).toBeTruthy();
+  expect(screen.getByText("31.0 / 30s")).toBeTruthy();
+  expect(screen.getByText(/Duration met/)).toBeTruthy();
 });
 
 it("polls once per second without overlapping or invoking evaluations", async () => {
@@ -88,12 +89,12 @@ it("does not label a failed refresh live", async () => {
   expect(screen.queryByText(/Duration met/)).toBeNull();
 });
 
-it("explains a brief depth reset even after both sides recover to 100 levels", async () => {
-  vi.spyOn(botsApi, "getTopBotDepth").mockResolvedValue(reading({ imbalance: .159, persistence_seconds: .1,
-    qualification_reset: { reason: "insufficient_levels", at: new Date().toISOString(), bid_levels: 100, ask_levels: 99, imbalance: .15 } }));
+it("still explains threshold resets while allowing fewer than 100 levels", async () => {
+  vi.spyOn(botsApi, "getTopBotDepth").mockResolvedValue(reading({ imbalance: .159, bid_levels: 99, persistence_seconds: .1,
+    qualification_reset: { reason: "below_threshold", at: new Date().toISOString(), bid_levels: 99, ask_levels: 99, imbalance: .09 } }));
   render(<TopBotLiveImbalance {...props} />); await flush();
-  expect(screen.getByText("Continuous entry qualification")).toBeTruthy();
+  expect(screen.getByText("Time above threshold")).toBeTruthy();
   expect(screen.getByText("0.1 / 30s")).toBeTruthy();
-  expect(screen.getByText(/Last timer reset: Depth dropped to 100 bid \/ 99 ask levels/)).toBeTruthy();
-  expect(screen.getByText(/Even a brief drop to 99 levels resets this timer/)).toBeTruthy();
+  expect(screen.getByText(/Last timer reset: Imbalance fell below the threshold/)).toBeTruthy();
+  expect(screen.getByText(/Level-count changes alone do not reset the timer/)).toBeTruthy();
 });

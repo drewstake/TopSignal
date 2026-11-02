@@ -54,34 +54,56 @@ def test_depth_persistence_freshness_gaps_and_top100():
     assert not state.snapshot(now)["ready"]
 
 
-def test_insufficient_depth_never_qualifies():
+@pytest.mark.parametrize("bid_heavy", [True, False])
+def test_level_count_changes_preserve_30_second_imbalance_and_allow_entry(bid_heavy):
     now = datetime.now(timezone.utc)
     state = DepthState(CONTRACT_ID)
-    state.apply(snapshot_event(now, bids=99), now)
-    assert not state.snapshot(now)["ready"]
+    for i in range(31):
+        at = now + timedelta(seconds=i)
+        event = snapshot_event(at, i+1, bids=99 if i % 2 == 0 else 100, asks=100 if i % 2 == 0 else 99)
+        if not bid_heavy:
+            for row in event["data"]["asks"]: row["size"] = 25
+        state.apply(event, at)
+    result = state.snapshot(at)
+    assert result["ready"] and result["bid_levels"] == 99
+    assert result["persistence_seconds"] == 30
+    assert result["qualification_reset"] is None
+    signal = strategy.evaluate([], strategy_params=strategy.DEFAULTS, observation=result, now=at)
+    assert signal.action == ("SELL" if bid_heavy else "BUY")
 
 
-def test_brief_level_removal_resets_qualification_and_keeps_reason_after_recovery():
+def test_level_deletion_and_replacement_do_not_restart_imbalance():
     now = datetime.now(timezone.utc)
     state = DepthState(CONTRACT_ID)
     for i in range(11):
         at = now + timedelta(seconds=i)
         state.apply(snapshot_event(at, i+1), at)
-    assert state.snapshot(at)["persistence_seconds"] == 10
     removed_at = at + timedelta(milliseconds=10)
     state.apply({"event": "update", "data": {"contract_id": CONTRACT_ID, "sequence": 12,
         "timestamp": removed_at.isoformat(), "side": "ask", "price": 20025, "size": 0}}, removed_at)
-    partial = state.snapshot(removed_at)
-    assert partial["imbalance"] > .1 and partial["persistence_seconds"] == 0
-    assert partial["qualification_reset"]["reason"] == "insufficient_levels"
-    assert partial["qualification_reset"]["ask_levels"] == 99
+    result = state.snapshot(removed_at)
+    assert result["ready"] and result["ask_levels"] == 99
+    assert result["persistence_seconds"] == 10.01
+    assert result["qualification_reset"] is None
     recovered_at = removed_at + timedelta(milliseconds=10)
     state.apply(snapshot_event(recovered_at, 13), recovered_at)
-    later = recovered_at + timedelta(seconds=1)
-    state.apply(snapshot_event(later, 14), later)
-    recovered = state.snapshot(later)
-    assert recovered["ready"] and recovered["persistence_seconds"] == 1
-    assert recovered["qualification_reset"] == partial["qualification_reset"]
+    assert state.snapshot(recovered_at)["persistence_seconds"] == 10.02
+
+
+@pytest.mark.parametrize("invalid", ["missing_bid", "missing_ask", "crossed"])
+def test_invalid_book_still_resets_imbalance_and_blocks_entry(invalid):
+    now = datetime.now(timezone.utc)
+    state = DepthState(CONTRACT_ID)
+    state.apply(snapshot_event(now), now)
+    at = now + timedelta(seconds=1)
+    event = snapshot_event(at, 2)
+    if invalid == "crossed": event["data"]["bids"][0]["price"] = 20001
+    else: event["data"]["bids" if invalid == "missing_bid" else "asks"] = []
+    state.apply(event, at)
+    result = state.snapshot(at)
+    assert not result["ready"] and result["qualification_reset"]["reason"] == "invalid_book"
+    assert state.episode_at is None
+    assert strategy.evaluate([], observation=result, now=at).action == "HOLD"
 
 
 @pytest.mark.parametrize("cause", ["below_threshold", "side_changed", "sequence_gap", "depth_gap", "provider_reset", "disconnected"])
@@ -121,6 +143,7 @@ def dom_entry(db_session, monkeypatch, open_exchange_session):
     # The real cutoff and overnight behavior are covered by the risk-gate tests below.
     monkeypatch.setattr("app.services.topbot_session.flat_deadline", lambda *a, **kw: now + timedelta(hours=1))
     observed = observation(now, -.2)
+    observed.update(bid_levels=99, ask_levels=99)
     monkeypatch.setattr(feed,"snapshot",lambda *a,**kw:observed)
     account, config = _add_account_and_config(db_session, enabled=False, execution_mode="live")
     config.strategy_type = "topbot_adaptive"

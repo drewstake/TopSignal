@@ -70,7 +70,7 @@ export function TopBotLiveImbalance({ contractId, threshold, requiredSeconds, en
   const sustained = qualified && finite(depth?.persistence_seconds) ? Math.max(0, depth.persistence_seconds) : 0;
   const side = !hasValue || value === 0 ? "Balanced" : value > 0 ? "Bid-heavy → short setup" : "Ask-heavy → long setup";
   const state = !enabled ? "Unavailable" : !visible ? "Paused while tab is hidden" : error ? "Connection interrupted"
-    : !sample ? "Connecting to worker…" : !fresh ? "Stale / unavailable" : !depth?.ready ? "Partial book" : "Live";
+    : !sample ? "Connecting to worker…" : !fresh ? "Stale / unavailable" : !depth?.ready ? "Depth unavailable" : "Live";
   return <div className="topbot-live-imbalance" aria-label="Live DOM imbalance">
     <div className="topbot-section-heading"><h3>Live DOM imbalance</h3><span>{state}</span></div>
     <div className="topbot-imbalance-reading">
@@ -85,15 +85,15 @@ export function TopBotLiveImbalance({ contractId, threshold, requiredSeconds, en
     </div>
     <div className="topbot-imbalance-labels"><span>Ask-heavy / long</span><span>0%</span><span>Bid-heavy / short</span></div>
     <dl className="topbot-imbalance-totals">
-      <div><dt>Bid contracts</dt><dd>{contracts(depth?.bid_total)}</dd><small>{depth?.bid_levels ?? 0}/100 levels</small></div>
-      <div><dt>Ask contracts</dt><dd>{contracts(depth?.ask_total)}</dd><small>{depth?.ask_levels ?? 0}/100 levels</small></div>
-      <div><dt>Continuous entry qualification</dt><dd>{fresh && depth?.ready ? `${sustained.toFixed(1)} / ${requiredSeconds}s` : "—"}</dd><small>{qualified ? sustained >= requiredSeconds ? "Duration met · other entry checks still apply" : "Building persistence" : "Not qualifying"}</small></div>
+      <div><dt>Bid contracts</dt><dd>{contracts(depth?.bid_total)}</dd><small>{depth?.bid_levels ?? 0} levels � up to 100</small></div>
+      <div><dt>Ask contracts</dt><dd>{contracts(depth?.ask_total)}</dd><small>{depth?.ask_levels ?? 0} levels � up to 100</small></div>
+      <div><dt>Time above threshold</dt><dd>{fresh && depth?.ready ? `${sustained.toFixed(1)} / ${requiredSeconds}s` : "—"}</dd><small>{qualified ? sustained >= requiredSeconds ? "Duration met · other entry checks still apply" : "Building persistence" : "Not qualifying"}</small></div>
     </dl>
     <p className="topbot-muted">{!fresh ? "Waiting for fresh worker depth. Entry qualification is not confirmed."
-      : !depth?.ready ? "Partial totals only. Entries need 100 observed levels on each side."
-        : qualified ? "Requires the same imbalance direction above threshold and 100 observed levels per side continuously. Even a brief drop to 99 levels resets this timer."
+      : !depth?.ready ? "Waiting for fresh, valid depth on both sides."
+        : qualified ? "Uses up to 100 available levels per side. Level-count changes alone do not reset the timer; threshold breaks, side changes, or lost depth continuity do."
           : `Below the entry threshold. The ${requiredSeconds}-second timer starts when either side reaches the threshold.`}</p>
     {depth?.qualification_reset && <p className="topbot-muted">Last timer reset: {resetReason(depth.qualification_reset)} · {time(depth.qualification_reset.at)} ET. Brief changes can occur between screen updates.</p>}
-    <p className="topbot-footnote">(Bids − asks) ÷ (bids + asks) · Top 100 observed levels per side · Worker updates every second. {depth?.observed_at ? `Depth at ${new Date(depth.observed_at).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false })} ET.` : depth?.reason}</p>
+    <p className="topbot-footnote">(Bids − asks) ÷ (bids + asks) · Up to 100 available levels per side · Worker updates every second. {depth?.observed_at ? `Depth at ${new Date(depth.observed_at).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false })} ET.` : depth?.reason}</p>
   </div>;
 }

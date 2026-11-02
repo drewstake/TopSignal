@@ -1,6 +1,6 @@
 """Worker-owned observed DOM, independent of browser viewers.
 
-ProjectX has no documented full-snapshot boundary. Require 100 observed levels
+ProjectX has no documented full-snapshot boundary. Sum up to 100 available levels
 per side and restart qualification after gaps; never claim exchange completeness.
 """
 import asyncio
@@ -101,8 +101,7 @@ class DepthState:
             result = self.snapshot(now)
             direction = (1 if result.get("imbalance", 0) > 0 else -1) if result.get("ready") and abs(result["imbalance"]) >= self.threshold and result["imbalance"] != 0 else 0
             if direction != self.direction or self.episode_at is None:
-                reason = ("insufficient_levels" if min(len(self.bids), len(self.asks)) < 100 else
-                          "invalid_book" if not result.get("ready") else
+                reason = ("invalid_book" if not result.get("ready") else
                           "below_threshold" if direction == 0 else "side_changed")
                 self.reset_qualification(reason, now, imbalance=result.get("imbalance"))
                 self.episode_at = at if direction else None
@@ -111,7 +110,7 @@ class DepthState:
             self.reset("invalid_depth", now)
 
     def snapshot(self, now):
-        base = {"ready": False, "reason": "Waiting for 100 observed levels per side", "bid_levels": min(100,len(self.bids)),
+        base = {"ready": False, "reason": "Waiting for valid two-sided depth", "bid_levels": min(100,len(self.bids)),
                 "ask_levels": min(100,len(self.asks)), "depth_basis": "observed_levels_not_certified_snapshot",
                 "qualification_reset": deepcopy(self.qualification_reset)}
         if not self.connected or not self.last_at or not 0 <= (now-self.last_at).total_seconds() <= 2:
@@ -121,7 +120,7 @@ class DepthState:
         bid, ask = max(self.bids), min(self.asks)
         b = sum(self.bids[p] for p in sorted(self.bids, reverse=True)[:100])
         a = sum(self.asks[p] for p in sorted(self.asks)[:100])
-        return {**base, "ready": min(len(self.bids),len(self.asks)) >= 100, "bid": bid, "ask": ask,
+        return {**base, "ready": True, "reason": "Available observed depth", "bid": bid, "ask": ask,
                 "bid_total": b, "ask_total": a, "imbalance": (b-a)/(b+a),
                 "observed_at": self.last_at.isoformat(), "episode_at": self.episode_at.isoformat() if self.episode_at else None,
                 "persistence_seconds": max(0,(self.last_at-self.episode_at).total_seconds()) if self.episode_at else 0}
