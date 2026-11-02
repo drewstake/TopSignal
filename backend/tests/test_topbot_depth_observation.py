@@ -26,7 +26,7 @@ def test_observation_is_owner_scoped_read_only_and_preserves_partial_totals():
     assert len(feed.streams) == 1
     state.asks.pop(min(state.asks))
     partial = feed.observation("owner-a", CONTRACT, now=now)["depth"]
-    assert partial["ask_levels"] == 99 and partial["ask_total"] == 990 and not partial["ready"]
+    assert partial["ask_levels"] == 99 and partial["ask_total"] == 990 and partial["ready"]
     stale = feed.observation("owner-a", CONTRACT, now=now+timedelta(seconds=3))["depth"]
     assert not stale["ready"] and "imbalance" not in stale
 

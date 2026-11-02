@@ -59,7 +59,7 @@ export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChan
   }
   return <section className="topbot-panel topbot-strategy" aria-label="Contrarian strategy and trade statistics">
     <div className="topbot-strategy-heading"><div><h2>Contrarian DOM <span className="topbot-muted">/ Practice API</span></h2>
-      <p className="topbot-muted">100 observed levels per side · 10% imbalance for 30s · Bid-heavy → short · Ask-heavy → long</p>
+      <p className="topbot-muted">Up to 100 available levels per side · 10% imbalance for 30s · Bid-heavy → short · Ask-heavy → long</p>
     </div><button className="topbot-run-button" disabled={busy || accountId == null || demoMode}
       onClick={() => void act()}>{busy ? "Updating…" : running ? "Stop new entries" : "Start practice bot"}</button></div>
     <p className="topbot-muted">1 MNQ · Initial stop 25 pts · Trail 25 pts after +25 · No fixed target · All trading sessions, including overnight · Daily loss limit $250 · Up to 4 entries/day</p>
