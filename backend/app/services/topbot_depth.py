@@ -23,10 +23,22 @@ class DepthState:
         self.last_at = self.episode_at = self.sequence = None
         self.direction = 0
         self.connected = False
+        self.qualification_reset = None
         self.tracks = {}
         self.track_history = {}
 
-    def reset(self):
+    def reset_qualification(self, reason, at, *, imbalance=None):
+        if self.episode_at is not None:
+            self.qualification_reset = {
+                "reason": reason, "at": at.isoformat(),
+                "bid_levels": min(100, len(self.bids)), "ask_levels": min(100, len(self.asks)),
+                "imbalance": imbalance,
+            }
+        self.episode_at = None
+        self.direction = 0
+
+    def reset(self, reason="depth_reset", at=None):
+        self.reset_qualification(reason, at or datetime.now(timezone.utc))
         self.bids.clear(); self.asks.clear()
         self.last_at = self.episode_at = self.sequence = None
         self.direction = 0
@@ -37,31 +49,31 @@ class DepthState:
         data = event.get("data") or {}
         if event.get("event") == "state":
             self.connected = data.get("state") == "connected"
-            if not self.connected: self.reset()
+            if not self.connected: self.reset("disconnected", now)
             return
         if data.get("contract_id") != self.contract: return
         if data.get("reset"):
-            self.reset(); self.sequence = data.get("sequence")
+            self.reset("provider_reset", now); self.sequence = data.get("sequence")
             return
         try:
             if not data.get("timestamp"):
-                self.reset(); self.sequence = data.get("sequence")
+                self.reset("missing_timestamp", now); self.sequence = data.get("sequence")
                 return
             at = utc(data["timestamp"])
             if not 0 <= (now-at).total_seconds() <= 2:
-                self.reset(); return
+                self.reset("stale_timestamp", now); return
             sequence = data["sequence"]
             if self.sequence is not None and sequence <= self.sequence: return
-            if self.last_at and (at-self.last_at).total_seconds() > 2: self.reset()
+            if self.last_at and (at-self.last_at).total_seconds() > 2: self.reset("depth_gap", now)
             if event["event"] == "snapshot":
                 if self.sequence is None or sequence != self.sequence+1:
-                    self.episode_at = None; self.direction = 0
+                    self.reset_qualification("sequence_gap", now)
                     for track in self.tracks.values(): track["coverage_complete"] = False
                 self.bids = {float(r["price"]): float(r["size"]) for r in data["bids"]}
                 self.asks = {float(r["price"]): float(r["size"]) for r in data["asks"]}
             else:
                 if self.sequence is None or sequence != self.sequence+1:
-                    self.reset(); return
+                    self.reset("sequence_gap", now); return
                 book = self.bids if data["side"] == "bid" else self.asks
                 price, size = float(data["price"]), float(data["size"])
                 if size == 0: book.pop(price, None)
@@ -69,7 +81,7 @@ class DepthState:
             if (max(len(self.bids), len(self.asks)) > 2000 or
                 any(not math.isfinite(p) or not math.isfinite(q) or p <= 0 or q <= 0
                     for p, q in list(self.bids.items())+list(self.asks.items()))):
-                self.reset(); return
+                self.reset("invalid_depth", now); return
             self.last_at, self.sequence = at, sequence
             self.connected = True
             if self.bids and self.asks and max(self.bids) < min(self.asks):
@@ -89,14 +101,19 @@ class DepthState:
             result = self.snapshot(now)
             direction = (1 if result.get("imbalance", 0) > 0 else -1) if result.get("ready") and abs(result["imbalance"]) >= self.threshold and result["imbalance"] != 0 else 0
             if direction != self.direction or self.episode_at is None:
+                reason = ("insufficient_levels" if min(len(self.bids), len(self.asks)) < 100 else
+                          "invalid_book" if not result.get("ready") else
+                          "below_threshold" if direction == 0 else "side_changed")
+                self.reset_qualification(reason, now, imbalance=result.get("imbalance"))
                 self.episode_at = at if direction else None
             self.direction = direction
         except (KeyError, ValueError, TypeError, OverflowError):
-            self.reset()
+            self.reset("invalid_depth", now)
 
     def snapshot(self, now):
         base = {"ready": False, "reason": "Waiting for 100 observed levels per side", "bid_levels": min(100,len(self.bids)),
-                "ask_levels": min(100,len(self.asks)), "depth_basis": "observed_levels_not_certified_snapshot"}
+                "ask_levels": min(100,len(self.asks)), "depth_basis": "observed_levels_not_certified_snapshot",
+                "qualification_reset": deepcopy(self.qualification_reset)}
         if not self.connected or not self.last_at or not 0 <= (now-self.last_at).total_seconds() <= 2:
             return {**base, "reason": "Depth disconnected or stale"}
         if not self.bids or not self.asks or max(self.bids) >= min(self.asks):
@@ -123,7 +140,7 @@ class DepthFeed:
                 stream["touched"] = monotonic()
                 if stream["state"].threshold != threshold:
                     stream["state"].threshold = threshold
-                    stream["state"].episode_at = None
+                    stream["state"].reset_qualification("threshold_changed", datetime.now(timezone.utc))
                 return
             if len(self.streams) >= 8: return
             stream = {"state": DepthState(contract, threshold), "touched": monotonic()}

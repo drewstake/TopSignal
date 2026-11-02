@@ -61,6 +61,46 @@ def test_insufficient_depth_never_qualifies():
     assert not state.snapshot(now)["ready"]
 
 
+def test_brief_level_removal_resets_qualification_and_keeps_reason_after_recovery():
+    now = datetime.now(timezone.utc)
+    state = DepthState(CONTRACT_ID)
+    for i in range(11):
+        at = now + timedelta(seconds=i)
+        state.apply(snapshot_event(at, i+1), at)
+    assert state.snapshot(at)["persistence_seconds"] == 10
+    removed_at = at + timedelta(milliseconds=10)
+    state.apply({"event": "update", "data": {"contract_id": CONTRACT_ID, "sequence": 12,
+        "timestamp": removed_at.isoformat(), "side": "ask", "price": 20025, "size": 0}}, removed_at)
+    partial = state.snapshot(removed_at)
+    assert partial["imbalance"] > .1 and partial["persistence_seconds"] == 0
+    assert partial["qualification_reset"]["reason"] == "insufficient_levels"
+    assert partial["qualification_reset"]["ask_levels"] == 99
+    recovered_at = removed_at + timedelta(milliseconds=10)
+    state.apply(snapshot_event(recovered_at, 13), recovered_at)
+    later = recovered_at + timedelta(seconds=1)
+    state.apply(snapshot_event(later, 14), later)
+    recovered = state.snapshot(later)
+    assert recovered["ready"] and recovered["persistence_seconds"] == 1
+    assert recovered["qualification_reset"] == partial["qualification_reset"]
+
+
+@pytest.mark.parametrize("cause", ["below_threshold", "side_changed", "sequence_gap", "depth_gap", "provider_reset", "disconnected"])
+def test_qualification_reset_reason_and_entry_duration(cause):
+    now = datetime.now(timezone.utc)
+    state = DepthState(CONTRACT_ID)
+    state.apply(snapshot_event(now), now)
+    at = now + timedelta(seconds=3 if cause == "depth_gap" else 1)
+    event = snapshot_event(at, 3 if cause == "sequence_gap" else 2)
+    if cause in {"below_threshold", "side_changed"}:
+        for row in event["data"]["bids"]: row["size"] = 10 if cause == "below_threshold" else 5
+    elif cause == "provider_reset": event["data"]["reset"] = True
+    elif cause == "disconnected": event = {"event": "state", "data": {"state": "reconnecting"}}
+    state.apply(event, at)
+    result = state.snapshot(at)
+    assert result["qualification_reset"]["reason"] == cause
+    assert result.get("persistence_seconds", 0) == 0
+
+
 @pytest.mark.parametrize("side,entry,mfe,current,expected", [
     ("BUY",20000,24.75,19975,19975), ("BUY",20000,25,19975,20000),
     ("BUY",20000,40,20000,20015), ("BUY",20000,30,20020,20020),

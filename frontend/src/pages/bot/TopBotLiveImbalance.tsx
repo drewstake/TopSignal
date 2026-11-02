@@ -6,11 +6,22 @@ export type TopBotDepthObservation = {
   contract_id: string; as_of: string; threshold: number | null;
   depth: { ready: boolean; reason: string; bid_levels?: number; ask_levels?: number;
     bid_total?: number; ask_total?: number; imbalance?: number; observed_at?: string;
-    episode_at?: string | null; persistence_seconds?: number };
+    episode_at?: string | null; persistence_seconds?: number;
+    qualification_reset?: { reason: string; at: string; bid_levels: number; ask_levels: number; imbalance: number | null } | null };
 };
 type Sample = { value: TopBotDepthObservation; receivedAt: number; requestMs: number };
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const contracts = (value: number | undefined) => finite(value) ? value.toLocaleString("en-US", { maximumFractionDigits: 0 }) : "—";
+const time = (at: string) => new Date(at).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false });
+function resetReason(reset: NonNullable<TopBotDepthObservation["depth"]["qualification_reset"]>) {
+  if (reset.reason === "insufficient_levels") return `Depth dropped to ${reset.bid_levels} bid / ${reset.ask_levels} ask levels`;
+  if (reset.reason === "below_threshold") return `Imbalance fell below the threshold${finite(reset.imbalance) ? ` (${(reset.imbalance * 100).toFixed(2)}%)` : ""}`;
+  const reasons: Record<string, string> = { side_changed: "Imbalance changed sides", sequence_gap: "Depth updates were skipped",
+    depth_gap: "Depth updates paused for more than 2 seconds", stale_timestamp: "Depth timestamp was stale or invalid",
+    missing_timestamp: "Depth timestamp was missing", disconnected: "Depth feed disconnected", provider_reset: "Provider rebuilt the book",
+    invalid_book: "Book became empty or crossed", invalid_depth: "Invalid depth update", threshold_changed: "Entry threshold changed" };
+  return reasons[reset.reason] ?? "Depth continuity was lost";
+}
 
 export function TopBotLiveImbalance({ contractId, threshold, requiredSeconds, enabled }: {
   contractId: string; threshold: number; requiredSeconds: number; enabled: boolean;
@@ -76,12 +87,13 @@ export function TopBotLiveImbalance({ contractId, threshold, requiredSeconds, en
     <dl className="topbot-imbalance-totals">
       <div><dt>Bid contracts</dt><dd>{contracts(depth?.bid_total)}</dd><small>{depth?.bid_levels ?? 0}/100 levels</small></div>
       <div><dt>Ask contracts</dt><dd>{contracts(depth?.ask_total)}</dd><small>{depth?.ask_levels ?? 0}/100 levels</small></div>
-      <div><dt>Time above threshold</dt><dd>{fresh && depth?.ready ? `${sustained.toFixed(1)} / ${requiredSeconds}s` : "—"}</dd><small>{qualified ? sustained >= requiredSeconds ? "Duration met · other entry checks still apply" : "Building persistence" : "Not qualifying"}</small></div>
+      <div><dt>Continuous entry qualification</dt><dd>{fresh && depth?.ready ? `${sustained.toFixed(1)} / ${requiredSeconds}s` : "—"}</dd><small>{qualified ? sustained >= requiredSeconds ? "Duration met · other entry checks still apply" : "Building persistence" : "Not qualifying"}</small></div>
     </dl>
     <p className="topbot-muted">{!fresh ? "Waiting for fresh worker depth. Entry qualification is not confirmed."
       : !depth?.ready ? "Partial totals only. Entries need 100 observed levels on each side."
-        : qualified ? "The worker resets the timer if the imbalance falls below the threshold, changes sides, or depth loses continuity."
+        : qualified ? "Requires the same imbalance direction above threshold and 100 observed levels per side continuously. Even a brief drop to 99 levels resets this timer."
           : `Below the entry threshold. The ${requiredSeconds}-second timer starts when either side reaches the threshold.`}</p>
+    {depth?.qualification_reset && <p className="topbot-muted">Last timer reset: {resetReason(depth.qualification_reset)} · {time(depth.qualification_reset.at)} ET. Brief changes can occur between screen updates.</p>}
     <p className="topbot-footnote">(Bids − asks) ÷ (bids + asks) · Top 100 observed levels per side · Worker updates every second. {depth?.observed_at ? `Depth at ${new Date(depth.observed_at).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false })} ET.` : depth?.reason}</p>
   </div>;
 }
