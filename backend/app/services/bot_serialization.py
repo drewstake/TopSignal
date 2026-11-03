@@ -82,7 +82,25 @@ def serialize_bot_run(row: BotRun) -> dict[str, Any]:
         "last_heartbeat_at": _as_utc(row.last_heartbeat_at) if row.last_heartbeat_at is not None else None,
         "last_error": row.last_error,
         "last_evaluated_at": _as_utc(row.last_evaluated_at) if row.last_evaluated_at is not None else None,
+        # Expose only the entry episode marker, not the worker's internal state.
+        "raw_state": {"dom_episode_evaluated": row.raw_state.get("dom_episode_evaluated")}
+        if isinstance(row.raw_state, dict) else {},
     }
+
+
+def _entry_display_payload(raw: Any, *, nested: bool = False) -> dict[str, Any]:
+    """Only bounded entry evidence belongs in activity responses, never full research data."""
+    if not isinstance(raw, dict):
+        return {}
+    result = {key: raw[key] for key in ("entry_checks", "signal_decision_id", "entry_price", "stop_loss", "take_profit") if key in raw}
+    if isinstance(raw.get("depth_entry"), dict):
+        result["depth_entry"] = {"episode_at": raw["depth_entry"].get("episode_at")}
+    if isinstance(raw.get("risk_blocks"), list):
+        result["risk_blocks"] = [{key: block[key] for key in ("code", "message") if key in block}
+                                 for block in raw["risk_blocks"] if isinstance(block, dict)]
+    if not nested and isinstance(raw.get("signal_order_plan"), dict):
+        result["signal_order_plan"] = _entry_display_payload(raw["signal_order_plan"], nested=True)
+    return result
 
 
 def serialize_bot_decision(row: BotDecision) -> dict[str, Any]:
@@ -101,6 +119,7 @@ def serialize_bot_decision(row: BotDecision) -> dict[str, Any]:
         "quantity": float(row.quantity) if row.quantity is not None else None,
         "correlation_id": row.correlation_id,
         "idempotency_key": row.idempotency_key,
+        "raw_payload": _entry_display_payload(row.raw_payload),
         "created_at": _as_utc(row.created_at),
     }
 

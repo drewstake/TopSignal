@@ -13,6 +13,12 @@ beforeEach(() => {
   vi.spyOn(botsApi, "getTopBotAudit").mockResolvedValue({ items: [], next_before: null, storage: "Worker" });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+it("shows the saved entry-limit preference", async () => {
+  render(<TopBotStrategyPanel accountId={123} bot={{ id: 39, enabled: true, strategy_params: { daily_entry_limit_enabled: false } } as BotConfig}
+    activity={null} demoMode={false} onChanged={() => {}} />);
+  expect(screen.getByText(/Daily entry-count limit disabled/)).toBeTruthy();
+  await waitFor(() => expect(screen.getByText("$23.56")).toBeTruthy());
+});
 it("starts broker practice routing for the selected account, not dry run", async () => {
   const start = vi.spyOn(botsApi, "startTopBot").mockResolvedValue({} as never);
   const changed = vi.fn();

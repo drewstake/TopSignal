@@ -339,6 +339,9 @@ def prepare_decision(result):
                     'max_open_position', 'max_daily_loss', 'max_trades_per_day', 'cooldown_seconds',
                     'max_data_staleness_seconds', 'trading_start_time', 'trading_end_time', 'execution_mode')},
                 timing=result.analysis.get('evaluation_timing'), candles=rows,
+                implementation=(d.raw_payload or {}).get('implementation'),
+                depth_entry=(d.raw_payload or {}).get('depth_entry'),
+                depth_recheck=(d.raw_payload or {}).get('depth_recheck'),
                 order_attempt=None if attempt is None else {k: getattr(attempt, k) for k in (
                     'id', 'provider_order_id', 'status', 'execution_mode', 'side', 'size', 'limit_price', 'stop_price', 'created_at', 'updated_at')},
                 outcomes_reference={'ledger': str(forward_location(c.user_id, c.account_id, c.id).relative_to(cache_root())),

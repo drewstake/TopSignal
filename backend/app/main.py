@@ -3749,8 +3749,13 @@ def get_trading_bot_activity(
                                   start=start, end=end, run_id=run_id, execution_mode=execution_mode, signals_only=signals_only)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    from .services.topbot_strategy import selected as dom_selected
+    from .services.topbot_profit_guard import public_status
+    profit_guard = (public_status(user_id, int(payload["config"].account_id))
+                    if payload["config"].strategy_type == "topbot_adaptive" and dom_selected(payload["config"].strategy_params) else None)
     return {
         "config": serialize_bot_config(payload["config"]),
+        "profit_guard": profit_guard,
         "runs": [serialize_bot_run(row) for row in payload["runs"]],
         "decisions": [serialize_bot_decision(row) for row in payload["decisions"]],
         "order_attempts": [serialize_bot_order_attempt(row) for row in payload["order_attempts"]],

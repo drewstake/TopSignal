@@ -7,8 +7,9 @@ At +10% or greater, short; at −10% or less, buy. No price confirmation. This i
 an experimental rule, not an established profitable signal.
 
 The worker maintains its own ProjectX depth connection without a browser.
-Require both sides to contain 100 observed levels, an uncrossed book, and depth
-within two seconds. Reconnects, stale timestamps and skipped events reset
+Use up to 100 available observed levels on each side; require a nonempty,
+uncrossed two-sided book and depth within two seconds. Level-count changes alone
+do not reset qualification. Reconnects, stale timestamps and skipped events reset
 persistence. ProjectX does not document a complete-snapshot boundary, so the
 observed book is not claimed to be a certified complete exchange snapshot.
 Unchanged qualifying episodes use a stable order-idempotency key. A later entry
@@ -18,7 +19,11 @@ One MNQ contract only. Entries are eligible throughout all open trading sessions
 including overnight; the saved window is 00:00–23:59 New York. The DOM execution
 path already bypassed the old 09:35–15:30 preset, which was misleading in the UI.
 New entries pause at the runner's daily flatten cutoff (normally 16:08 New York,
-earlier on early closes) until the next session opens. Exchange closure checks,
+earlier on early closes) until the next session opens, normally at 18:00 New York
+on Sunday through Thursday. During this pause the worker stays armed without
+generating or consuming entry signals, so scheduled downtime does not produce
+blocked BUY/SELL activity. Direct strategy evaluations return HOLD. Weekend and
+holiday closures still apply, and position management continues. Exchange closure checks,
 60-second cooldown, four-entry daily maximum and $250 daily loss budget remain. Existing
 provider classification, account ownership, daily realized/unrealized P&L,
 working-order and deployment-lease checks remain mandatory. No funded-account
@@ -53,6 +58,50 @@ are never automatically restarted. Stop / Start and contract updates preserve
 this account's preference. Other accounts default to requiring rearming.
 Durable open-position obligations continue to be managed by the worker.
 Refreshing or closing the dashboard does not stop a run.
+
+Daily profit protection uses account-wide realized net P&L on the existing daily
+loss-check fee basis plus current unrealized P&L. At **+$400**, close TopBot's
+owned position and pause new entries. Reaching **+$200** permanently arms a
+**$0** floor for that trading session; returning to or below $0 closes the owned
+position and pauses entries. A jump past either threshold also triggers it. The
+existing $250 daily loss entry gate is unchanged. Profit stops do not open an
+offsetting position or flatten unrelated contracts.
+
+The worker observes P&L on its normal polling cycle, including while a runner
+is open or entries are manually stopped. A flat, active run is checked even
+without a qualifying DOM signal. Broker unrealized P&L is preferred; when absent,
+an MNQ position can be valued using fresh executable bid/ask quotes. Incomplete,
+stale, or failed P&L checks block new entries while existing stop/session
+management continues. Polling can miss brief threshold touches; fill slippage,
+fees, data gaps, and broker latency mean $400 and $0 are trigger levels, not
+guaranteed exit proceeds. Monitoring starts with available observations and
+does not reconstruct unobserved earlier peaks.
+
+The armed flag and triggered stop survive Stop/Start, configuration changes,
+SQL rollbacks, and worker restarts. They reset at the existing **18:00 New York**
+trading-day rollover, after which an enabled run may trade again. An unfinished
+close retains its exit intent across that rollover and is reconciled/retried
+before new entries. Stopping a run manually still requires starting it again.
+
+State is one bounded row per owner/account in the worker's existing local
+`topbot-audit/.../actions.sqlite3` journal under `TOPSIGNAL_DATABENTO_CACHE_DIR`
+(or its existing audit-directory override). Arming and triggering append audit
+events atomically with the state update. Preserve this directory during releases
+and worker moves; the existing SQLite backup captures both state and events.
+No cloud migration, bulk write, historical cache, or per-tick series is added.
+The checklist displays current/peak observed daily P&L, protection state, and
+the session stop reason from this same worker state.
+
+The entry checklist beneath the imbalance timer combines live depth qualification
+with bot/worker status and the last recorded broker risk pass. Preliminary checks
+do not certify broker readiness. Unchecked items remain unknown; recorded checks
+become stale after 30 seconds, a different qualifying episode, or unavailable
+monitoring/depth. A passing checklist item does not confirm an order or fill.
+The consumed-episode marker explains why an already-evaluated imbalance does not
+trigger another attempt. The display is read-only and never triggers evaluation.
+Risk passes attach a bounded checklist to the existing decision JSON, without
+new tables, market series, or increased evaluation frequency. Older decisions
+without this evidence show unknown checks and any explicit recorded rejection.
 
 The existing order-attempt JSON stores a bounded runner summary: actual entry
 and exit fills, net P&L after reported per-fill fees, hold duration, observed

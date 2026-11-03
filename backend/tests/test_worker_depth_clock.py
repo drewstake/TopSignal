@@ -61,7 +61,7 @@ def test_worker_checks_depth_after_io_and_preserves_entry_gates(
     def evaluate(db, **kwargs):
         observation = feed.snapshot('user-a', contract)
         signal = topbot_strategy.evaluate([], strategy_params=kwargs['config'].strategy_params,
-                                         observation=observation)
+                                         observation=observation, now=checked_at)
         evaluations.append(signal.action)
         assert kwargs['worker_lease_token'] is not None
         assert kwargs['preserve_run_on_transient_pre_routing_error'] is True

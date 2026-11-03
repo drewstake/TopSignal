@@ -8,8 +8,11 @@ from copy import deepcopy
 from collections import deque
 from datetime import datetime, timezone
 import math
+import logging
 from threading import RLock, Thread
 from time import monotonic
+
+logger = logging.getLogger(__name__)
 
 
 def utc(value):
@@ -26,9 +29,43 @@ class DepthState:
         self.qualification_reset = None
         self.tracks = {}
         self.track_history = {}
+        self.persistence_required = 30
+        self.transitions = []
+        self.qualified_episode = None
+        self.evidence = None
+        self.capture = None
+        self.silence_reported = False
+
+    def transition(self, kind, at, **details):
+        self.transitions.append({"kind": kind, "at": at.isoformat(), **details})
+
+    def coverage_gap(self, reason, at):
+        for entry_id, track in self.tracks.items():
+            coverage = track.get("coverage")
+            if coverage is None or coverage.get("open_gap"):
+                continue
+            start = coverage.get("last_received_at") or coverage["tracking_started_at"]
+            coverage["open_gap"] = {"start": start, "detected_at": at.isoformat(), "reason": reason}
+            coverage["gap_count"] += 1
+            self.transition("coverage_gap_started", at, entry_id=entry_id, **coverage["open_gap"])
+
+    def coverage_observed(self, entry_id, track, at):
+        coverage = track.get("coverage")
+        if coverage is None:
+            return
+        gap = coverage.pop("open_gap", None)
+        if gap:
+            seconds = max(0, (at-utc(gap["start"])).total_seconds())
+            coverage["gap_seconds"] += seconds
+            coverage["last_gap"] = {**gap, "end": at.isoformat(), "seconds": seconds}
+            self.transition("coverage_gap_ended", at, entry_id=entry_id, **coverage["last_gap"])
+        coverage["last_received_at"] = at.isoformat()
+        coverage["observed_events"] += 1
 
     def reset_qualification(self, reason, at, *, imbalance=None):
         if self.episode_at is not None:
+            self.transition("episode_reset", at, episode_at=self.episode_at.isoformat(), reason=reason,
+                            imbalance=imbalance, qualified=self.qualified_episode == self.episode_at)
             self.qualification_reset = {
                 "reason": reason, "at": at.isoformat(),
                 "bid_levels": min(100, len(self.bids)), "ask_levels": min(100, len(self.asks)),
@@ -36,9 +73,12 @@ class DepthState:
             }
         self.episode_at = None
         self.direction = 0
+        self.qualified_episode = None
 
     def reset(self, reason="depth_reset", at=None):
-        self.reset_qualification(reason, at or datetime.now(timezone.utc))
+        at = at or datetime.now(timezone.utc)
+        self.reset_qualification(reason, at)
+        self.coverage_gap(reason, at)
         self.bids.clear(); self.asks.clear()
         self.last_at = self.episode_at = self.sequence = None
         self.direction = 0
@@ -46,6 +86,39 @@ class DepthState:
             track["coverage_complete"] = False
 
     def apply(self, event, now):
+        self.transitions = []
+        if event.get("event") == "parameters":
+            data = event["data"]
+            if self.threshold != data["threshold"]:
+                self.threshold = data["threshold"]
+                self.reset_qualification("threshold_changed", now)
+            self.persistence_required = data["persistence_seconds"]
+        elif event.get("event") == "observation_gap":
+            self.coverage_gap(event["data"]["reason"], now)
+            self.silence_reported = True
+            self.transition("feed_gap", now, reason=event["data"]["reason"])
+        elif event.get("event") == "tracking":
+            self.transition("coverage_tracking_started", now, **event["data"])
+        else:
+            self._apply(event, now)
+        if (self.episode_at and self.last_at and self.qualified_episode != self.episode_at
+                and (self.last_at-self.episode_at).total_seconds() >= self.persistence_required):
+            self.qualified_episode = self.episode_at
+            self.transition("episode_qualified", now, episode_at=self.episode_at.isoformat(),
+                            provider_at=self.last_at.isoformat(), direction=self.direction,
+                            persistence_seconds=self.persistence_required)
+        if self.capture is not None:
+            try:
+                self.evidence = self.capture.append(event, now, self.transitions)
+            except Exception as exc:
+                # Auxiliary recording must never tear down the strategy's feed.
+                from ..bot_diagnostics import event as diagnostic
+                diagnostic(logger, "topbot_evidence_enqueue_failed", level=logging.ERROR,
+                           contract_id=self.contract, error_type=type(exc).__name__)
+                self.capture = None
+                self.evidence = None
+
+    def _apply(self, event, now):
         data = event.get("data") or {}
         if event.get("event") == "state":
             self.connected = data.get("state") == "connected"
@@ -68,6 +141,7 @@ class DepthState:
             if event["event"] == "snapshot":
                 if self.sequence is None or sequence != self.sequence+1:
                     self.reset_qualification("sequence_gap", now)
+                    self.coverage_gap("sequence_gap", now)
                     for track in self.tracks.values(): track["coverage_complete"] = False
                 self.bids = {float(r["price"]): float(r["size"]) for r in data["bids"]}
                 self.asks = {float(r["price"]): float(r["size"]) for r in data["asks"]}
@@ -83,12 +157,14 @@ class DepthState:
                     for p, q in list(self.bids.items())+list(self.asks.items()))):
                 self.reset("invalid_depth", now); return
             self.last_at, self.sequence = at, sequence
+            self.silence_reported = False
             self.connected = True
             if self.bids and self.asks and max(self.bids) < min(self.asks):
-                for track in self.tracks.values():
+                for entry_id, track in self.tracks.items():
                     mark = max(self.bids) if track["side"] == "BUY" else min(self.asks)
                     points = (mark-track["entry_price"]) * (1 if track["side"] == "BUY" else -1)
                     if at < utc(track["entry_at"]): continue
+                    self.coverage_observed(entry_id, track, now)
                     track["mfe_points"] = max(track["mfe_points"], points)
                     track["mae_points"] = min(track["mae_points"], points)
                     track["last_points"], track["observed_at"] = points, at.isoformat()
@@ -99,15 +175,32 @@ class DepthState:
                     if not history or (at-utc(history[-1]["observed_at"])).total_seconds() >= .1:
                         history.append(deepcopy(track))
             result = self.snapshot(now)
+            if not result.get("ready"):
+                self.coverage_gap("invalid_book", now)
             direction = (1 if result.get("imbalance", 0) > 0 else -1) if result.get("ready") and abs(result["imbalance"]) >= self.threshold and result["imbalance"] != 0 else 0
             if direction != self.direction or self.episode_at is None:
                 reason = ("invalid_book" if not result.get("ready") else
                           "below_threshold" if direction == 0 else "side_changed")
                 self.reset_qualification(reason, now, imbalance=result.get("imbalance"))
                 self.episode_at = at if direction else None
+                if direction:
+                    self.transition("episode_started", now, episode_at=at.isoformat(), direction=direction,
+                                    imbalance=result.get("imbalance"))
             self.direction = direction
         except (KeyError, ValueError, TypeError, OverflowError):
             self.reset("invalid_depth", now)
+
+    def evidence_snapshot(self):
+        from .topbot_evidence import canonical, binding
+        from hashlib import sha256
+        state = {"bids": sorted(self.bids.items()), "asks": sorted(self.asks.items()),
+                 "sequence": self.sequence, "threshold": self.threshold,
+                 "episode_at": self.episode_at.isoformat() if self.episode_at else None,
+                 "last_at": self.last_at.isoformat() if self.last_at else None,
+                 "connected": self.connected, "qualification_reset": self.qualification_reset}
+        return {**(self.evidence or {}), "state_sha256": sha256(canonical(state)).hexdigest(),
+                "implementation": binding(),
+                "recording": self.capture.status() if self.capture else {"state": "unavailable"}}
 
     def snapshot(self, now):
         base = {"ready": False, "reason": "Waiting for valid two-sided depth", "bid_levels": min(100,len(self.bids)),
@@ -131,24 +224,40 @@ class DepthFeed:
         self.lock = RLock()
         self.streams = {}
 
-    def ensure(self, owner, contract, client, threshold=.1):
+    def ensure(self, owner, contract, client, threshold=.1, persistence_seconds=30):
         key = (str(owner), contract)
         with self.lock:
             stream = self.streams.get(key)
             if stream:
                 stream["touched"] = monotonic()
-                if stream["state"].threshold != threshold:
-                    stream["state"].threshold = threshold
-                    stream["state"].reset_qualification("threshold_changed", datetime.now(timezone.utc))
+                state = stream["state"]
+                if state.threshold != threshold or state.persistence_required != persistence_seconds:
+                    state.apply({"event": "parameters", "data": {"threshold": threshold,
+                                "persistence_seconds": persistence_seconds}}, datetime.now(timezone.utc))
                 return
             if len(self.streams) >= 8: return
             stream = {"state": DepthState(contract, threshold), "touched": monotonic()}
+            stream["state"].persistence_required = persistence_seconds
             self.streams[key] = stream
             Thread(target=self._run, args=(key, stream, client), daemon=True, name="topbot-depth").start()
 
     def _run(self, key, stream, client):
+        from .topbot_evidence import Capture
+        from ..bot_diagnostics import event as diagnostic, error_frames
+        capture = None
         async def consume():
+            nonlocal capture
             from .projectx_order_book import ProjectXOrderBookRegistry
+            try:
+                capture = Capture(key[0], key[1])
+            except Exception as exc:
+                diagnostic(logger, "topbot_evidence_start_failed", level=logging.ERROR, user_id=key[0],
+                           contract_id=key[1], error_type=type(exc).__name__)
+            with self.lock:
+                state = stream["state"]
+                state.capture = capture
+                state.apply({"event": "parameters", "data": {"threshold": state.threshold,
+                            "persistence_seconds": state.persistence_required}}, datetime.now(timezone.utc))
             registry = ProjectXOrderBookRegistry()
             try:
                 sub = await registry.subscribe(user_id=key[0], client=client, contract_id=key[1])
@@ -156,15 +265,26 @@ class DepthFeed:
                     with self.lock: stream["state"].apply(event, datetime.now(timezone.utc))
                 while monotonic()-stream["touched"] < 120:
                     try: event = await asyncio.wait_for(sub.queue.get(), timeout=1)
-                    except asyncio.TimeoutError: continue
+                    except asyncio.TimeoutError:
+                        with self.lock:
+                            state = stream["state"]
+                            now = datetime.now(timezone.utc)
+                            if (state.last_at and not state.silence_reported
+                                    and (now-state.last_at).total_seconds() > 2):
+                                state.apply({"event": "observation_gap", "data": {"reason": "stream_silent"}}, now)
+                        continue
                     with self.lock: stream["state"].apply(event, datetime.now(timezone.utc))
             finally:
                 await registry.close()
         try: asyncio.run(consume())
-        except Exception: pass  # Missing/stale state explicitly blocks entries.
+        except Exception as exc:
+            diagnostic(logger, "topbot_depth_consumer_failed", level=logging.ERROR, user_id=key[0],
+                       contract_id=key[1], error_type=type(exc).__name__, error_frames=error_frames(exc))
         finally:
             with self.lock:
+                stream["state"].apply({"event": "state", "data": {"state": "closed"}}, datetime.now(timezone.utc))
                 if self.streams.get(key) is stream: self.streams.pop(key, None)
+            if capture is not None: capture.close()
 
     def snapshot(self, owner, contract, *, now=None):
         with self.lock:
@@ -173,7 +293,8 @@ class DepthFeed:
             checked_at = now or datetime.now(timezone.utc)
             stream = self.streams.get((str(owner),contract))
             result = stream["state"].snapshot(checked_at) if stream else {"ready": False, "reason": "Waiting for worker depth subscription"}
-            return {**result, "checked_at": checked_at.isoformat()}
+            return {**result, "checked_at": checked_at.isoformat(),
+                    "evidence": stream["state"].evidence_snapshot() if stream else {"recording": {"state": "unavailable"}}}
 
     def observation(self, owner, contract, *, now=None):
         """Read-only UI telemetry from the same state used by entry checks.
@@ -192,12 +313,24 @@ class DepthFeed:
         with self.lock:
             stream = self.streams.get((str(owner),contract))
             fields = ("side", "entry_price", "entry_at", "mfe_points", "mae_points", "coverage_complete",
-                      "last_points", "observed_at", "plus_10", "plus_25", "minus_10")
+                      "last_points", "observed_at", "plus_10", "plus_25", "minus_10", "coverage")
             seed = {k: deepcopy(initial[k]) for k in fields if k in initial}
             if not stream: return seed
             tracks = stream["state"].tracks
             if entry_id not in tracks:
                 tracks[entry_id] = {**seed, "coverage_complete": False}
+                at = datetime.now(timezone.utc)
+                previous = seed.get("coverage", {})
+                start = previous.get("last_received_at") or seed["entry_at"]
+                tracks[entry_id]["coverage"] = {**previous, "tracking_started_at": at.isoformat(),
+                    "gap_count": previous.get("gap_count", 0)+1,
+                    "gap_seconds": previous.get("gap_seconds", 0),
+                    "observed_events": previous.get("observed_events", 0),
+                    "open_gap": {"start": start, "detected_at": at.isoformat(),
+                                 "reason": "tracking_restarted" if previous else "fill_to_tracking"},
+                    "interval_basis": "Local receipt time; provider fill clock offset unverified"}
+                stream["state"].apply({"event": "tracking", "data": {"entry_id": entry_id,
+                    "start": start, "reason": "tracking_restarted" if previous else "fill_to_tracking"}}, at)
                 stream["state"].track_history[id(tracks[entry_id])] = deque(maxlen=2048)
             if end_at is not None:
                 history = stream["state"].track_history[id(tracks[entry_id])]

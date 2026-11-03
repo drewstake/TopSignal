@@ -686,12 +686,12 @@ class BotWorkerRuntime:
             )
             from .services.topbot_strategy import selected as dom_selected
             dom_run = str(config.strategy_type) == "topbot_adaptive" and dom_selected(config.strategy_params)
+            profit_guard_live = dom_run and not bool(run.dry_run)
             dom_params = dict(config.strategy_params or {})
             last_dom_episode = state.get("dom_episode_evaluated")
             resume_pending = state.get("practice_auto_resume_pending") is True
             db.commit()
-            if (user_id, account_id) in blocked_accounts:
-                return {"evaluated": False, "provider_ok": False}
+            account_blocked = (user_id, account_id) in blocked_accounts
 
         if monotonic() < self._provider_retry_not_before_by_user.get(user_id, 0.0):
             return {"evaluated": False, "provider_ok": False}
@@ -701,24 +701,14 @@ class BotWorkerRuntime:
             self._schedule_provider_retry(user_id, exc)
             raise
         provider_ok = False
-        if resume_pending:
+        if resume_pending and not account_blocked:
             if not self._validate_practice_resume(run_id, user_id, account_id, client, now):
                 return {"evaluated": False, "provider_ok": False}
             provider_ok = True
             probed_users.add(user_id)
-        if dom_run:
-            from .services.topbot_depth import feed
-            feed.ensure(user_id, archive_contract, client, dom_params.get("imbalance_threshold", .1))
-            # The cycle timestamp predates database/provider I/O. New ticks can
-            # arrive during that work; compare their age with the clock read
-            # under the feed lock, not with the earlier scheduling timestamp.
-            depth = feed.snapshot(user_id, archive_contract)
-            # Record each qualifying episode once. Idle decisions retain the
-            # existing candle cadence rather than writing depth ticks to SQL.
-            evaluation_due = evaluation_due or bool(depth.get("ready") and depth.get("episode_at")
-                and depth["episode_at"] != last_dom_episode
-                and abs(depth.get("imbalance", 0)) >= dom_params.get("imbalance_threshold", .1)
-                and depth.get("persistence_seconds", 0) >= dom_params.get("persistence_seconds", 30))
+        # A protected position or scheduled entry pause must not suppress the
+        # read-only connectivity probe. Otherwise readiness expires even while
+        # independent position management is successfully contacting the broker.
         if probe_provider and user_id not in probed_users:
             probed_users.add(user_id)
             try:
@@ -729,7 +719,43 @@ class BotWorkerRuntime:
                 raise
             provider_ok = True
             self._clear_provider_retry(user_id)
-
+        if account_blocked:
+            return {"evaluated": False, "provider_ok": provider_ok}
+        if dom_run:
+            from .services.topbot_depth import feed
+            feed.ensure(user_id, archive_contract, client, dom_params.get("imbalance_threshold", .1),
+                        persistence_seconds=dom_params.get("persistence_seconds", 30))
+            if profit_guard_live and _background_live_execution_enabled():
+                from .services import topbot_profit_guard
+                try:
+                    guard = topbot_profit_guard.poll(user_id, account_id, archive_contract, client)
+                except Exception:
+                    try:
+                        topbot_profit_guard.mark_unavailable(user_id, account_id)
+                    except Exception:
+                        logger.error("topbot_profit_guard_storage_unavailable", extra={"bot_run_id": run_id})
+                    logger.warning("topbot_profit_guard_unavailable", extra={"bot_run_id": run_id})
+                    return {"evaluated": False, "provider_ok": False}
+                if guard["trigger"]:
+                    # Keep the run armed for the next session, without creating
+                    # repeated decisions or consuming another depth episode.
+                    return {"evaluated": False, "provider_ok": True}
+            from .services.topbot_session import runner_entry_pause_reason
+            if runner_entry_pause_reason(now, symbol=archive_contract or "MNQ"):
+                # Scheduled downtime is idle, not a rejected BUY/SELL. Keep the
+                # run armed and leave qualifying episodes unconsumed. Position
+                # reconciliation and profit protection still run independently.
+                return {"evaluated": False, "provider_ok": provider_ok}
+            # The cycle timestamp predates database/provider I/O. New ticks can
+            # arrive during that work; compare their age with the clock read
+            # under the feed lock, not with the earlier scheduling timestamp.
+            depth = feed.snapshot(user_id, archive_contract)
+            # Record each qualifying episode once. Idle decisions retain the
+            # existing candle cadence rather than writing depth ticks to SQL.
+            evaluation_due = evaluation_due or bool(depth.get("ready") and depth.get("episode_at")
+                and depth["episode_at"] != last_dom_episode
+                and abs(depth.get("imbalance", 0)) >= dom_params.get("imbalance_threshold", .1)
+                and depth.get("persistence_seconds", 0) >= dom_params.get("persistence_seconds", 30))
         if not evaluation_due:
             return {"evaluated": False, "provider_ok": provider_ok}
 

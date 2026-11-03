@@ -28,6 +28,13 @@ def runner_entry_boundary_reason(now: datetime, *, symbol: str = "MNQ") -> str |
     return None
 
 
+def runner_entry_pause_reason(now: datetime, *, symbol: str = "MNQ") -> str | None:
+    """Skip signal generation during scheduled downtime, before entry risk checks."""
+    if not futures_session_is_open(now, symbol=symbol):
+        return "exchange_session_closed"
+    return runner_entry_boundary_reason(now, symbol=symbol)
+
+
 def entry_boundary_reason(now: datetime, *, decision_at: datetime | None = None,
                           symbol: str = "MNQ", regular_only: bool = True) -> str | None:
     now = as_utc(now)
