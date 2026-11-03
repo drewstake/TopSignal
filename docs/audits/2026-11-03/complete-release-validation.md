@@ -32,3 +32,20 @@ archive copies; primary decisions and worker evidence remain authoritative.
 Deployment activation and final runtime verification are recorded after the
 committed source and built frontend are installed as an immutable release.
 Private configuration, account-specific receipts and backups remain outside Git.
+
+## Deployment follow-up
+
+Release 53 activated at 18:33:50 Eastern with all health endpoints passing.
+The deployed dashboard showed entry checks and current daily profit protection.
+All GitHub CI lanes passed for its source commit, including Windows and the
+PostgreSQL integration checks.
+
+A subsequent heavier burst exposed the recorder's throughput limit: batches
+stopped at 128 events even when thousands were queued, causing excessive durable
+disk commits and reported capture drops. The follow-up permits up to 2,048
+events per batch while retaining the existing 4 MiB batch-byte bound, 250 ms
+collection window, 4,096-event queue and 8 MiB queued-byte limit. FULL-sync
+durability and explicit loss reporting remain unchanged. A regression verifies
+that a queued 4,000-event burst is completely durable in no more than four
+commits. All 116 targeted recorder, strategy, profit-guard and worker-health
+tests passed after this correction. Existing lost events remain marked as lost.

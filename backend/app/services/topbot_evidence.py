@@ -173,7 +173,10 @@ class Capture:
                     continue
                 until = monotonic()+.25
                 batch_bytes = len(batch[0][1])
-                while len(batch) < 128 and batch_bytes < 4*1024**2 and monotonic() < until:
+                # Amortize FULL-sync disk commits when the feed arrives in bursts.
+                # Keep the same byte and collection-time bounds; a small batch
+                # count otherwise caps throughput below the incoming event rate.
+                while len(batch) < 2048 and batch_bytes < 4*1024**2 and monotonic() < until:
                     try:
                         item = self.queue.get(timeout=max(.001, until-monotonic()))
                         batch.append(item)

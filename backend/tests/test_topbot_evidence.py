@@ -47,6 +47,39 @@ def book(at, sequence, bid_size=15):
         "asks": [{"price": 20000.25+i*.25, "size": 10} for i in range(100)]}}
 
 
+def test_backlogged_burst_drains_without_excessive_durable_commits(tmp_path, monkeypatch):
+    from threading import Event
+    entered, release = Event(), Event()
+    original = Capture._capacity
+    commits = []
+    def delayed_capacity(self, growth=0):
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(5)
+        if growth:
+            commits.append(growth)
+        return original(self, growth)
+    monkeypatch.setattr(Capture, "_capacity", delayed_capacity)
+    cap = Capture("owner", CONTRACT, root=tmp_path, free_floor=0)
+    try:
+        assert entered.wait(2)
+        at = datetime.now(timezone.utc)
+        for sequence in range(4000):
+            cap.append({"event": "update", "data": {"contract_id": CONTRACT,
+                "sequence": sequence, "timestamp": at.isoformat(), "side": "bid",
+                "price": 20000, "size": 10}}, at, [])
+        assert cap.dropped == 0
+    finally:
+        release.set()
+        cap.close()
+    assert not cap.thread.is_alive()
+    rows = list(recorded_batches(cap.path))
+    assert len(rows) == 4001 and cap.durable_index == 4000
+    # On a contended disk, one fsync per small slice cannot keep up with bursts.
+    # This bounds disk work while still checking every event and the hash chain.
+    assert len(commits) <= 4
+
+
 def recorded(tmp_path, *, missing=False):
     cap = Capture("owner", CONTRACT, root=tmp_path, free_floor=0)
     state = DepthState(CONTRACT)
