@@ -53,6 +53,13 @@ def enabled() -> bool:
     return os.getenv("TOPSIGNAL_MARKET_CAPTURE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def raw_capture_enabled() -> bool:
+    # Raw feed events are optional and high volume. Keep them off the shared
+    # application database by default; the independent filesystem recorder is
+    # unaffected. Decision snapshots retain their existing enablement.
+    return enabled() and os.getenv("TOPSIGNAL_RAW_MARKET_CAPTURE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def digest(value: Any) -> str:
     return sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str, allow_nan=False).encode()).hexdigest()
 
@@ -150,12 +157,18 @@ class ObservationWriter:
         return self.queue.empty() and (thread is None or not thread.is_alive())
 
     def _persist(self, batch: list) -> None:
-        owners = {values["user_id"] for _, values in batch}
+        from ..research_storage import enabled as local_research_enabled
+        market_owners = {values["user_id"] for kind, values in batch if kind == "market"}
+        decision_owners = {values["user_id"] for kind, values in batch if kind != "market"}
+        # Migrated research is retained evidence. Capacity maintenance must use
+        # a separately reviewed backup/cleanup; do not inherit cloud pruning.
+        if local_research_enabled():
+            market_owners = decision_owners = set()
         try:
             with self.session_factory() as db:
                 # Dialect conflict-ignore prevents reconnect duplicates from
                 # invalidating an entire batch; immutable decision snapshots win first-write.
-                dialect = db.bind.dialect.name
+                dialect = db.get_bind(mapper=MarketObservation).dialect.name
                 if dialect == "postgresql":
                     from sqlalchemy.dialects.postgresql import insert
                 elif dialect == "sqlite":
@@ -170,13 +183,14 @@ class ObservationWriter:
                     model = MarketObservation if kind == "market" else DecisionResearchSnapshot
                     db.execute(insert(model).values(**values).on_conflict_do_nothing())
                 cutoff = datetime.now(timezone.utc) - timedelta(days=self.retention_days)
-                for owner in owners:
+                for owner in market_owners:
                     db.query(MarketObservation).filter(MarketObservation.user_id == owner, MarketObservation.received_at < cutoff).delete(synchronize_session=False)
                     # Keep the newest N. SQL offset lookup avoids loading IDs for
                     # a large retained archive into memory.
                     excess = db.query(MarketObservation.id).filter(MarketObservation.user_id == owner).order_by(MarketObservation.id.desc()).offset(self.record_cap).first()
                     if excess:
                         db.query(MarketObservation).filter(MarketObservation.user_id == owner, MarketObservation.id <= excess[0]).delete(synchronize_session=False)
+                for owner in decision_owners:
                     decision_cutoff = datetime.now(timezone.utc) - timedelta(days=self.decision_retention_days)
                     db.query(DecisionResearchSnapshot).filter(DecisionResearchSnapshot.user_id == owner, DecisionResearchSnapshot.observed_at < decision_cutoff).delete(synchronize_session=False)
                     excess = db.query(DecisionResearchSnapshot.id).filter(DecisionResearchSnapshot.user_id == owner).order_by(DecisionResearchSnapshot.id.desc()).offset(self.decision_record_cap).first()
@@ -210,7 +224,7 @@ writer = ObservationWriter()
 def capture_depth(*, user_id: str, contract_id: str, entry: Mapping, snapshot: Mapping | None = None,
                   received_at: datetime | None = None, source_epoch: str = "") -> bool:
     """DOM Trade/Fill volume is not documented as individual print size: omit it."""
-    if not enabled():
+    if not raw_capture_enabled():
         return False
     kind = number(entry.get("type"))
     when = timestamp(entry.get("timestamp"))
@@ -240,7 +254,7 @@ def capture_depth(*, user_id: str, contract_id: str, entry: Mapping, snapshot: M
 
 
 def capture_gap(*, user_id: str, contract_id: str, reason: str, source_epoch: str = "") -> bool:
-    if not enabled():
+    if not raw_capture_enabled():
         return False
     when = datetime.now(timezone.utc)
     values = dict(user_id=user_id, contract_id=contract_id, source="projectx_gateway_depth", event_type="gap",
@@ -255,7 +269,7 @@ def capture_trade(*, user_id: str, contract_id: str, payload: Mapping, received_
     Aggressor side stays unknown unless explicitly supplied under a named
     aggressor field. Provider `type`/`side` enums are not guessed.
     """
-    if not enabled():
+    if not raw_capture_enabled():
         return False
     when = timestamp(payload.get("timestamp"))
     price, size = number(payload.get("price")), number(payload.get("volume"))
@@ -306,7 +320,7 @@ def observation_status(db, *, user_id: str, contract_id: str | None = None) -> d
         warnings.append("Select one contract to calculate a volume profile and spread summary.")
     if stats["dropped"] or stats["write_errors"]:
         warnings.append("Some observations were lost; process counters report dropped or failed writes.")
-    return {"enabled": enabled(), "capture_mode": "viewer_driven", "retention_days": writer.retention_days,
+    return {"enabled": raw_capture_enabled(), "decision_capture_enabled": enabled(), "capture_mode": "viewer_driven", "retention_days": writer.retention_days,
             "record_cap": writer.record_cap, "queue_capacity": writer.capacity,
             **stats, "event_count": count, "first_received_at": first, "last_received_at": last, "counts": counts,
             "contracts": contracts, "profile": {"contract_id": selected, "trade_count": trades.count(), "total_volume": total_volume,

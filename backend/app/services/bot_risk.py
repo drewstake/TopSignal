@@ -51,6 +51,7 @@ class RiskEvaluationContext:
     proposed_stop_risk: float | None = None
     require_proposed_stop_risk: bool = False
     exchange_session_open: bool = True
+    daily_entry_limit_enabled: bool = True
 
 
 def evaluate_risk(context: RiskEvaluationContext) -> list[RiskBlock]:
@@ -238,7 +239,7 @@ def evaluate_risk(context: RiskEvaluationContext) -> list[RiskBlock]:
                     severity="critical",
                 )
             )
-        elif context.trades_today >= context.max_trades_per_day:
+        elif context.daily_entry_limit_enabled is not False and context.trades_today >= context.max_trades_per_day:
             blocks.append(RiskBlock(code="max_trades_per_day", message="Daily bot trade limit has been reached."))
 
         daily_values_are_finite = (

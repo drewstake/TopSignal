@@ -74,14 +74,17 @@ def manage(db, *, entry, plan, client, stops, worker_lease_token, now):
     if runner.get("confirmed_stop") != current:
         record(**scope(entry), kind="stop_observed", old_stop=runner.get("confirmed_stop"), new_stop=current,
                order_id=stop["order_id"], reason="Broker protective stop readback")
-    quote = feed.snapshot(entry.user_id, entry.contract_id, now=now)
+    # Broker/database reads can outlive the cycle timestamp. Read the clock
+    # with the locked book so a newly arrived tick is not rejected as future.
+    quote = feed.snapshot(entry.user_id, entry.contract_id)
+    checked_at = utc(quote["checked_at"]) if quote.get("checked_at") else datetime.now(timezone.utc)
     # Protection verification is independent of receiving a new quote.
     initial = runner["entry_price"] + (-25 if entry.side == "BUY" else 25)
     if (entry.side == "BUY" and current < initial-.001) or (entry.side == "SELL" and current > initial+.001):
         plan["runner_exit_reason"] = "protective_stop_too_wide"
         return True
     runner["confirmed_stop"] = current
-    if not quote.get("observed_at") or not 0 <= (now-utc(quote["observed_at"])).total_seconds() <= 2:
+    if not quote.get("ready") or not quote.get("observed_at") or not 0 <= (checked_at-utc(quote["observed_at"])).total_seconds() <= 2:
         runner["management_status"] = "Waiting for fresh prices; broker stop remains active"
         return False
     mark = quote["bid"] if entry.side == "BUY" else quote["ask"]

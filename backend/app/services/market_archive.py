@@ -104,16 +104,17 @@ CREATE TABLE IF NOT EXISTS coverage(stream TEXT NOT NULL, day TEXT NOT NULL, pay
 
 
 class Archive:
-    def __init__(self, owner, root=None):
+    def __init__(self, owner, root=None, *, write_timeout=.25):
         self.owner = str(owner)
         self.path = location(owner, root)
+        self.write_timeout = min(2., max(0., write_timeout))
 
     @contextmanager
     def transaction(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if shutil.disk_usage(self.path.parent).free < 512 * 1024 * 1024:
             raise OSError('archive_free_space_floor')
-        db = sqlite3.connect(self.path, timeout=.25)
+        db = sqlite3.connect(self.path, timeout=self.write_timeout)
         try:
             db.execute('PRAGMA foreign_keys=ON')
             db.execute('PRAGMA journal_mode=WAL')
@@ -121,10 +122,12 @@ class Archive:
             version = db.execute('PRAGMA user_version').fetchone()[0]
             if version not in (0, VERSION):
                 raise ValueError('Unsupported archive schema')
-            db.executescript(SCHEMA)
+            if version == 0:
+                db.executescript(SCHEMA)
             db.execute('BEGIN IMMEDIATE')
-            db.execute(f'PRAGMA user_version={VERSION}')
-            db.execute('INSERT OR IGNORE INTO metadata VALUES (?,?)', ('schema', canonical({'version': VERSION, 'calendar': CALENDAR, 'created_at': stamp(datetime.now(timezone.utc)), 'storage': 'local SQLite WAL FULL', 'retention': 'no automatic deletion'})))
+            if version == 0:
+                db.execute(f'PRAGMA user_version={VERSION}')
+                db.execute('INSERT OR IGNORE INTO metadata VALUES (?,?)', ('schema', canonical({'version': VERSION, 'calendar': CALENDAR, 'created_at': stamp(datetime.now(timezone.utc)), 'storage': 'local SQLite WAL FULL', 'retention': 'no automatic deletion'})))
             yield db
             set_state(db, 'last_write', stamp(datetime.now(timezone.utc)))
             db.commit()
@@ -218,8 +221,13 @@ def put_bar(db, row, received):
     ident = digest(row)
     stream = stream_key(row['contract'], row['timeframe_minutes'], row['origin'], row['live_requested'])
     at = row['timestamp']
-    db.execute('INSERT OR IGNORE INTO bars VALUES (?,?,?,?,?)', (ident, stream, at, received, pack(row)))
     old = db.execute('SELECT id FROM heads WHERE stream=? AND at=?', (stream, at)).fetchone()
+    if old is not None and old[0] == ident:
+        # Every one-minute collection revisits the day's derived bars. Avoid
+        # recompressing/reinserting hundreds of identical immutable rows while
+        # holding SQLite's sole writer lock. New revisions still follow below.
+        return ident
+    db.execute('INSERT OR IGNORE INTO bars VALUES (?,?,?,?,?)', (ident, stream, at, received, pack(row)))
     if old is None or old[0] != ident:
         db.execute('INSERT INTO revisions(stream,at,id,received) VALUES (?,?,?,?)', (stream, at, ident, received))
         db.execute('INSERT INTO heads VALUES (?,?,?) ON CONFLICT(stream,at) DO UPDATE SET id=excluded.id', (stream, at, ident))

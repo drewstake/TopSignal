@@ -13,7 +13,7 @@ the development default is `backend/storage/databento`.
 | Bulk historical candles, derived timeframes, replay arrays | Local Parquet/mmap cache; new instruments follow this policy |
 | Accounts, executed trades, journals, expenses, credentials, bot configuration | Application database with existing tenant protections |
 | Saved backtest results | Application database, with bounded detail; do not embed the complete input candle history |
-| Existing ProjectX candle cache and other growing tables | Measure before expanding lookback or retention; bulk research history stays local |
+| Raw observations, ProjectX candle caches, detailed research snapshots | Local SQLite under `TOPSIGNAL_DATABENTO_CACHE_DIR`; cloud definitions remain fenced |
 
 The legacy `backend/tools/import_databento.py` and its service entry points now
 reject non-SQLite database imports before archive inspection or connection.
@@ -134,6 +134,31 @@ source folder's `validation.json` and the cache's
 August 29 as degraded; checksum verification does not certify feed completeness.
 No cloud historical rows were written. These local source files still require
 an off-device backup destination.
+
+## November 2, 2026 local research cutover
+
+Production release `20261102-local-research-41` moved `market_observations`,
+`projectx_market_candles` and `decision_research_snapshots` to
+`D:/TopSignal/data/databento/research-store-v1/research.sqlite3` on peteamdpc.
+All 442,020 frozen rows were restored and checked on both peteamdpc and the
+development PC using exact counts, SHA-256 and SQLite integrity checks.
+The existing cache archive job includes this SQLite store using online backup.
+
+After explicit user approval, only those three frozen cloud table contents were
+removed. Database allocation fell from 450,546,835 to 85,855,379 bytes, reclaiming
+364,691,456 bytes. Table definitions and write fences remain. Accounts, trades,
+journals, credentials, bot settings, order attempts and saved results were
+preserved. This approval does not authorize other cloud cleanup.
+
+Original sources and complete migration exports are retained off device.
+Execution moved to SSD PostgreSQL on November 3 after the account was verified
+flat, old cloud writers were fenced, and the final encrypted snapshot was fully
+restored on both computers. Release `20261103-local-execution-45` uses local
+authority `b15899c2-5a5b-4352-aa5d-162c600188eb` and durably mirrors compact
+records asynchronously. Supabase must not be used as an execution fallback.
+No additional cloud cleanup was performed or authorized. See the
+[deployment evidence](audits/2026-11-02/local-first-storage.md) and
+[recovery runbook](local-first-storage.md).
 
 ## If sign-in or service health fails again
 

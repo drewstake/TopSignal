@@ -7,11 +7,19 @@ CONFIGURED = True
 MESSAGE = "TopBot has no strategy configured. Define your strategy before starting a run."
 DEFAULTS = {"revision": REVISION, "imbalance_threshold": 0.10, "persistence_seconds": 30,
             "depth_levels": 100, "initial_stop_points": 25, "trail_activation_points": 25,
-            "trail_distance_points": 25, "practice_auto_resume": False}
+            "trail_distance_points": 25, "practice_auto_resume": False,
+            "daily_entry_limit_enabled": True}
 
 
 def selected(params):
     return isinstance(params, dict) and params.get("revision") == REVISION
+
+
+def daily_entry_limit_enabled(config):
+    """Only an explicit DOM account preference disables the entry-count cap."""
+    params = config.strategy_params
+    return not (config.strategy_type == "topbot_adaptive" and selected(params)
+                and params.get("daily_entry_limit_enabled") is False)
 
 
 def normalize_params(params=None):
@@ -22,6 +30,10 @@ def normalize_params(params=None):
     if not isinstance(auto_resume, bool):
         raise ValueError("Invalid practice_auto_resume")
     result["practice_auto_resume"] = auto_resume
+    entry_limit = (params or {}).get("daily_entry_limit_enabled", True)
+    if not isinstance(entry_limit, bool):
+        raise ValueError("Invalid daily_entry_limit_enabled")
+    result["daily_entry_limit_enabled"] = entry_limit
     for name, low, high in (("imbalance_threshold", 0, .9), ("persistence_seconds", 0, 300)):
         value = (params or {}).get(name, result[name])
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low <= value <= high:
@@ -42,6 +54,7 @@ def evaluate(candles, *, strategy_params=None, owner=None, contract_id=None, obs
     params = normalize_params(strategy_params)
     payload = {"strategy_type": "topbot_adaptive", "strategy_revision": params["revision"],
                "strategy_configured": selected(params), "live_routing_allowed": False}
+    payload["daily_entry_limit_enabled"] = params.get("daily_entry_limit_enabled", True)
     if not CONFIGURED or not selected(params):
         return SignalResult("HOLD", MESSAGE, None, None, payload)
     observation = observation if observation is not None else feed.snapshot(owner, contract_id, now=now)

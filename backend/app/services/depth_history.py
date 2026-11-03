@@ -1,23 +1,66 @@
 """Authenticated caller selects an owner; transport configuration is server-owned."""
 import json
+from collections import OrderedDict
+from concurrent.futures import Future
+from datetime import timedelta
 import os
 from pathlib import Path
 import re
 import subprocess
-from threading import BoundedSemaphore
+from threading import BoundedSemaphore, Lock
+from time import monotonic
 
-from tools.read_depth_history import read_history
+from tools.read_depth_history import read_history, timestamp
 from .probabilistic_shadow import cache_root, scope_hash
 
 _slots = BoundedSemaphore(2)
+_cache_lock = Lock()
+_cache = OrderedDict()
+_pending = {}
 
 
 def history_source_path():
     return Path(__file__).resolve().parents[2] / 'storage/depth-history-source.json'
 
 
-def account_history(*, user_id, start=None, end=None, scope='all'):
-    query = dict(owner_hash=scope_hash(str(user_id)), start=start, end=end, scope=scope)
+def account_history(*, user_id, start=None, end=None, scope='all', window='latest'):
+    # Share duplicate tab requests. Cache only bounded response JSON in memory,
+    # scoped to the authenticated owner and server-controlled source revision.
+    config = history_source_path()
+    revision = (config.stat().st_mtime_ns, config.stat().st_size) if config.exists() else None
+    key = (scope_hash(str(user_id)), start, end, scope, window, str(config), revision, str(cache_root()))
+    with _cache_lock:
+        cached = _cache.get(key)
+        if cached and monotonic() - cached[0] < 30:
+            _cache.move_to_end(key)
+            return json.loads(cached[1])
+        future = _pending.get(key)
+        leader = future is None
+        if leader:
+            future = _pending[key] = Future()
+    if not leader:
+        return json.loads(future.result(timeout=125))
+    try:
+        result = _read_account_history(user_id=user_id, start=start, end=end, scope=scope, window=window)
+        payload = json.dumps(result, separators=(',', ':'), allow_nan=False)
+        with _cache_lock:
+            _cache[key] = (monotonic(), payload)
+            _cache.move_to_end(key)
+            while len(_cache) > 4 or sum(len(item[1]) for item in _cache.values()) > 24 * 1024**2:
+                _cache.popitem(last=False)
+        future.set_result(payload)
+        return result
+    except Exception as exc:
+        future.set_exception(exc)
+        raise
+    finally:
+        with _cache_lock:
+            _pending.pop(key, None)
+
+
+def _read_account_history(*, user_id, start=None, end=None, scope='all', window='latest'):
+    query = dict(owner_hash=scope_hash(str(user_id)), start=start, end=end, scope=scope, window=window)
+    wide = window == 'session' or bool(start and end and timestamp(end) - timestamp(start) > timedelta(hours=1))
     if not _slots.acquire(blocking=False):
         raise RuntimeError('History is busy. Try again in a moment.')
     try:
@@ -37,12 +80,12 @@ def account_history(*, user_id, start=None, end=None, scope='all'):
             '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=5',
             '-o', 'ForwardAgent=no', '-o', 'ClearAllForwardings=yes', config['ssh_target'],
             config['python_path'], '-B', config['reader_path'], '--root', config['recording_root'],
-        ], input=json.dumps(query), text=True, encoding='utf-8', capture_output=True, timeout=25,
+        ], input=json.dumps(query), text=True, encoding='utf-8', capture_output=True, timeout=120 if wide else 25,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-        if result.returncode or len(result.stdout) > 12 * 1024**2:
+        if result.returncode or len(result.stdout) > 128 * 1024**2:
             raise RuntimeError('Host history is unavailable. Check the private host connection or choose a shorter range.')
         payload = json.loads(result.stdout)
-        if 'points' not in payload or len(payload['points']) > 20000:
+        if 'points' not in payload or len(payload['points']) > 100000:
             raise RuntimeError('Host returned an invalid history response.')
         return dict(payload, source=str(config.get('label', 'Recording host'))[:80])
     except (subprocess.SubprocessError, OSError, json.JSONDecodeError, KeyError) as from_error:

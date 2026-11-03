@@ -142,6 +142,10 @@ def test_reconnect_resubscribes_and_preserves_disconnect_boundary(tmp_path,monke
     if record_totals:
         assert status['recording']['contract_totals']['enabled'] is True
         assert verify_segments(tmp_path/'data'/'totals')['verified_events'] >= 5
+        health=json.loads((tmp_path/'data'/'recording-health.json').read_text())
+        assert health['last_totals_write_at']
+        assert health['pending_measurements']==0
+        assert health['recorded_measurements']==health['durable_measurement_index']
     assert 'fixture-token' not in (runtime/'status.json').read_text()
 
 
@@ -149,6 +153,46 @@ def test_market_client_refuses_order_submission_before_network():
     from app.services.depth_capture import ReadOnlyMarketClient
     client=ReadOnlyMarketClient(base_url='https://api.topstepx.com',username='fixture',api_key='fixture')
     with pytest.raises(RuntimeError):client._request_once('POST','/api/Order/place',json={})
+
+
+def test_reconnect_backoff_resets_after_healthy_subscription(tmp_path, monkeypatch):
+    import app.services.projectx_hubs as hubs
+    import tools.record_market_depth as service
+    from types import SimpleNamespace
+    runtime = tmp_path / 'runtime'; runtime.mkdir()
+    clock, pauses, connects = [0.], [], []
+    config = dict(runtime_root=str(runtime), max_bytes=100*1024**2, reserve_bytes=0,
+                  review_after_days=30, segment_seconds=60)
+    class Client:
+        def search_contracts(self, **kwargs):
+            return [dict(id=CONTRACT, active_contract=True, tick_size=.25, tick_value=.5)]
+        def get_access_token(self): return 'fixture-token'
+    class Socket:
+        def __init__(self):
+            connects.append(len(pauses)); self.number = len(connects); self.receives = 0
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def send(self, text): pass
+        async def recv(self):
+            self.receives += 1
+            if self.number == 2 and self.receives == 1:
+                clock[0] += 31
+                return '{"type":6}\x1e'
+            if self.number == 3:
+                (runtime / 'STOP').write_text('test complete')
+                return '{"type":6}\x1e'
+            raise ConnectionError('isolated transport failure')
+    async def handshake(socket):
+        return [dict(type=3, invocationId=str(i)) for i in range(3)]
+    async def sleep(seconds):
+        pauses.append(seconds); clock[0] += seconds
+    monkeypatch.setattr(service, 'time', SimpleNamespace(monotonic=lambda:clock[0], monotonic_ns=time.monotonic_ns))
+    monkeypatch.setattr(service.asyncio, 'sleep', sleep)
+    monkeypatch.setattr(hubs, '_open_hub', lambda *args, **kwargs:Socket())
+    monkeypatch.setattr(hubs, '_signalr_handshake', handshake)
+    assert asyncio.run(record(config, Client(), OWNER, tmp_path/'data')) == 'stopped'
+    assert connects == [0, 2, 4]  # Both isolated failures use the initial two-second wait.
+    assert json.loads((runtime/'status.json').read_text())['errors'] == 2
 
 
 @pytest.mark.parametrize('failure',['missing_acknowledgements','stalled_transport'])

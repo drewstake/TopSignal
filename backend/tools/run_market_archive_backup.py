@@ -52,7 +52,11 @@ def ssh_options(config):
             '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=2']
 
 
-def remote(config, script, *, timeout=1200):
+def remote(config, script, *, timeout=None):
+    if timeout is None:
+        timeout = int(config.get('remote_timeout_seconds', 1200))
+        if not 120 <= timeout <= 7200:
+            raise ValueError('Remote backup deadline must be between two minutes and two hours')
     encoded = base64.b64encode(("$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue';\n"+script).encode('utf-16-le')).decode()
     return run(['ssh', *ssh_options(config), config['ssh_host'], 'powershell', '-NoProfile',
                 '-NonInteractive', '-EncodedCommand', encoded], timeout=timeout)

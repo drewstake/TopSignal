@@ -215,7 +215,7 @@ def test_restore_checks_original_inputs_and_model(tmp_path, backup_tool):
         restore_check(snapshot, tmp_path/'never-restored')
 
 
-@pytest.mark.parametrize('latest', ['hold_without_model', 'missing_identity', 'missing_artifact'])
+@pytest.mark.parametrize('latest', ['hold_without_model', 'buy_without_model', 'sell_without_model', 'missing_identity', 'missing_artifact'])
 def test_restore_after_model_free_hold_still_checks_model_integrity(tmp_path, backup_tool, latest):
     from check_market_archive_restore import restore_check
     from backup_market_cache import backup
@@ -230,6 +230,8 @@ def test_restore_after_model_free_hold_still_checks_model_integrity(tmp_path, ba
     previous['forecast']['artifact_sha256'] = identity
     archive.decision(previous)
     current = prepared(at+timedelta(minutes=5), ident=2)
+    if latest in {'buy_without_model', 'sell_without_model'}:
+        current['action'] = latest.split('_')[0].upper()
     if latest == 'missing_identity':
         current['forecast']['forecasts'] = {'BUY': {'net': 1}}
     elif latest == 'missing_artifact':
@@ -239,7 +241,7 @@ def test_restore_after_model_free_hold_still_checks_model_integrity(tmp_path, ba
         db.executemany('INSERT INTO decision_commits VALUES (?,?)', [('1', a.stamp(at)), ('2', a.stamp(at))])
     snapshot = tmp_path/'backup'
     backup(source, snapshot)
-    if latest != 'hold_without_model':
+    if latest in {'missing_identity', 'missing_artifact'}:
         with pytest.raises(ValueError, match='Original model missing or corrupt'):
             restore_check(snapshot, tmp_path/'restore')
     else:

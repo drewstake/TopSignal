@@ -1448,11 +1448,24 @@ def _evaluate_bot_config_impl(
     with stage("collected_context"):
         from .market_context_bundle import build_collected_context, integrate_collected_context
         evaluation_time = datetime.now(timezone.utc)
-        collected_context = build_collected_context(
-            db, user_id=user_id, contract_id=execution_contract_id, live=bool(getattr(latest_candle, "live", False)),
-            as_of=_market_candle_close_timestamp(latest_candle) if latest_candle is not None else evaluation_time,
-            captured_at=evaluation_time,
-        )
+        if str(config.strategy_type) == "topbot_adaptive" and dom_selected(config.strategy_params):
+            # DOM entries use the live, qualified depth episode. Closed-candle
+            # explanation queries do not inform this strategy and can outlive
+            # the signal while holding execution locks. Keep them off its path;
+            # authoritative depth/account/position/risk checks still run below.
+            collected_context = {
+                "as_of": evaluation_time.isoformat(), "contract_id": execution_contract_id,
+                "status": "not_collected",
+                "reason": "Optional closed-candle context is not collected during DOM execution.",
+                "events": {"news_risk": "unknown"},
+                "order_book": {"eligible": False}, "volume_profile": {"eligible": False},
+            }
+        else:
+            collected_context = build_collected_context(
+                db, user_id=user_id, contract_id=execution_contract_id, live=bool(getattr(latest_candle, "live", False)),
+                as_of=_market_candle_close_timestamp(latest_candle) if latest_candle is not None else evaluation_time,
+                captured_at=evaluation_time,
+            )
         if latest_candle is None:
             # Quotes cannot create a closed-candle decision when no candle exists.
             for key in ("order_book", "volume_profile"):
@@ -3904,7 +3917,7 @@ def store_market_candles(
 
     timestamps = [bar["timestamp"] for bar in normalized]
 
-    dialect_name = _session_dialect_name(db)
+    dialect_name = db.get_bind(mapper=ProjectXMarketCandle).dialect.name
     if dialect_name in {"postgresql", "sqlite"}:
         values = [
             _market_candle_insert_values(
@@ -11092,6 +11105,9 @@ def evaluate_risk_gates(
     reconcile_live_submissions: bool = True,
     now: datetime | None = None,
 ) -> list[RiskBlock]:
+    # Explicit clocks remain deterministic for replay/tests. Live DOM must read
+    # its clock with the book, after the database/provider checks below.
+    depth_check_clock = _as_utc(now) if now is not None else None
     now = _as_utc(now or datetime.now(timezone.utc))
     order_size = float(requested_order_size if requested_order_size is not None else config.order_size)
     signed_change = order_size if action == "BUY" else -order_size
@@ -11432,21 +11448,46 @@ def evaluate_risk_gates(
     if str(config.strategy_type) == "topbot_adaptive" and dom_selected(config.strategy_params) and not position_reducing:
         from .topbot_depth import feed, utc
         from .topbot_session import runner_entry_boundary_reason
+        depth = feed.snapshot(user_id, contract_id, now=depth_check_clock)
+        now = utc(depth["checked_at"]) if depth.get("checked_at") else depth_check_clock or datetime.now(timezone.utc)
         boundary = runner_entry_boundary_reason(now, symbol=symbol or "MNQ")
         if boundary:
             additional_blocks.append(RiskBlock(
                 code=boundary,
                 message="New entries pause at TopBot's daily flatten cutoff until the next trading session.",
             ))
-        depth = feed.snapshot(user_id, contract_id, now=now)
         signal_depth = (decision.raw_payload or {}).get("depth_entry", {}) if decision is not None else {}
         latest_candle_age_seconds = (now-utc(depth["observed_at"])).total_seconds() if depth.get("ready") else None
         params = _normalize_strategy_params("topbot_adaptive", config.strategy_params)
-        if (not depth.get("ready") or not depth.get("episode_at") or depth.get("episode_at") != signal_depth.get("episode_at")
-                or abs(depth.get("imbalance", 0)) < params["imbalance_threshold"]
-                or depth.get("persistence_seconds", 0) < params["persistence_seconds"]
-                or (action == "SELL") != (depth.get("imbalance", 0) > 0)):
-            additional_blocks.append(RiskBlock(code="dom_signal_expired", message="Contrarian depth no longer qualifies; entry skipped."))
+        failed_checks = []
+        if not depth.get("ready"):
+            failed_checks.append("depth_unavailable")
+        else:
+            if not depth.get("episode_at"):
+                failed_checks.append("no_qualifying_episode")
+            elif depth.get("episode_at") != signal_depth.get("episode_at"):
+                failed_checks.append("episode_changed")
+            if abs(depth.get("imbalance", 0)) < params["imbalance_threshold"]:
+                failed_checks.append("imbalance_below_threshold")
+            if depth.get("persistence_seconds", 0) < params["persistence_seconds"]:
+                failed_checks.append("persistence_too_short")
+            if (action == "SELL") != (depth.get("imbalance", 0) > 0):
+                failed_checks.append("direction_changed")
+        if decision is not None:
+            decision.raw_payload = {**(decision.raw_payload or {}), "depth_recheck": {
+                "checked_at": now.isoformat(), "observed_at": depth.get("observed_at"),
+                "age_seconds": latest_candle_age_seconds, "ready": bool(depth.get("ready")),
+                "reason": depth.get("reason"), "episode_at": depth.get("episode_at"),
+                "signal_episode_at": signal_depth.get("episode_at"), "imbalance": depth.get("imbalance"),
+                "persistence_seconds": depth.get("persistence_seconds"),
+                "required_imbalance": params["imbalance_threshold"], "required_persistence_seconds": params["persistence_seconds"],
+                "failed_checks": failed_checks, "phase": "final" if perform_live_preflight else "initial",
+            }}
+        if failed_checks:
+            details = ", ".join(check.replace("_", " ") for check in failed_checks)
+            if "depth_unavailable" in failed_checks:
+                details += f" ({depth.get('reason', 'No valid depth')})"
+            additional_blocks.append(RiskBlock(code="dom_signal_expired", message=f"Contrarian depth no longer qualifies; entry skipped: {details}."))
         if preflight is not None and abs(preflight.current_position_qty) > 1e-9:
             additional_blocks.append(RiskBlock(code="dom_entry_requires_flat", message="TopBot does not add to or adopt existing positions."))
         if order_size != 1 or float(config.max_contracts) != 1:
@@ -11467,6 +11508,7 @@ def evaluate_risk_gates(
         order_size=order_size,
         instrument_spec=instrument_spec,
     )
+    from .topbot_strategy import daily_entry_limit_enabled
     return additional_blocks + evaluate_risk(
         RiskEvaluationContext(
             bot_enabled=bool(config.enabled),
@@ -11486,6 +11528,7 @@ def evaluate_risk_gates(
             max_open_position=float(config.max_open_position),
             trades_today=trades_today,
             max_trades_per_day=int(config.max_trades_per_day),
+            daily_entry_limit_enabled=daily_entry_limit_enabled(config),
             daily_pnl=daily_pnl,
             max_daily_loss=float(config.max_daily_loss),
             latest_candle_age_seconds=latest_candle_age_seconds,
@@ -12796,6 +12839,7 @@ def _create_risk_event(
                 "authoritative_target_delta",
                 "authoritative_required_side",
                 "target_position_qty",
+                "depth_recheck",
             ):
                 if key in decision.raw_payload:
                     raw_payload[key] = decision.raw_payload[key]

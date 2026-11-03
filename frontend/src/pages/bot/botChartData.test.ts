@@ -120,7 +120,7 @@ describe("buildCandlestickData", () => {
       activityDecisions: [decision(), decision({id: 2, decision_type: "risk_reject"}), decision({id: 3, decision_type: "duplicate_skip"})] });
     expect(markers).toHaveLength(2);
     expect(markers[0].time).toBe(Date.parse("2026-04-26T13:39:00Z") / 1000);
-    expect(markers[1].text).toBe("○ BLOCKED BUY");
+    expect(markers[1].text).toBe("○ BLOCKED BUY @ 18,450.50");
     expect(markers[1].color).not.toBe("transparent");
     expect(buildSignalMarkers({ candles, activityDecisions: [decision({candle_timestamp: "invalid"})] })).toEqual([]);
   });
@@ -566,7 +566,7 @@ describe("buildSignalMarkers", () => {
       ],
     });
 
-    expect(markers.map((marker) => marker.text)).toEqual(["BUY", "SELL"]);
+    expect(markers.map((marker) => marker.text)).toEqual(["BUY @ 18,450.50", "SELL @ 18,450.50"]);
     expect(markers.map((marker) => marker.id)).toEqual(["decision-1", "decision-2"]);
   });
 
@@ -611,7 +611,7 @@ describe("buildSignalMarkers", () => {
     });
 
     expect(markers).toHaveLength(1);
-    expect(markers[0]).toMatchObject({ id: "decision-9", text: "BUY", time: candles[0].time });
+    expect(markers[0]).toMatchObject({ id: "decision-9", text: "BUY @ 18,450.50", time: candles[0].time });
   });
 
   it("falls back to the loaded candle range when aggregate bars are not UTC-aligned", () => {
@@ -630,6 +630,6 @@ describe("buildSignalMarkers", () => {
     });
 
     expect(markers).toHaveLength(1);
-    expect(markers[0]).toMatchObject({ id: "decision-10", text: "SELL", time: candles[0].time });
+    expect(markers[0]).toMatchObject({ id: "decision-10", text: "SELL @ 18,450.50", time: candles[0].time });
   });
 });

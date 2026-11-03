@@ -70,6 +70,8 @@ export class OrderBookStore {
   private sequence: number | null = null;
   private lastTimestampMs: number | null = null;
   private awaitingSnapshot = true;
+  private generation = 0;
+  private readonly captureId = `live-${crypto.randomUUID()}`;
   private visibleLevelCount: OrderBookLevelCount;
   private askSlots: Array<OrderBookLevelView | null> = [];
   private bidSlots: Array<OrderBookLevelView | null> = [];
@@ -82,8 +84,11 @@ export class OrderBookStore {
   private readonly spreadListeners = new Set<StoreListener>();
   private readonly totalsListeners = new Set<StoreListener>();
   private readonly slotListeners = new Map<string, Set<StoreListener>>();
+  private readonly presentationIntervalMs: number;
+  private presentationTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(contractId?: string | null, visibleLevelCount: OrderBookLevelCount = 20) {
+  constructor(contractId?: string | null, visibleLevelCount: OrderBookLevelCount = 20, presentationIntervalMs = 0) {
+    this.presentationIntervalMs = presentationIntervalMs;
     this.contractId = normalizeOrderBookContractId(contractId);
     this.visibleLevelCount = visibleLevelCount;
     this.meta = {
@@ -102,6 +107,33 @@ export class OrderBookStore {
   getDepthSnapshot = (): OrderBookDepthSnapshot => this.depth;
 
   getTotalsSnapshot = (): OrderBookTotalsSnapshot => this.totals;
+
+  cancelPendingPresentation = (): void => {
+    if (this.presentationTimer !== null) clearTimeout(this.presentationTimer);
+    this.presentationTimer = null;
+  };
+
+  /** Apply every provider event immediately; only batch ladder calculations and React notifications. */
+  private schedulePresentation(): void {
+    if (!this.presentationIntervalMs) { this.recomputeVisibleBook(); return; }
+    if (this.presentationTimer !== null) return;
+    this.presentationTimer = setTimeout(() => {
+      this.presentationTimer = null;
+      this.recomputeVisibleBook();
+    }, this.presentationIntervalMs);
+  }
+
+  /** Full received book, independent of the ladder's display filter. Never retimestamp stale data. */
+  getLiquiditySnapshot(now = Date.now()) {
+    if (this.awaitingSnapshot || this.meta.connection !== "connected" || !this.contractId ||
+        this.lastTimestampMs === null || now - this.lastTimestampMs > 2000 || this.lastTimestampMs > now + 1000) return null;
+    return {
+      contractId: this.contractId, timestampMs: this.lastTimestampMs,
+      captureId: this.captureId, generation: this.generation,
+      bids: [...this.bids].sort((a, b) => b[0] - a[0]),
+      asks: [...this.asks].sort((a, b) => a[0] - b[0]),
+    };
+  }
 
   getAskSlotSnapshot = (index: number): OrderBookLevelView | null => this.askSlots[index] ?? null;
 
@@ -159,6 +191,7 @@ export class OrderBookStore {
       // Incremental events are unsafe until the reconnect's authoritative
       // snapshot has re-established the book.
       this.awaitingSnapshot = true;
+      this.cancelPendingPresentation();
     }
     if (state.state === "market_closed") {
       this.bids.clear();
@@ -188,6 +221,10 @@ export class OrderBookStore {
       return false;
     }
     const snapshotTimestampMs = parseTimestampMs(snapshot.timestamp);
+    const resetPresentation = this.awaitingSnapshot || snapshot.reset;
+    if (this.awaitingSnapshot || snapshot.reset || (snapshot.sequence !== null && this.sequence !== null && snapshot.sequence < this.sequence)) {
+      this.generation += 1;
+    }
 
     const nextBids = levelsToMap(snapshot.bids);
     const nextAsks = levelsToMap(snapshot.asks);
@@ -201,7 +238,8 @@ export class OrderBookStore {
       hasSnapshot: true,
       hasDepth: nextBids.size > 0 || nextAsks.size > 0,
     });
-    this.recomputeVisibleBook();
+    if (resetPresentation) this.recomputeVisibleBook();
+    else this.schedulePresentation();
     return true;
   }
 
@@ -226,6 +264,7 @@ export class OrderBookStore {
     }
     if (update.sequence !== null && this.sequence !== null && update.sequence !== this.sequence + 1) {
       this.awaitingSnapshot = true;
+      this.cancelPendingPresentation();
       this.replaceMeta({
         ...this.meta,
         connection: "reconnecting",
@@ -260,7 +299,7 @@ export class OrderBookStore {
     const changed = update.size === 0 ? previousSize !== undefined : previousSize !== update.size;
     if (changed) {
       this.replaceMeta({ ...this.meta, hasDepth: this.bids.size > 0 || this.asks.size > 0 });
-      this.recomputeVisibleBook();
+      this.schedulePresentation();
     }
     return "applied";
   }
@@ -308,6 +347,7 @@ export class OrderBookStore {
   }
 
   private recomputeVisibleBook(): void {
+    this.cancelPendingPresentation();
     const limit = this.visibleLevelCount === "all" ? undefined : this.visibleLevelCount;
     const asks = [...this.asks.entries()]
       .sort(([leftPrice], [rightPrice]) => leftPrice - rightPrice)

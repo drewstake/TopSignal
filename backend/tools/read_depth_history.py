@@ -4,7 +4,9 @@ Standalone stdlib entry point also used over the private host SSH connection.
 No database, credentials, recording changes, or trading process dependency.
 """
 import argparse
-from datetime import datetime, timedelta, timezone
+from collections import OrderedDict, Counter
+from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 import gzip
 import hashlib
 import io
@@ -13,11 +15,132 @@ import math
 from pathlib import Path
 import re
 import sys
+from threading import Lock
 
-MAX_POINTS = 20000
+MAX_POINTS = 100000
 MAX_RAW_BYTES = 64 * 1024**2
+MAX_SESSION_RAW_BYTES = 2 * 1024**3
 MAX_FILES = 50000
 SCOPES = {'all', '1', '5', '10', '20', '50', '100'}
+
+# Sealed manifests are immutable commit receipts. Keep only their small parsed
+# metadata, never raw recordings or replay arrays. Recheck paths and file
+# identity on every request so replacement, new segments and tampering remain
+# visible. The long-running API reuses this cache across history refreshes.
+_MANIFEST_CACHE_ENTRIES = 4096
+_MANIFEST_CACHE_BYTES = 8 * 1024**2
+_manifest_cache = OrderedDict()
+_manifest_cache_bytes = 0
+_manifest_cache_lock = Lock()
+
+
+def read_manifest(marker, root):
+    global _manifest_cache_bytes
+    safe_path(marker, root)
+    info = marker.stat()
+    if info.st_size > 16384:
+        raise ValueError('Oversized manifest.')
+    key = str(marker.absolute())
+    signature = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    with _manifest_cache_lock:
+        cached = _manifest_cache.get(key)
+        if cached and cached[0] == signature:
+            _manifest_cache.move_to_end(key)
+            return cached[1]
+    # Use a bounded read even if a file changes between stat and open.
+    with marker.open('rb') as stream:
+        raw = stream.read(16385)
+    if len(raw) > 16384:
+        raise ValueError('Oversized manifest.')
+    manifest = json.loads(raw)
+    if not isinstance(manifest, dict):
+        raise ValueError('Invalid manifest.')
+    with _manifest_cache_lock:
+        old = _manifest_cache.pop(key, None)
+        if old:
+            _manifest_cache_bytes -= old[2]
+        _manifest_cache[key] = (signature, manifest, len(raw))
+        _manifest_cache_bytes += len(raw)
+        while (len(_manifest_cache) > _MANIFEST_CACHE_ENTRIES
+               or _manifest_cache_bytes > _MANIFEST_CACHE_BYTES):
+            _, evicted = _manifest_cache.popitem(last=False)
+            _manifest_cache_bytes -= evicted[2]
+    return manifest
+
+
+def session_bounds(now):
+    local = now.astimezone(ZoneInfo('America/New_York'))
+    day = local.date() - timedelta(days=local.hour < 18)
+    while day.weekday() in (4, 5):
+        day -= timedelta(days=1)
+    start = datetime.combine(day, time(18), local.tzinfo).astimezone(timezone.utc)
+    close = datetime.combine(day + timedelta(days=1), time(17), local.tzinfo).astimezone(timezone.utc)
+    return start, min(now, close)
+
+
+FIELDS = ('mid_price', 'bid_contracts', 'ask_contracts', 'imbalance')
+BOUNDARIES = {'connect', 'disconnect', 'gap', 'roll', 'end', 'reset', 'epoch_changed',
+              'contract_changed', 'receipt_gap', 'receipt_time_reversed'}
+ADVISORY = {'bid_provider_time_unreliable', 'ask_provider_time_unreliable'}
+
+
+def metric_reasons(point, field):
+    flags = set(point['quality_flags'])
+    known = BOUNDARIES | ADVISORY | {'missing_side', 'bid_stale', 'ask_stale', 'locked_or_crossed'}
+    reasons = flags & BOUNDARIES | flags - known
+    sides = ('bid',) if field == 'bid_contracts' else ('ask',) if field == 'ask_contracts' else ('bid', 'ask')
+    for side in sides:
+        if f'{side}_stale' in flags:
+            reasons.add(f'{side}_stale')
+        if not point.get(f'{side}_levels'):
+            reasons.add(f'{side}_missing')
+    if field == 'mid_price':
+        reasons.update(flags & (ADVISORY | {'locked_or_crossed'}))
+    if point.get(field) is None:
+        reasons.add(f'{field}_unavailable')
+    return sorted(reasons)
+
+
+def annotate_continuity(previous, point):
+    """Receipt-based continuity, before reduction. Flags remain on their own observation."""
+    stream = (point['contract_id'], point['capture_id'], point['generation'])
+    old = previous.get(stream)
+    point['continuity'] = {}
+    point['gap_before'] = {}
+    for field in FIELDS:
+        invalid = metric_reasons(point, field)
+        prior_invalid = metric_reasons(old, field) if old else []
+        elapsed = point['time'] - old['time'] if old else 0
+        reasons = invalid or prior_invalid
+        if old and (elapsed > 2 or elapsed <= 0):
+            reasons = sorted(set(reasons + ['missing_observations' if elapsed > 2 else 'receipt_time_reversed']))
+        changed = bool(reasons)
+        point['continuity'][field] = point['index'] if changed else old['continuity'][field] if old else 0
+        point['gap_before'][field] = (dict(reasons=reasons, seconds=max(0, elapsed), start=old['time'] if old else point['time'], end=point['time'])
+                                      if changed else old['gap_before'].get(field) if old else None)
+    previous[stream] = point
+    return point
+
+
+def add_overview_point(buckets, previous, point):
+    """Retain actual first/last and metric extrema per 10s. Never union flags onto a sample."""
+    point = annotate_continuity(previous, point)
+    point['sample_interval_ms'] = 10000
+    key = (point['contract_id'], point['capture_id'], point['generation'], int(point['time'] // 10))
+    bucket = buckets.setdefault(key, {'first': point})
+    bucket['last'] = point
+    for field in FIELDS:
+        if metric_reasons(point, field):
+            continue
+        for suffix, choose in (('min', min), ('max', max)):
+            name = field + suffix
+            old = bucket.get(name)
+            if old is None or choose(point[field], old[field]) == point[field]:
+                bucket[name] = point
+
+
+def overview_points(buckets):
+    return list({(p['capture_id'], p['index']): p for bucket in buckets.values() for p in bucket.values()}.values())
 
 
 def timestamp(value):
@@ -81,6 +204,20 @@ def number(value, *, nonnegative=False):
     return value
 
 
+def recording_health(root, owner):
+    path = root.parent / 'recording-health.json'
+    try:
+        safe_path(path, root.parent)
+        with path.open('rb') as stream:
+            value = json.loads(stream.read(16385))
+        if value.pop('owner_hash', None) != owner:
+            return None
+        value['stale'] = (datetime.now(timezone.utc)-timestamp(value['at'])).total_seconds() > 20
+        return value
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
 def read_history(root, query):
     root = Path(root)
     owner = query.get('owner_hash', '')
@@ -88,12 +225,17 @@ def read_history(root, query):
     if not re.fullmatch('[a-f0-9]{64}', owner) or scope not in SCOPES:
         raise ValueError('Invalid recording scope.')
     start, end = query.get('start'), query.get('end')
+    window = query.get('window', 'latest')
+    if window not in {'latest', 'session'} or (window == 'session' and (start or end)):
+        raise ValueError('Invalid history window.')
     if bool(start) != bool(end):
         raise ValueError('Provide both start and end.')
     if start:
         start, end = timestamp(start), timestamp(end)
-        if not timedelta(0) < end - start <= timedelta(hours=1):
-            raise ValueError('Choose a time range of one hour or less.')
+        if not timedelta(0) < end - start <= timedelta(hours=24):
+            raise ValueError('Choose a time range of one session (up to 24 hours) or less.')
+    elif window == 'session':
+        start, end = session_bounds(datetime.now(timezone.utc))
     manifests, errors, examined = [], 0, 0
     if root.exists():
         safe_path(root, root)
@@ -110,10 +252,7 @@ def read_history(root, query):
                     if examined > MAX_FILES:
                         raise ValueError('Recording inventory is too large; archive review is required.')
                     try:
-                        safe_path(marker, root)
-                        if marker.stat().st_size > 16384:
-                            raise ValueError('Oversized manifest.')
-                        m = json.loads(marker.read_text())
+                        m = read_manifest(marker, root)
                         if m.get('owner_hash') != owner:
                             continue
                         if m['schema'] != 'mnq-depth-segment-v1' or m['synthetic'] is not False:
@@ -131,13 +270,17 @@ def read_history(root, query):
         end = (latest + timedelta(milliseconds=1)) if latest else datetime.now(timezone.utc)
         start = end - timedelta(minutes=15)
     days = sorted({m[0].date().isoformat() for m in manifests})
+    overview = end - start > timedelta(hours=1)
     points, raw_bytes, seen = [], 0, set()
+    buckets, previous = {}, {}
+    quality_counts, excluded_counts = Counter(), Counter()
+    raw_count = flagged_count = 0
     for first, last, marker, m in manifests:
         if last < start or first >= end:
             continue
         try:
             raw_bytes += m['uncompressed_bytes']
-            if raw_bytes > MAX_RAW_BYTES:
+            if raw_bytes > (MAX_SESSION_RAW_BYTES if overview else MAX_RAW_BYTES):
                 raise OverflowError('Choose a shorter time range to read this recording.')
             rows = verified_rows(marker, m, root)
             segment_points = []
@@ -162,23 +305,36 @@ def read_history(root, query):
                     ask_levels=number(totals['ask_levels'], nonnegative=True),
                     imbalance=number(totals['imbalance']), mid_price=number(p['mid_price']),
                     last_trade_price=number(p['last_trade_price']), spread=number(p['spread']),
-                    quality_flags=flags,
+                    quality_flags=flags, side_age_ms=p.get('side_age_ms'), provider_age_ms=p.get('provider_age_ms'),
                 ))
             for point in segment_points:
                 key = (point['capture_id'], point['index'])
-                if key not in seen:
-                    seen.add(key)
-                    points.append(point)
+                if key in seen:
+                    continue
+                seen.add(key)
+                raw_count += 1
+                flagged_count += bool(point['quality_flags'])
+                quality_counts.update(point['quality_flags'])
+                excluded_counts.update(field for field in FIELDS if metric_reasons(point, field))
+                if overview:
+                    add_overview_point(buckets, previous, point)
+                    continue
+                points.append(annotate_continuity(previous, point))
         except (ValueError, KeyError, OSError, TypeError, EOFError):
             errors += 1
-        if len(points) > MAX_POINTS:
+        if max(len(points), len(buckets) * 10) > MAX_POINTS or len(seen) > 400000:
             raise ValueError('Too many measurements; choose a shorter time range.')
+    if overview:
+        points = overview_points(buckets)
     points.sort(key=lambda p: (p['time'], p['capture_id'], p['index']))
     return dict(points=points, scope=scope, start=start.isoformat(), end=end.isoformat(),
                 earliest=earliest.isoformat() if earliest else None,
                 latest=latest.isoformat() if latest else None, available_days=days,
                 contracts=sorted({p['contract_id'] for p in points}),
-                skipped_segments=errors, sealed_only=True, interval_ms=250,
+                skipped_segments=errors, sealed_only=True, interval_ms=10000 if overview else 250,
+                window=window, recording_health=recording_health(root,owner), raw_measurements=raw_count, flagged_measurements=flagged_count,
+                quality_counts=dict(quality_counts), excluded_by_metric=dict(excluded_counts),
+                downsampling='first_last_metric_extrema' if overview else 'none',
                 snapshot_completion_verified=False, provider_sequence_guarantee=False,
                 generated_at=datetime.now(timezone.utc).isoformat())
 

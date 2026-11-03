@@ -87,7 +87,8 @@ The existing bot execution controls and order gates remain unchanged.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `TOPSIGNAL_MARKET_CAPTURE_ENABLED` | `true` | Capture observations from an open Bot feed |
+| `TOPSIGNAL_MARKET_CAPTURE_ENABLED` | `true` | Master switch for decision snapshots and optional raw observations |
+| `TOPSIGNAL_RAW_MARKET_CAPTURE_ENABLED` | `false` | Explicit opt-in for raw feed writes to the relational database; inspect capacity first. Independent filesystem recording is unaffected. |
 | `TOPSIGNAL_MARKET_CAPTURE_QUEUE` | `4096` | Bounded asynchronous queue |
 | `TOPSIGNAL_MARKET_CAPTURE_RETENTION_DAYS` | `3` | Market-observation retention, bounded 1–30 days |
 | `TOPSIGNAL_MARKET_CAPTURE_RECORD_CAP` | `250000` | Maximum retained observations per owner, bounded at 2 million |
@@ -96,7 +97,9 @@ The existing bot execution controls and order gates remain unchanged.
 | `TRADING_ECONOMICS_API_KEY` | Unconfigured | Optional calendar actuals and consensus, subject to account coverage |
 | `CBOE_VIX_ENABLED` | `false` | Optional daily VIX collection after appropriate data-use rights are established |
 
-Retention is enforced on writer batches. This is a bounded local research recorder,
+Retention is enforced only for the record kinds in each writer batch. Raw relational
+capture is disabled by default after the November 2 database-pool incident; saved
+observations remain readable and decision snapshots continue. This is a bounded research recorder,
 not a durable complete exchange tick archive. Full-session tick/depth archives,
 equity/ETF context, broad news, consensus data and settlement/open-interest feeds
 still require suitable sources and access.
