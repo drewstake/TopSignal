@@ -1249,6 +1249,7 @@ export interface BotAnalysis {
 export interface BotStrategyParams {
   imbalance_threshold?: number;
   persistence_seconds?: number;
+  daily_entry_limit_enabled?: boolean;
   revision?: string;
   model_version?: string;
   routing_policy?: string;
@@ -1888,6 +1889,12 @@ export interface BotLogs {
 }
 
 export interface BotActivity {
+  profit_guard?: {
+    available: boolean; trading_day?: string; target?: number; arm_at?: number; floor?: number;
+    armed?: boolean; trigger?: string | null; triggered_at?: string | null;
+    observed_at?: string | null; pnl?: number | null; peak_pnl?: number | null;
+    error?: string | null; message?: string;
+  } | null;
   config: BotConfig;
   runs: BotRun[];
   decisions: BotDecision[];

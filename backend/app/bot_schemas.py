@@ -195,6 +195,7 @@ class BotRunOut(BaseModel):
     last_heartbeat_at: datetime | None = None
     last_error: str | None = None
     last_evaluated_at: datetime | None = None
+    raw_state: dict[str, str | None] = Field(default_factory=dict)
 
 
 class BotDecisionOut(BaseModel):
@@ -213,6 +214,7 @@ class BotDecisionOut(BaseModel):
     correlation_id: str | None = None
     idempotency_key: str | None = None
     created_at: datetime
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class BotOrderAttemptOut(BaseModel):
@@ -737,6 +739,7 @@ class BotActivityOut(BaseModel):
     decisions: list[BotDecisionOut]
     order_attempts: list[BotOrderAttemptOut]
     risk_events: list[BotRiskEventOut]
+    profit_guard: dict[str, Any] | None = None
 
 
 class BotBacktestIn(BaseModel):

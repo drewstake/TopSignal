@@ -81,9 +81,28 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
                    status=plan.get("status"), reason=plan.get("last_error") or plan.get("runner_exit_reason")
                    or plan.get("outcome") or plan.get("runner", {}).get("decision_reason")
                    or plan.get("runner", {}).get("management_status") or "Awaiting broker reconciliation",
-                   retry_at=plan.get("retry_at"))
+                   retry_at=plan.get("retry_at"), cycle_duration_ms=round((perf_counter()-started)*1000, 3))
 
     deadline = service._as_utc(datetime.fromisoformat(plan["deadline"]))
+    if is_runner and live_execution_environment_enabled() and worker_lease_token is not None:
+        from . import topbot_profit_guard
+        try:
+            guard = topbot_profit_guard.poll(entry.user_id, entry.account_id, entry.contract_id, client)
+            if guard["trigger"]:
+                plan["profit_stop_reason"] = guard["trigger"]
+                plan["runner_exit_reason"] = guard["trigger"]
+                save()
+            plan.pop("profit_monitor_error", None)
+        except Exception:
+            # Failed telemetry cannot disable the existing stop/session exits.
+            plan["profit_monitor_error"] = "Daily P&L unavailable; existing protection continues"
+            try:
+                topbot_profit_guard.mark_unavailable(entry.user_id, entry.account_id)
+            except Exception:
+                pass
+    if plan.get("profit_stop_reason"):
+        # Persisted exit intent also survives a session rollover during retries.
+        deadline = min(deadline, now)
     if plan.get("retry_at") and now < service._as_utc(datetime.fromisoformat(plan["retry_at"])):
         return False
     recovered_entry = False
@@ -226,7 +245,7 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
                     save()
                     return False
             if is_runner and now >= deadline:
-                plan["runner_exit_reason"] = "session_cutoff"
+                plan["runner_exit_reason"] = plan.get("profit_stop_reason") or "session_cutoff"
             elif is_runner and not stops:
                 plan["runner_exit_reason"] = "missing_protective_stop"
         elif now < deadline and not plan.get("position_observed_at") and entry.status != "cancelled":

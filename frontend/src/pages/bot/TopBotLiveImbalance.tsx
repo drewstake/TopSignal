@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { botsApi } from "../../lib/api";
 import { usePageVisibility } from "./usePageVisibility";
+import { TopBotEntryChecks, type EntryMonitor } from "./TopBotEntryChecks";
 
 export type TopBotDepthObservation = {
   contract_id: string; as_of: string; threshold: number | null;
@@ -23,8 +24,8 @@ function resetReason(reset: NonNullable<TopBotDepthObservation["depth"]["qualifi
   return reasons[reset.reason] ?? "Depth continuity was lost";
 }
 
-export function TopBotLiveImbalance({ contractId, threshold, requiredSeconds, enabled }: {
-  contractId: string; threshold: number; requiredSeconds: number; enabled: boolean;
+export function TopBotLiveImbalance({ contractId, threshold, requiredSeconds, enabled, monitor }: {
+  contractId: string; threshold: number; requiredSeconds: number; enabled: boolean; monitor?: EntryMonitor;
 }) {
   const visible = usePageVisibility();
   const [sample, setSample] = useState<Sample | null>(null);
@@ -89,6 +90,9 @@ export function TopBotLiveImbalance({ contractId, threshold, requiredSeconds, en
       <div><dt>Ask contracts</dt><dd>{contracts(depth?.ask_total)}</dd><small>{depth?.ask_levels ?? 0} levels (up to 100)</small></div>
       <div><dt>Time above threshold</dt><dd>{fresh && depth?.ready ? `${sustained.toFixed(1)} / ${requiredSeconds}s` : "—"}</dd><small>{qualified ? sustained >= requiredSeconds ? "Duration met · other entry checks still apply" : "Building persistence" : "Not qualifying"}</small></div>
     </dl>
+    <TopBotEntryChecks monitor={enabled && visible ? monitor : undefined} contractId={contractId} fresh={fresh}
+      ready={depth?.ready === true} qualified={qualified} durationMet={sustained >= requiredSeconds}
+      episodeAt={depth?.episode_at} depthReason={depth?.reason} now={Date.now()} />
     <p className="topbot-muted">{!fresh ? "Waiting for fresh worker depth. Entry qualification is not confirmed."
       : !depth?.ready ? "Waiting for fresh, valid depth on both sides."
         : qualified ? "Uses up to 100 available levels per side. Level-count changes alone do not reset the timer; threshold breaks, side changes, or lost depth continuity do."

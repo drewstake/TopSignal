@@ -6,6 +6,7 @@ Excursions are observed BBO excursions and explicitly marked incomplete.
 from datetime import datetime, timedelta, timezone
 from statistics import mean, median
 import math
+from time import perf_counter
 
 from .topbot_depth import feed, utc
 from .topbot_audit import record, scope, client_for
@@ -48,9 +49,13 @@ def initialize(entry, plan, client, now):
     if not math.isfinite(fill["price"]) or fill["price"] <= 0: raise ValueError("Invalid entry fill price")
     runner.update(entry_at=fill["timestamp"].isoformat(), entry_price=fill["price"], entry_fees=fill["fees"],
                   side=entry.side, mfe_points=0., mae_points=0., stats_status="open", coverage_complete=False)
+    from .topbot_execution_trace import entry_metrics
+    observed_at = datetime.now(timezone.utc).isoformat()
+    runner["execution"] = entry_metrics(getattr(entry, "raw_request", None) or {}, entry.side, fill["price"], runner["entry_at"], observed_at)
     plan["position_observed_at"] = now.isoformat()
     record(**scope(entry), kind="entry_fill_verified", price=fill["price"], fees=fill["fees"],
-           fill_at=runner["entry_at"], order_id=entry.provider_order_id, side=entry.side)
+           fill_at=runner["entry_at"], observed_at=observed_at, order_id=entry.provider_order_id,
+           side=entry.side, execution=runner["execution"])
     return True
 
 
@@ -83,6 +88,15 @@ def manage(db, *, entry, plan, client, stops, worker_lease_token, now):
     if (entry.side == "BUY" and current < initial-.001) or (entry.side == "SELL" and current > initial+.001):
         plan["runner_exit_reason"] = "protective_stop_too_wide"
         return True
+    verified_at = datetime.now(timezone.utc).isoformat()
+    execution = runner.setdefault("execution", {})
+    if "initial_protection_observed_at" not in execution:
+        from .topbot_execution_trace import delta_ms
+        execution["initial_protection_observed_at"] = verified_at
+        execution["fill_to_protection_observation_ms"] = delta_ms(verified_at, runner["entry_at"])
+        record(**scope(entry), kind="initial_protection_verified", order_id=stop["order_id"],
+               stop_price=current, observed_at=verified_at,
+               fill_to_observation_ms=execution["fill_to_protection_observation_ms"])
     runner["confirmed_stop"] = current
     if not quote.get("ready") or not quote.get("observed_at") or not 0 <= (checked_at-utc(quote["observed_at"])).total_seconds() <= 2:
         runner["management_status"] = "Waiting for fresh prices; broker stop remains active"
@@ -113,6 +127,7 @@ def manage(db, *, entry, plan, client, stops, worker_lease_token, now):
     fence = _ProviderMutationFence(db=db, token=worker_lease_token, user_id=entry.user_id, account_id=entry.account_id)
     fence.require()
     client = client_for(client, entry, old_stop=current, new_stop=wanted, market_price=mark,
+                        depth_evidence=quote.get("evidence"),
                         reason="25-point trail from best observed executable price")
     client.modify_stop_order(account_id=entry.account_id, order_id=stop["order_id"], stop_price=wanted)
     # Never cancel/recreate a protective stop. An ambiguous modification is
@@ -123,9 +138,12 @@ def manage(db, *, entry, plan, client, stops, worker_lease_token, now):
     if len(verified) != 1 or verified[0]["raw_payload"].get("stopPrice") != wanted:
         raise ValueError("Stop modification not yet verified at the broker")
     runner["confirmed_stop"] = wanted
-    runner["stop_verified_at"] = now.isoformat()
+    runner["stop_verified_at"] = datetime.now(timezone.utc).isoformat()
+    runner["execution"]["last_stop_request_to_verified_ms"] = round((perf_counter()-client.request_started)*1000, 3)
     record(**scope(entry), kind="stop_change_verified", operation=client.last_operation,
            old_stop=current, new_stop=wanted, market_price=mark, order_id=stop["order_id"],
+           request_to_verified_ms=runner["execution"]["last_stop_request_to_verified_ms"],
+           verified_at=runner["stop_verified_at"],
            reason="Broker readback matches requested trailing stop")
     return False
 
@@ -155,20 +173,53 @@ def finalize(entry, plan, client, now):
     runner.update(feed.track(entry.user_id, entry.contract_id, entry.id, runner, end_at=exit_fill["timestamp"]))
     direction = 1 if entry.side == "BUY" else -1
     points = (exit_fill["price"]-runner["entry_price"])*direction
-    fees = runner["entry_fees"]+exit_fill["fees"]
+    costs = cost_summary(runner["entry_fees"]+exit_fill["fees"], points,
+                         exit_fill["timestamp"], entry.contract_id, exit_fill.get("commissions"))
+    fees = costs["fees_usd"]
     runner.update(stats_status="complete", exit_at=exit_fill["timestamp"].isoformat(), exit_price=exit_fill["price"],
                   hold_seconds=max(0,(exit_fill["timestamp"]-utc(runner["entry_at"])).total_seconds()),
                   gross_points=points, fees_usd=fees, net_pnl_usd=points*2-fees,
                   exit_reason=plan.get("runner_exit_reason") or ("trailing_stop" if runner.get("trailing_active") else "initial_stop")
                   if str(exit_fill["order_id"]) == runner.get("stop_order_id") else plan.get("runner_exit_reason", "session_or_external_exit"))
+    runner.update(costs)
     runner["mfe_points"] = max(runner["mfe_points"], points)
     runner["mae_points"] = min(runner["mae_points"], points)
     runner["giveback_points"] = runner["mfe_points"]-points
+    execution = runner.setdefault("execution", {})
+    from .topbot_execution_trace import delta_ms
+    execution["exit_fill_to_observation_ms"] = delta_ms(datetime.now(timezone.utc).isoformat(), runner["exit_at"])
+    if str(exit_fill["order_id"]) == runner.get("stop_order_id") and runner.get("confirmed_stop") is not None:
+        execution["exit_slippage_from_last_verified_stop_ticks"] = round((runner["confirmed_stop"]-exit_fill["price"])*direction*4, 6)
     record(**scope(entry), kind="exit_fill_verified", order_id=exit_fill["order_id"],
            exit_price=exit_fill["price"], exit_at=runner["exit_at"], reason=runner["exit_reason"],
-           net_pnl_usd=runner["net_pnl_usd"], fees_usd=fees, hold_seconds=runner["hold_seconds"])
+           net_pnl_usd=runner["net_pnl_usd"], fees_usd=fees, hold_seconds=runner["hold_seconds"],
+           execution=execution, coverage=runner.get("coverage"))
     feed.untrack(entry.user_id, entry.contract_id, entry.id)
     return True
+
+
+def cost_summary(broker_fees, gross_points, exit_at, contract_id, commissions=None):
+    """Use the same round-turn commission basis as the account trade journal."""
+    from .topstep_fees import effective_topstep_trade_fee
+    if any(not isinstance(v, (int, float)) or not math.isfinite(v)
+           for v in (broker_fees, gross_points)):
+        raise ValueError("Invalid runner cost inputs")
+    fees = effective_topstep_trade_fee(trade_timestamp=exit_at, pnl=gross_points*2,
+        fees=broker_fees, symbol="MNQ", contract_id=contract_id, size=1,
+        raw_fee_is_per_side=False, commissions=commissions)
+    if not math.isfinite(fees): raise ValueError("Invalid runner commission")
+    return {"fee_basis": "broker_fees_plus_commission_v1", "broker_fees_usd": broker_fees,
+            "commissions_usd": fees-broker_fees, "fees_usd": fees, "net_pnl_usd": gross_points*2-fees}
+
+
+def statistics_item(row):
+    item = {"entry_id": row.id, "side": row.side, **row.raw_request["timeExit"]["runner"]}
+    if (item.get("stats_status") == "complete" and not item.get("fee_basis")
+            and all(item.get(k) is not None for k in ("fees_usd", "gross_points", "exit_at"))):
+        # Derive a corrected display without rewriting historical execution/audit records.
+        item.update(cost_summary(item["fees_usd"], item["gross_points"], utc(item["exit_at"]), row.contract_id))
+        item["costs_derived_from_legacy_record"] = True
+    return item
 
 
 def statistics(db, *, user_id, account_id):
@@ -180,7 +231,7 @@ def statistics(db, *, user_id, account_id):
             BotOrderAttempt.account_id == account_id,
             BotOrderAttempt.raw_request["timeExit"]["runner"]["version"].as_integer() == 1
         ).order_by(BotOrderAttempt.id.desc()).limit(500).all()
-    items = [{"entry_id": row.id, "side": row.side, **row.raw_request["timeExit"]["runner"]} for row in rows]
+    items = [statistics_item(row) for row in rows]
     closed = [r for r in items if r.get("stats_status") == "complete"]
     wins = [r["hold_seconds"] for r in closed if r["net_pnl_usd"] > 0]
     losses = [r["hold_seconds"] for r in closed if r["net_pnl_usd"] < 0]

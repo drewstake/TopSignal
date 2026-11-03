@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import sqlite3
 from uuid import uuid4
+from time import perf_counter, monotonic_ns
 
 
 def location(owner):
@@ -43,10 +44,15 @@ def connection(owner):
 def scope(subject):
     return dict(owner=str(subject.user_id), account_id=int(subject.account_id),
                 config_id=getattr(subject, 'bot_config_id', None), run_id=getattr(subject, 'bot_run_id', None),
+                correlation_id=getattr(subject, 'correlation_id', None), decision_id=getattr(subject, 'bot_decision_id', None),
                 entry_id=getattr(subject, 'id', None), contract_id=getattr(subject, 'contract_id', None))
 
 
 def record(owner, account_id, kind, *, operation=None, **details):
+    from .topbot_evidence import binding
+    from ..bot_diagnostics import PROCESS_SESSION_ID
+    details = {**details, "implementation": binding(), "process_session_id": PROCESS_SESSION_ID,
+               "monotonic_ns": monotonic_ns()}
     payload = json.dumps(details, allow_nan=False, separators=(',', ':'), default=str)
     if len(payload.encode()) > 32768:
         raise ValueError('topbot_audit_event_too_large')
@@ -76,6 +82,8 @@ class AuditedClient:
         self.client = client.client if isinstance(client, AuditedClient) else client
         self.context = context
         self.last_operation = None
+        self.last_call = None
+        self.request_started = None
 
     def __getattr__(self, name):
         target = getattr(self.client, name)
@@ -86,15 +94,28 @@ class AuditedClient:
                 raise ValueError('audit_account_scope_mismatch')
             operation = self.last_operation = str(uuid4())
             request = {k:v for k,v in kwargs.items() if k in self.FIELDS}
+            intent_started = perf_counter()
             record(**self.context, kind='broker_request', operation=operation, action=name, request=request)
+            audit_ms = (perf_counter()-intent_started)*1000
+            started = perf_counter()
+            self.request_started = started
+            submitted_at = datetime.now(timezone.utc).isoformat()
+            self.last_call = {"operation": operation, "submitted_at": submitted_at,
+                              "intent_audit_ms": round(audit_ms, 3)}
             try:
                 response = target(**kwargs)
             except Exception as exc:
+                self.last_call.update(completed_at=datetime.now(timezone.utc).isoformat(),
+                                      request_duration_ms=round((perf_counter()-started)*1000, 3))
                 record(**self.context, kind='broker_outcome_unconfirmed', operation=operation,
-                       action=name, error_type=type(exc).__name__, status_code=getattr(exc,'status_code',None))
+                       action=name, error_type=type(exc).__name__, status_code=getattr(exc,'status_code',None),
+                       timing={k:v for k,v in self.last_call.items() if k != "operation"})
                 raise
+            self.last_call.update(completed_at=datetime.now(timezone.utc).isoformat(),
+                                  request_duration_ms=round((perf_counter()-started)*1000, 3))
             record(**self.context, kind='broker_acknowledged', operation=operation, action=name,
                    order_id=response.get('order_id') if isinstance(response,dict) else None,
+                   timing={k:v for k,v in self.last_call.items() if k != "operation"},
                    outcome_note='Acknowledgement received; broker readback/fills determine completion')
             return response
         return call

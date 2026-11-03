@@ -21,7 +21,8 @@ def observation(now, imbalance=.2):
 
 @pytest.mark.parametrize("imbalance,action,stop", [(.2,"SELL",20025),(-.2,"BUY",19975.25)])
 def test_contrarian_directions_and_fixed_stop(imbalance, action, stop):
-    result = strategy.evaluate([], strategy_params=strategy.DEFAULTS, observation=observation(datetime.now(timezone.utc), imbalance))
+    now = datetime(2026, 11, 3, 15, tzinfo=timezone.utc)
+    result = strategy.evaluate([], strategy_params=strategy.DEFAULTS, observation=observation(now, imbalance), now=now)
     assert result.action == action
     assert result.raw_payload["stop_loss"] == stop
     assert result.raw_payload["protective_stop_ticks"] == 100
@@ -30,8 +31,9 @@ def test_contrarian_directions_and_fixed_stop(imbalance, action, stop):
 
 @pytest.mark.parametrize("patch", [{"ready": False}, {"imbalance": .09}, {"persistence_seconds": 29.9}, {"imbalance": 0}])
 def test_nonqualifying_depth_holds(patch):
+    now = datetime(2026, 11, 3, 15, tzinfo=timezone.utc)
     assert strategy.evaluate([], strategy_params=strategy.DEFAULTS,
-        observation={**observation(datetime.now(timezone.utc)), **patch}).action == "HOLD"
+        observation={**observation(now), **patch}, now=now).action == "HOLD"
 
 
 def snapshot_event(at, sequence=1, bids=100, asks=100):
@@ -56,7 +58,7 @@ def test_depth_persistence_freshness_gaps_and_top100():
 
 @pytest.mark.parametrize("bid_heavy", [True, False])
 def test_level_count_changes_preserve_30_second_imbalance_and_allow_entry(bid_heavy):
-    now = datetime.now(timezone.utc)
+    now = datetime(2026, 11, 3, 15, tzinfo=timezone.utc)
     state = DepthState(CONTRACT_ID)
     for i in range(31):
         at = now + timedelta(seconds=i)
@@ -92,7 +94,7 @@ def test_level_deletion_and_replacement_do_not_restart_imbalance():
 
 @pytest.mark.parametrize("invalid", ["missing_bid", "missing_ask", "crossed"])
 def test_invalid_book_still_resets_imbalance_and_blocks_entry(invalid):
-    now = datetime.now(timezone.utc)
+    now = datetime(2026, 11, 3, 15, tzinfo=timezone.utc)
     state = DepthState(CONTRACT_ID)
     state.apply(snapshot_event(now), now)
     at = now + timedelta(seconds=1)
@@ -145,6 +147,7 @@ def dom_entry(db_session, monkeypatch, open_exchange_session):
     # These runner/order tests hold the session open independently of wall time.
     # The real cutoff and overnight behavior are covered by the risk-gate tests below.
     monkeypatch.setattr("app.services.topbot_session.flat_deadline", lambda *a, **kw: now + timedelta(hours=1))
+    monkeypatch.setattr("app.services.topbot_session.futures_session_is_open", lambda *a, **kw: True)
     observed = observation(now, -.2)
     observed.update(bid_levels=99, ask_levels=99)
     monkeypatch.setattr(feed,"snapshot",lambda *a,**kw:observed)
@@ -214,6 +217,25 @@ def test_api_entry_has_only_25_point_stop_and_durable_runner(dom_entry):
     assert client.place_order_calls[0].get("take_profit_bracket") is None
     assert result.order_attempt.raw_request["timeExit"]["runner"]["activation_points"] == 25
     assert result.analysis["collected_context"]["status"] == "not_collected"
+    checks = result.decision.raw_payload["entry_checks"]
+    assert checks["phase"] == "broker"
+    assert checks["episode_at"] == result.decision.raw_payload["depth_entry"]["episode_at"]
+    assert all(row["status"] == "passed" for row in checks["checks"])
+
+
+def test_run_serialization_only_exposes_the_consumed_episode(dom_entry):
+    from app.bot_schemas import BotRunOut, BotDecisionOut
+    from app.services.bot_serialization import serialize_bot_run
+    from app.services.bot_serialization import serialize_bot_decision
+    result, _, _ = dom_entry
+    result.run.raw_state = {"dom_episode_evaluated": "episode", "private_worker_state": "hidden"}
+    run = BotRunOut.model_validate(serialize_bot_run(result.run)).model_dump()
+    assert run["raw_state"] == {"dom_episode_evaluated": "episode"}
+    result.decision.raw_payload = {**result.decision.raw_payload, "private_research": [1, 2, 3]}
+    decision = BotDecisionOut.model_validate(serialize_bot_decision(result.decision)).model_dump()
+    assert "private_research" not in decision["raw_payload"]
+    assert decision["raw_payload"]["entry_checks"]["phase"] == "broker"
+    assert list(decision["raw_payload"]["depth_entry"]) == ["episode_at"]
 
 
 @pytest.mark.parametrize("tick_age,blocked", [(0.25, False), (3.0, True), (-0.25, True)])
@@ -286,6 +308,7 @@ def test_dom_recheck_keeps_each_validity_fence_and_records_reason(db_session, mo
 
 
 def test_dom_execution_still_rejects_depth_that_expires_after_the_signal(db_session, monkeypatch, open_exchange_session):
+    monkeypatch.setattr("app.services.topbot_session.runner_entry_pause_reason", lambda *a, **kw: None)
     account, config = _add_account_and_config(db_session)
     config.strategy_type = "topbot_adaptive"
     config.strategy_params = dict(strategy.DEFAULTS)
@@ -304,6 +327,11 @@ def test_dom_execution_still_rejects_depth_that_expires_after_the_signal(db_sess
     assert event.raw_payload["depth_recheck"]["failed_checks"] == ["depth_unavailable"]
     assert event.raw_payload["depth_recheck"]["reason"] == "depth_gap"
     assert not client.place_order_calls
+
+    checks = result.decision.raw_payload["entry_checks"]
+    assert checks["phase"] == "preliminary"
+    assert next(row for row in checks["checks"] if row["id"] == "signal")["status"] == "blocked"
+    assert not any(row["status"] == "passed" for row in checks["checks"])
 
 
 def test_same_episode_never_places_twice(db_session,dom_entry):
@@ -325,8 +353,8 @@ def test_fill_stats_use_actual_fills_and_fees(monkeypatch):
     plan = runner_plan(now)
     assert finalize(entry,plan,client,now+timedelta(minutes=8))
     r = plan["runner"]
-    assert r["hold_seconds"] == 420 and r["net_pnl_usd"] == pytest.approx(58.78)
-    assert r["gross_points"] == 30 and r["fees_usd"] == 1.22
+    assert r["hold_seconds"] == 420 and r["net_pnl_usd"] == pytest.approx(58.28)
+    assert r["gross_points"] == 30 and r["fees_usd"] == 1.72
 
 
 @pytest.mark.parametrize("status,complete,stats_status", [

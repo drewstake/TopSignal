@@ -47,25 +47,41 @@ def require_configured():
         raise ValueError(MESSAGE)
 
 
+def qualifying_action(observation, params):
+    """Pure signal rule shared by runtime and offline worker-evidence replay."""
+    imbalance = observation.get("imbalance", 0)
+    if not (observation.get("ready") and abs(imbalance) > 0
+            and abs(imbalance) >= params["imbalance_threshold"] and observation.get("episode_at")
+            and observation.get("persistence_seconds", 0) >= params["persistence_seconds"]):
+        return "HOLD"
+    return "SELL" if imbalance > 0 else "BUY"
+
+
 def evaluate(candles, *, strategy_params=None, owner=None, contract_id=None, observation=None, now=None):
     from .bot_service import SignalResult
     from .topbot_depth import feed
     now = now or datetime.now(timezone.utc)
     params = normalize_params(strategy_params)
+    from .topbot_evidence import binding
     payload = {"strategy_type": "topbot_adaptive", "strategy_revision": params["revision"],
-               "strategy_configured": selected(params), "live_routing_allowed": False}
+               "strategy_configured": selected(params), "live_routing_allowed": False,
+               "implementation": binding()}
     payload["daily_entry_limit_enabled"] = params.get("daily_entry_limit_enabled", True)
     if not CONFIGURED or not selected(params):
         return SignalResult("HOLD", MESSAGE, None, None, payload)
+    from .topbot_session import runner_entry_pause_reason
+    pause_reason = runner_entry_pause_reason(now, symbol=contract_id or "MNQ")
+    if pause_reason:
+        payload["hold_reason"] = pause_reason
+        return SignalResult("HOLD", "Trading session paused; waiting for the next session to open.",
+                            None, None, payload)
     observation = observation if observation is not None else feed.snapshot(owner, contract_id, now=now)
     payload["depth_entry"] = observation
     if not observation.get("ready"):
         return SignalResult("HOLD", observation.get("reason", "Waiting for depth"), None, None, payload)
-    imbalance = observation["imbalance"]
-    if not (abs(imbalance) > 0 and abs(imbalance) >= params["imbalance_threshold"] and observation.get("episode_at")
-            and observation.get("persistence_seconds", 0) >= params["persistence_seconds"]):
+    action = qualifying_action(observation, params)
+    if action == "HOLD":
         return SignalResult("HOLD", "Waiting for persistent contrarian imbalance", None, None, payload)
-    action = "SELL" if imbalance > 0 else "BUY"
     price = observation["bid"] if action == "SELL" else observation["ask"]
     at = datetime.fromisoformat(observation["episode_at"])
     payload.update(live_routing_allowed=True, signal_category="entry", protective_stop_ticks=100,

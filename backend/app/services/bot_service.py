@@ -87,6 +87,9 @@ _ACCOUNT_AUTOMATION_CLASSIFICATION_MAX_AGE = timedelta(minutes=5)
 # every read/mutation make a genuinely active account flatten non-reclaimable.
 _ACCOUNT_EMERGENCY_ACTION_LEASE_DURATION = timedelta(minutes=5)
 _TRANSIENT_LIVE_RISK_CODES = {
+    "daily_profit_target_reached",
+    "daily_profit_breakeven_stop",
+    "daily_profit_guard_unavailable",
     "dom_signal_expired",
     "dom_entry_requires_flat",
     "mathematical_exit_pending",
@@ -1250,7 +1253,9 @@ def evaluate_bot_config(
                          order_attempt_id=result.order_attempt.id if result.order_attempt else None,
                          risk_codes=[r.code for r in result.risk_events], price=result.decision.price,
                          depth=payload.get("depth_entry"), stop_loss=payload.get("stop_loss"),
-                         persistence="Evaluation produced; cloud transaction may still be pending")
+                         depth_recheck=payload.get("depth_recheck"), timing=result.analysis.get("evaluation_timing"),
+                         config_hash=diagnostic_context["config_hash"],
+                         persistence="Evaluation produced; execution transaction may still be pending")
         return result
     except Exception as exc:
         if audit_enabled:
@@ -1891,7 +1896,7 @@ def _evaluate_bot_config_impl(
                             # Config, refreshed account, and worker lease locks are
                             # held through the provider call and audit writeback.
                             if not broker_flatten_completed:
-                                _submit_order_attempt(client=client, order_attempt=order_attempt)
+                                _submit_order_attempt(client=client, order_attempt=order_attempt, decision=decision)
                             if order_attempt.status == "submitted":
                                 evaluation_status = "submitted"
                             else:
@@ -11481,6 +11486,7 @@ def evaluate_risk_gates(
                 "signal_episode_at": signal_depth.get("episode_at"), "imbalance": depth.get("imbalance"),
                 "persistence_seconds": depth.get("persistence_seconds"),
                 "required_imbalance": params["imbalance_threshold"], "required_persistence_seconds": params["persistence_seconds"],
+                "bid": depth.get("bid"), "ask": depth.get("ask"), "evidence": depth.get("evidence"),
                 "failed_checks": failed_checks, "phase": "final" if perform_live_preflight else "initial",
             }}
         if failed_checks:
@@ -11502,6 +11508,29 @@ def evaluate_risk_gates(
     authoritative_entry_risk_required = bool(
         live_preflight_required and perform_live_preflight and preflight is not None
     )
+    if (not dry_run and not position_reducing and str(config.strategy_type) == "topbot_adaptive"
+            and dom_selected(config.strategy_params)):
+        from . import topbot_profit_guard as profit_guard
+        try:
+            profit_state = profit_guard.read(user_id, int(config.account_id), now=now)
+            if authoritative_entry_risk_required and not profit_state["trigger"]:
+                if (not preflight.unrealized_pnl_complete
+                        or trading_day_date(preflight.observed_at) != trading_day_date(now)):
+                    raise ValueError("Complete current-session P&L is required")
+                if abs(preflight.current_position_qty) > 1e-9:
+                    # The common entry preflight may value an existing position
+                    # at a candle close. Profit exits require current executable
+                    # quotes (or the broker's current unrealized P&L) instead.
+                    profit_state = profit_guard.poll(user_id, int(config.account_id), contract_id, client)
+                else:
+                    profit_state = profit_guard.observe(user_id, int(config.account_id),
+                        preflight.daily_pnl + preflight.account_unrealized_pnl, now=now)
+            profit_block = profit_guard.risk_block(profit_state)
+            if profit_block is not None:
+                additional_blocks.append(profit_block)
+        except Exception:
+            additional_blocks.append(RiskBlock(code="daily_profit_guard_unavailable",
+                message="Daily profit protection could not be verified. New entries are blocked.", severity="critical"))
     proposed_stop_risk = _proposed_order_stop_risk(
         order_attempt=order_attempt,
         decision=decision,
@@ -11509,7 +11538,7 @@ def evaluate_risk_gates(
         instrument_spec=instrument_spec,
     )
     from .topbot_strategy import daily_entry_limit_enabled
-    return additional_blocks + evaluate_risk(
+    blocks = additional_blocks + evaluate_risk(
         RiskEvaluationContext(
             bot_enabled=bool(config.enabled),
             account_state=account_state,
@@ -11564,6 +11593,16 @@ def evaluate_risk_gates(
             ),
         )
     )
+
+    if (decision is not None and str(config.strategy_type) == "topbot_adaptive"
+            and dom_selected(config.strategy_params) and not position_reducing):
+        from .topbot_entry_checks import snapshot
+        decision.raw_payload = {**(decision.raw_payload or {}), "entry_checks": snapshot(
+            blocks, checked_at=now,
+            episode_at=(decision.raw_payload or {}).get("depth_entry", {}).get("episode_at"),
+            authoritative=authoritative_entry_risk_required,
+        )}
+    return blocks
 
 
 def _is_strict_position_reduction(
@@ -11688,6 +11727,71 @@ def _same_futures_contract_family(
         execution_root is not None
         and normalize_symbol_key(candidate_contract_id) == execution_root
     )
+
+
+def _fetch_account_daily_pnl(client, *, account_id: int, observed_at: datetime):
+    """Shared complete broker history and net-fee basis for entry and daily protection."""
+    pnl_start, pnl_end = trading_day_bounds_utc(trading_day_date(observed_at))
+    trade_fetch = fetch_trade_history_all_pages(
+        client,
+        account_id=int(account_id),
+        start=pnl_start,
+        end=min(pnl_end, observed_at),
+        limit=_LIVE_PREFLIGHT_TRADE_PAGE_SIZE,
+        max_pages=_LIVE_PREFLIGHT_TRADE_MAX_PAGES,
+        require_valid_collection=True,
+    )
+    if trade_fetch.is_truncated:
+        raise ProjectXClientError(
+            "ProjectX Trade/search pagination was incomplete during live preflight."
+        )
+    trade_events = trade_fetch.events
+    daily_pnl = 0.0
+    entry_trades_today = 0
+    latest_account_loss_at: datetime | None = None
+    for event in trade_events:
+        if not isinstance(event, dict) or int(event.get("account_id", -1)) != int(account_id):
+            raise ProjectXClientError("ProjectX returned a trade for the wrong account.")
+        if _trade_payload_is_voided(event):
+            continue
+        event_timestamp = event.get("timestamp")
+        if not isinstance(event_timestamp, datetime):
+            raise ProjectXClientError("ProjectX returned a trade without a valid timestamp.")
+        event_timestamp = _as_utc(event_timestamp)
+        if event_timestamp < pnl_start or event_timestamp > min(pnl_end, observed_at):
+            continue
+        # Canonical realized P&L is represented by the closing execution. Its
+        # stored/provider fee is per-side, so the closed row is normalized to a
+        # round turn and receives the same Topstep commission used by metrics.
+        if event.get("pnl") is None:
+            entry_trades_today += 1
+            continue
+        fees = _finite_optional_float(event.get("fees"))
+        pnl = _finite_optional_float(event.get("pnl"))
+        commissions = (
+            _finite_optional_float(event.get("commissions"))
+            if event.get("commissions") is not None
+            else None
+        )
+        if fees is None or pnl is None or (event.get("commissions") is not None and commissions is None):
+            raise ProjectXClientError("ProjectX returned non-finite daily P&L data.")
+        effective_fee = effective_topstep_trade_fee(
+            trade_timestamp=event_timestamp,
+            pnl=pnl,
+            fees=fees,
+            symbol=_normalized_optional_text(event.get("symbol")),
+            contract_id=_normalized_optional_text(event.get("contract_id")),
+            size=_finite_optional_float(event.get("size")),
+            raw_fee_is_per_side=str(event.get("fee_scope") or "per_side") != "round_turn",
+            commissions=commissions,
+        )
+        daily_pnl += pnl - effective_fee
+        if pnl - effective_fee < 0:
+            latest_account_loss_at = max(latest_account_loss_at or event_timestamp, event_timestamp)
+    if not math.isfinite(daily_pnl):
+        raise ProjectXClientError("ProjectX daily P&L total is not finite.")
+
+    return daily_pnl, entry_trades_today, latest_account_loss_at
 
 
 def _fetch_live_execution_preflight(
@@ -11837,65 +11941,9 @@ def _fetch_live_execution_preflight(
     if not math.isfinite(account_gross_position_qty):
         raise ProjectXClientError("ProjectX account-wide working exposure is not finite.")
 
-    pnl_start, pnl_end = trading_day_bounds_utc(trading_day_date(observed_at))
-    trade_fetch = fetch_trade_history_all_pages(
-        client,
-        account_id=int(account_id),
-        start=pnl_start,
-        end=min(pnl_end, observed_at),
-        limit=_LIVE_PREFLIGHT_TRADE_PAGE_SIZE,
-        max_pages=_LIVE_PREFLIGHT_TRADE_MAX_PAGES,
-        require_valid_collection=True,
+    daily_pnl, entry_trades_today, latest_account_loss_at = _fetch_account_daily_pnl(
+        client, account_id=account_id, observed_at=observed_at,
     )
-    if trade_fetch.is_truncated:
-        raise ProjectXClientError(
-            "ProjectX Trade/search pagination was incomplete during live preflight."
-        )
-    trade_events = trade_fetch.events
-    daily_pnl = 0.0
-    entry_trades_today = 0
-    latest_account_loss_at: datetime | None = None
-    for event in trade_events:
-        if not isinstance(event, dict) or int(event.get("account_id", -1)) != int(account_id):
-            raise ProjectXClientError("ProjectX returned a trade for the wrong account.")
-        if _trade_payload_is_voided(event):
-            continue
-        event_timestamp = event.get("timestamp")
-        if not isinstance(event_timestamp, datetime):
-            raise ProjectXClientError("ProjectX returned a trade without a valid timestamp.")
-        event_timestamp = _as_utc(event_timestamp)
-        if event_timestamp < pnl_start or event_timestamp > min(pnl_end, observed_at):
-            continue
-        # Canonical realized P&L is represented by the closing execution. Its
-        # stored/provider fee is per-side, so the closed row is normalized to a
-        # round turn and receives the same Topstep commission used by metrics.
-        if event.get("pnl") is None:
-            entry_trades_today += 1
-            continue
-        fees = _finite_optional_float(event.get("fees"))
-        pnl = _finite_optional_float(event.get("pnl"))
-        commissions = (
-            _finite_optional_float(event.get("commissions"))
-            if event.get("commissions") is not None
-            else None
-        )
-        if fees is None or pnl is None or (event.get("commissions") is not None and commissions is None):
-            raise ProjectXClientError("ProjectX returned non-finite daily P&L data.")
-        effective_fee = effective_topstep_trade_fee(
-            trade_timestamp=event_timestamp,
-            pnl=pnl,
-            fees=fees,
-            symbol=_normalized_optional_text(event.get("symbol")),
-            contract_id=_normalized_optional_text(event.get("contract_id")),
-            size=_finite_optional_float(event.get("size")),
-            raw_fee_is_per_side=str(event.get("fee_scope") or "per_side") != "round_turn",
-            commissions=commissions,
-        )
-        daily_pnl += pnl - effective_fee
-        if pnl - effective_fee < 0:
-            latest_account_loss_at = max(latest_account_loss_at or event_timestamp, event_timestamp)
-    if not math.isfinite(daily_pnl):
-        raise ProjectXClientError("ProjectX daily P&L total is not finite.")
 
     return LiveExecutionPreflight(
         account_state=provider_account_state,
@@ -12958,6 +13006,11 @@ def _create_order_attempt(
     if execution_mode == "live" and str(config.strategy_type) == "topbot_adaptive" and dom_selected(config.strategy_params):
         from .topbot_runner import runner_plan
         request_payload["timeExit"] = runner_plan()
+        from .topbot_evidence import binding
+        payload = decision.raw_payload or {}
+        request_payload["entryEvidence"] = {"implementation": binding(),
+            "decision_id": decision.id, "decision_at": _as_utc(decision.created_at).isoformat() if decision.created_at else None,
+            "signal": payload.get("depth_entry"), "recheck": payload.get("depth_recheck")}
     row = BotOrderAttempt(
         user_id=user_id,
         bot_config_id=int(config.id),
@@ -12978,11 +13031,21 @@ def _create_order_attempt(
     return row
 
 
-def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAttempt) -> None:
+def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAttempt, decision=None) -> None:
     request_payload = order_attempt.raw_request or {}
     if isinstance(request_payload.get("timeExit", {}).get("runner"), dict):
         from .topbot_audit import client_for
-        client = client_for(client, order_attempt, reason="Confirmed contrarian DOM entry", market_price=request_payload.get("price"))
+        from .topbot_depth import feed
+        evidence = dict(request_payload.get("entryEvidence") or {})
+        if decision is not None:
+            evidence["recheck"] = (decision.raw_payload or {}).get("depth_recheck")
+        try:
+            evidence["pre_submit"] = feed.snapshot(order_attempt.user_id, order_attempt.contract_id)
+        except Exception as exc:
+            evidence["pre_submit"] = {"ready": False, "error_type": type(exc).__name__}
+        request_payload = {**request_payload, "entryEvidence": evidence}
+        order_attempt.raw_request = request_payload
+        client = client_for(client, order_attempt, reason="Confirmed contrarian DOM entry", entry_evidence=evidence)
     started = perf_counter()
     diagnostic_context = {
         key: getattr(order_attempt, attribute, None) for key, attribute in (
@@ -13038,6 +13101,8 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
         )
         order_attempt.raw_response = {"error": safe_error, "error_type": type(exc).__name__}
     finally:
+        if isinstance(request_payload.get("timeExit", {}).get("runner"), dict) and getattr(client, "last_call", None):
+            order_attempt.raw_request = {**(order_attempt.raw_request or {}), "submissionTiming": dict(client.last_call)}
         diagnostic_event(logger, "bot_order_submission_finished", **diagnostic_context,
                          level=logging.WARNING if order_attempt.status in {"submission_unknown", "error"} else logging.INFO,
                          order_status=order_attempt.status,
