@@ -202,6 +202,8 @@ def make_router(origin_allowed) -> APIRouter:
         response.headers["Cache-Control"] = "no-store"
         if anonymous_request_error(request, origin_allowed):
             raise HTTPException(403, "Local sign-in requires a trusted loopback connection")
+
+    def require_enabled():
         if not enabled():
             raise HTTPException(404, "Local sign-in is not enabled")
 
@@ -209,11 +211,14 @@ def make_router(origin_allowed) -> APIRouter:
 
     @router.get("/status")
     def status():
+        # Disabled is a normal capability response, not a missing route.
+        if not enabled():
+            return dict(enabled=False, needs_setup=False)
         with connect() as db:
             owner = db.execute("SELECT password_hash FROM owner WHERE id=1").fetchone()
             return dict(enabled=True, mode=mode(), needs_setup=mode() == "password" and owner["password_hash"] is None)
 
-    @router.post("/device")
+    @router.post("/device", dependencies=[Depends(require_enabled)])
     def device(body: DeviceInput, request: Request):
         if mode() != "trusted_device":
             raise HTTPException(404, "Trusted-device access is not enabled")
@@ -227,7 +232,7 @@ def make_router(origin_allowed) -> APIRouter:
             _event(db, "trusted_device_sign_in")
             return _session(db, owner, method="trusted_device")
 
-    @router.post("/setup")
+    @router.post("/setup", dependencies=[Depends(require_enabled)])
     def setup(body: SetupInput):
         if mode() != "password":
             raise HTTPException(404, "Password sign-in is not enabled")
@@ -248,7 +253,7 @@ def make_router(origin_allowed) -> APIRouter:
             _event(db, "password_created")
             return _session(db, owner)
 
-    @router.post("/login")
+    @router.post("/login", dependencies=[Depends(require_enabled)])
     def login(body: LoginInput):
         if mode() != "password":
             raise HTTPException(404, "Password sign-in is not enabled")
@@ -270,11 +275,11 @@ def make_router(origin_allowed) -> APIRouter:
         except AuthError:
             raise HTTPException(401, "Local session expired; sign in again") from None
 
-    @router.get("/session")
+    @router.get("/session", dependencies=[Depends(require_enabled)])
     def session(claims=Depends(session_claims)):
         return dict(user=dict(id=claims["sub"], email=claims.get("email")), expires_at=claims["exp"])
 
-    @router.post("/logout")
+    @router.post("/logout", dependencies=[Depends(require_enabled)])
     def logout(claims=Depends(session_claims)):
         with connect() as db:
             db.execute("DELETE FROM sessions WHERE id=?", (_digest(claims["jti"]),))

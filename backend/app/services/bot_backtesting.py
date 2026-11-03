@@ -2254,7 +2254,8 @@ def prepare_bot_backtest_data(
             # detaches its cached return rows when it owns a transaction; doing
             # that in the caller session could unexpectedly detach objects the
             # surrounding backtest still holds references to.
-            provider_db = Session(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
+            from ..research_storage import StorageSession
+            provider_db = StorageSession(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
             try:
                 bot_service_module.fetch_and_store_market_candles(
                     provider_db,

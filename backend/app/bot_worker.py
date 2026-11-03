@@ -709,7 +709,10 @@ class BotWorkerRuntime:
         if dom_run:
             from .services.topbot_depth import feed
             feed.ensure(user_id, archive_contract, client, dom_params.get("imbalance_threshold", .1))
-            depth = feed.snapshot(user_id, archive_contract, now=now)
+            # The cycle timestamp predates database/provider I/O. New ticks can
+            # arrive during that work; compare their age with the clock read
+            # under the feed lock, not with the earlier scheduling timestamp.
+            depth = feed.snapshot(user_id, archive_contract)
             # Record each qualifying episode once. Idle decisions retain the
             # existing candle cadence rather than writing depth ticks to SQL.
             evaluation_due = evaluation_due or bool(depth.get("ready") and depth.get("episode_at")

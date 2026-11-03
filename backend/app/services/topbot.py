@@ -99,10 +99,11 @@ def prepare_topbot(
 
     existing = next((config for config in configs if config.strategy_type == "topbot_adaptive"), None)
     values = deepcopy(TOPBOT_SETTINGS)
-    # This account's explicit restart preference survives Stop / Start and rolls.
+    # This account's explicit preferences survive Stop / Start and rolls.
     from .topbot_strategy import selected
     if existing is not None and selected(existing.strategy_params):
         values["strategy_params"]["practice_auto_resume"] = existing.strategy_params.get("practice_auto_resume") is True
+        values["strategy_params"]["daily_entry_limit_enabled"] = existing.strategy_params.get("daily_entry_limit_enabled") is not False
     values.update(
         account_id=account_id, execution_mode="dry_run" if dry_run else "live",
         enabled=False, contract_id=contract_id,

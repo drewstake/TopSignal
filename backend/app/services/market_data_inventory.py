@@ -290,7 +290,7 @@ def merge_candles_without_overwrite(
             low_price=bar["low"], close_price=bar["close"], volume=bar["volume"],
             is_partial=False, source="projectx", raw_payload=payload, fetched_at=fetched_at,
         ))
-    dialect = db.get_bind().dialect.name
+    dialect = db.get_bind(mapper=ProjectXMarketCandle).dialect.name
     if dialect not in {"postgresql", "sqlite"}:
         raise ValueError("unsupported_database")
     factory = pg_insert if dialect == "postgresql" else sqlite_insert

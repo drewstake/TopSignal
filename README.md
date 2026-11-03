@@ -7,7 +7,7 @@ remain inactive; starting a practice run explicitly installs the new preset.
 
 TopSignal opens to the account dashboard. The shared navigation includes Dashboard, Accounts, Trades, Expenses, Bot, Simulation, and Appearance. The Simulation tab contains a playable, browser-local simulated futures exchange: buy and sell BX, BT, and BG against 390 finite, funded bots with a $10,000 simulated account. See [the Get-Funded implementation and validation notes](docs/get-funded-simulation.md).
 
-Run `npm run dev` and open `http://localhost:5173`. This starts the cloud backend, waits for it to be ready, and starts the frontend with the matching API address. The dashboard opens at `/` and `/dashboard`, and Simulation opens at `/simulation` inside the same authenticated workspace.
+Run `npm run dev` and open `http://localhost:5173`. This starts both the cloud app and the ProjectX-connected local workspace at `http://127.0.0.1:5174`, so Continue offline works from the sign-in page. Local live orders are disabled. Each frontend starts after its backend is ready with the matching API address. The dashboard opens at `/` and `/dashboard`, and Simulation opens at `/simulation` inside the same authenticated workspace.
 
 The dev launcher checks `/ready/dev`. When its local worker and both live-order
 flags are explicitly disabled, this checks database/schema readiness without
@@ -815,7 +815,7 @@ from the supplied archives and the exact benchmark methodology.
 npm run dev
 ```
 
-That starts the cloud account workspace at `http://localhost:5173`, with the dashboard as its landing page. The launcher checks database migrations and waits for the backend before starting the frontend with the matching API address. It uses the same supervisor as `npm run dev:cloud`.
+That starts the cloud account workspace at `http://localhost:5173` and the ProjectX-connected local workspace at `http://127.0.0.1:5174`. Continue offline opens the local workspace with saved SQLite data, account refreshes, and dry-run bots; local live orders are disabled. The launcher checks cloud database migrations and waits for each backend before starting its frontend with the matching API address. One terminal and one Ctrl+C manage both workspaces.
 
 For the retained account workspace, `npm run dev:live` explicitly starts:
 
@@ -823,7 +823,7 @@ For the retained account workspace, `npm run dev:live` explicitly starts:
 - the connected local workspace on `http://127.0.0.1:5174`, with ProjectX, saved SQLite data, and live order routing enabled; TopBot still requires a Live Run start and confirmation
 - a separate loopback backend for each app, using available ports starting at `8000`
 
-`npm run dev:live` starts the local backend first, then starts the cloud profile once the local port is bound. The cloud profile avoids that backend port even during a local reload. Each profile has its own environment and backend/frontend supervisor. A cloud startup or migration failure leaves the local workspace running. Ctrl+C stops both profiles launched by this command. If local port `5174` is already occupied, the launcher reports the conflict before starting another local backend and continues with the cloud profile. Use the existing local workspace, or stop its `dev:local`/`dev:offline` terminal with Ctrl+C before relaunching it.
+Both `npm run dev` and `npm run dev:live` start the local backend first, then start the cloud profile once the local port is bound. The cloud profile avoids that backend port even during a local reload. Each profile has its own environment and backend/frontend supervisor. A cloud startup or migration failure leaves the local workspace running. Ctrl+C stops both profiles launched by the command. If local port `5174` is already occupied, the launcher reports the conflict before starting another local backend and continues with the cloud profile. Use the existing local workspace, or stop its `dev:local`/`dev:offline` terminal with Ctrl+C before relaunching it.
 
 Use `npm run dev:cloud` for only the regular app, `npm run dev:local` for only the connected local workspace, or `npm run dev:offline` for local work without ProjectX. Local and cloud data remain separate; this launcher does not copy or synchronize them.
 
@@ -948,7 +948,7 @@ Frontend auth behavior:
 | `npm run db:baseline` | Validate a database created from current `schema.sql` and initialize its migration ledger |
 | `npm run db:migrate` | Apply pending PostgreSQL migrations transactionally |
 | `npm run db:check` | Check migration version/checksum state without changing the database |
-| `npm run dev` | Run the cloud dashboard frontend and its backend together |
+| `npm run dev` | Run both cloud and ProjectX-connected local workspaces; local live orders disabled |
 | `npm run dev:live` | Explicitly run both account workspaces with live order routing enabled locally |
 | `npm run dev:cloud` | Run only the regular cloud/login app |
 | `npm run dev:local` | Run only the local workspace with ProjectX and dry-run bots |

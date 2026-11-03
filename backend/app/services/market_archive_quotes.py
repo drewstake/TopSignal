@@ -130,7 +130,9 @@ class QuoteSpool:
             path = location(self.owner, self.root)
             if sum(p.stat().st_size for p in path.parent.glob(path.name+'*') if p.is_file()) >= MAX_ARCHIVE_BYTES:
                 raise OSError(errno.ENOSPC, 'optional_archive_capacity')
-            inserted = (archive or Archive(self.owner, self.root)).events([unpack(r[1]) for r in active])
+            # Only this isolated background consumer waits longer for the writer.
+            # Execution callers retain their 250ms deadline and never join retries.
+            inserted = (archive or Archive(self.owner, self.root, write_timeout=2.)).events([unpack(r[1]) for r in active])
         except Exception as exc:
             info = diagnostic(exc)
             terminal_rows = [r for r in active if not info['recoverable'] or r[3]+1 >= MAX_ATTEMPTS]

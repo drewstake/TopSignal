@@ -10,6 +10,7 @@ from sqlalchemy.pool import NullPool
 
 from .database_security import production_database_connect_args, validate_production_database_configuration
 from .evaluation_timing import install_database_timing
+from .research_storage import StorageSession
 
 load_dotenv()
 
@@ -84,7 +85,7 @@ except Exception:
     # Imports precede production logging. Invalid URL components must not be
     # echoed by driver/parser exceptions into startup stderr.
     raise RuntimeError("Invalid DATABASE_URL or database engine configuration") from None
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, class_=StorageSession)
 Base = declarative_base()
 install_database_timing(engine)
 

@@ -1,5 +1,5 @@
 import { memo, useMemo, useRef, useState } from "react";
-import { continuousSegments, nearestPoint, type HistoryPoint } from "./history";
+import { continuousSegments, metrics, nearestPoint, type HistoryPoint } from "./history";
 
 const W = 1160, H = 590, LEFT = 92, RIGHT = 24, PW = W - LEFT - RIGHT;
 const panels = [{ top: 35, bottom: 190 }, { top: 235, bottom: 390 }, { top: 435, bottom: 550 }];
@@ -11,41 +11,56 @@ export const HistoryChart = memo(function HistoryChart({ points, range, selected
 }) {
   const svg = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<[number, number] | null>(null);
+  const [hover, setHover] = useState<{ point: HistoryPoint; at: number } | null>(null);
   const x = (t: number) => LEFT + (t - range[0]) / (range[1] - range[0]) * PW;
   const geometry = useMemo(() => {
     const visible = points.filter(p => p.time >= range[0] && p.time <= range[1]);
-    const segments = continuousSegments(visible);
-    const clean = segments.flat();
-    const prices = clean.map(p => p.mid_price!);
-    const min = prices.length ? Math.min(...prices) : 0, max = prices.length ? Math.max(...prices) : 1;
+    const series = metrics.map(field => continuousSegments(visible, field));
+    const prices = series[0].flat().map(p => p.mid_price!);
+    const min = prices.length ? prices.reduce((a,b)=>Math.min(a,b),Infinity) : 0, max = prices.length ? prices.reduce((a,b)=>Math.max(a,b),-Infinity) : 1;
     const padding = Math.max(.5, (max - min) * .12);
-    const sizes = clean.flatMap(p => [p.bid_contracts, p.ask_contracts]);
-    const scales = [[min - padding, max + padding], [0, Math.max(1, ...sizes) * 1.12], [-1, 1]];
+    const sizes = [...series[1].flat().map(p => p.bid_contracts), ...series[2].flat().map(p => p.ask_contracts)];
+    const scales = [[min - padding, max + padding], [0, sizes.reduce((a,b)=>Math.max(a,b),1) * 1.12], [-1, 1]];
     const y = (value: number, panel: number) => panels[panel].bottom - (value - scales[panel][0]) /
       (scales[panel][1] - scales[panel][0]) * (panels[panel].bottom - panels[panel].top);
-    const path = (field: "mid_price" | "bid_contracts" | "ask_contracts" | "imbalance", panel: number) => segments.map(segment =>
-      segment.filter(p => p[field] !== null).map((p, i) => `${i ? "L" : "M"}${(LEFT + (p.time-range[0])/(range[1]-range[0])*PW).toFixed(2)},${y(p[field]!, panel).toFixed(2)}`).join(" ")
-    ).join(" ");
-    const gaps: Array<[number, number]> = [];
-    let cursor = range[0];
-    for (const segment of segments) {
-      if (segment[0].time - cursor > 2) gaps.push([cursor, segment[0].time]);
-      cursor = segment.at(-1)!.time;
+    const paths = metrics.map((field, index) => series[index].map(segment =>
+      segment.map((p, i) => `${i ? "L" : "M"}${(LEFT + (p.time-range[0])/(range[1]-range[0])*PW).toFixed(2)},${y(p[field]!, index === 3 ? 2 : index === 0 ? 0 : 1).toFixed(2)}`).join(" ")
+    ).join(" "));
+    const dots = metrics.flatMap((field,index) => series[index].filter(s => s.length === 1).map(s => ({ point:s[0], field, index })));
+    const gaps: Array<{ start:number; end:number; reason:string; panel:number }> = [];
+    // Shade each metric's actual continuity boundaries; a price issue need not erase liquidity.
+    for (const index of [0,1,2,3]) {
+      let cursor = range[0];
+      for (const segment of series[index]) {
+        const first = segment[0];
+        if (first.time > cursor) {
+          const gap = first.gap_before?.[metrics[index]];
+          gaps.push({start:cursor,end:first.time,panel:index === 3 ? 2 : index === 0 ? 0 : 1,
+            reason: gap?.reasons.join(", ").replaceAll("_"," ") || "Unknown interval or source/generation change"});
+        }
+        cursor = segment.at(-1)!.time;
+      }
+      if (range[1]-cursor > 2) gaps.push({start:cursor,end:range[1],panel:index === 3 ? 2 : index === 0 ? 0 : 1,reason:"No fresh observations"});
     }
-    if (range[1] - cursor > 2) gaps.push([cursor, range[1]]);
-    return { paths: [path("mid_price", 0), path("bid_contracts", 1), path("ask_contracts", 1), path("imbalance", 2)], scales, y, gaps };
+    return { paths, scales, y, gaps, dots };
   }, [points, range]);
   const pointerTime = (clientX: number) => {
     const box = svg.current!.getBoundingClientRect();
     const pos = (clientX - box.left) / box.width * W;
     return range[0] + Math.max(0, Math.min(1, (pos - LEFT) / PW)) * (range[1] - range[0]);
   };
-  return <div className="overflow-x-auto rounded-xl border border-app-border bg-app-bg/50">
+  const hoverGap = hover ? geometry.gaps.find(g => hover.at >= g.start && hover.at <= g.end) : null;
+  return <div className="relative overflow-x-auto rounded-xl border border-app-border bg-app-bg/50">
     <svg ref={svg} viewBox={`0 0 ${W} ${H}`} className="block min-w-[680px] w-full select-none touch-none"
       role="img" aria-label="Price, bid and ask contract totals, and imbalance on a shared timeline. Drag to zoom; click to inspect. Arrow keys select adjacent samples."
       tabIndex={0}
       onPointerDown={e => { if (e.button !== 0) return; e.currentTarget.setPointerCapture(e.pointerId); const t = pointerTime(e.clientX); setDrag([t,t]); }}
-      onPointerMove={e => { if (drag) setDrag([drag[0], pointerTime(e.clientX)]); }}
+      onPointerMove={e => {
+        const at = pointerTime(e.clientX);
+        if (drag) setDrag([drag[0], at]);
+        else { const point = nearestPoint(points, at); setHover(point ? { point, at } : null); }
+      }}
+      onPointerLeave={() => setHover(null)}
       onPointerCancel={() => setDrag(null)}
       onPointerUp={e => {
         if (!drag) return;
@@ -57,12 +72,12 @@ export const HistoryChart = memo(function HistoryChart({ points, range, selected
       onKeyDown={e => {
         if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
         e.preventDefault();
-        const index = selected ? points.indexOf(selected) : 0;
+        const index = selected ? points.findIndex(p => p.capture_id === selected.capture_id && p.index === selected.index) : 0;
         const point = points[Math.max(0, Math.min(points.length - 1, index + (e.key === "ArrowRight" ? 1 : -1)))];
         if (point) onSelect(point);
       }}>
       <rect width={W} height={H} fill="transparent" />
-      {geometry.gaps.map(([a,b], i) => <rect key={i} x={x(a)} y={20} width={Math.max(1,x(b)-x(a))} height={535} fill="#d99a32" opacity={.08} />)}
+      {geometry.gaps.map((gap, i) => <rect key={i} x={x(gap.start)} y={panels[gap.panel].top} width={Math.max(1,x(gap.end)-x(gap.start))} height={panels[gap.panel].bottom-panels[gap.panel].top} fill="#d99a32" opacity={.09}><title>{gap.reason} · {(gap.end-gap.start).toFixed(2)}s</title></rect>)}
       {panels.map((panel, index) => <g key={index}>
         <text x={LEFT} y={panel.top - 13} fill="currentColor" fontSize="12" fontWeight="600">
           {index === 0 ? "MID-PRICE" : index === 1 ? "RESTING CONTRACTS   ·   BIDS / ASKS" : "IMBALANCE   ·   POSITIVE = MORE BIDS"}
@@ -79,9 +94,18 @@ export const HistoryChart = memo(function HistoryChart({ points, range, selected
         })}
       </g>)}
       {geometry.paths.map((d,i) => <path key={i} d={d} fill="none" stroke={["#60a5fa", "#34d399", "#fb7185", "#a78bfa"][i]} strokeWidth={i===0 ? 1.8 : 1.5} vectorEffect="non-scaling-stroke" />)}
+      {geometry.dots.map(({point,field,index},i) => <circle key={i} cx={x(point.time)} cy={geometry.y(point[field]!,index === 3 ? 2 : index === 0 ? 0 : 1)} r={1.6} fill={["#60a5fa","#34d399","#fb7185","#a78bfa"][index]} />)}
       {Array.from({ length: 6 }, (_, i) => { const t = range[0] + (range[1]-range[0])*i/5; return <text key={i} x={x(t)} y={578} textAnchor={i===0 ? "start" : i===5 ? "end" : "middle"} fill="currentColor" opacity={.65} fontSize="11">{clock(t)}</text>; })}
       {selected && selected.time >= range[0] && selected.time <= range[1] && <line x1={x(selected.time)} x2={x(selected.time)} y1={20} y2={550} stroke="currentColor" opacity={.6} strokeDasharray="4 4" />}
       {drag && <rect x={x(Math.min(...drag))} width={Math.max(1,Math.abs(x(drag[1])-x(drag[0])))} y={20} height={530} fill="#60a5fa" opacity={.2} />}
     </svg>
+    {hover && <div role="tooltip" className="pointer-events-none absolute right-3 top-3 max-w-sm rounded-lg border border-app-border bg-app-bg p-3 text-xs shadow-xl">
+      <p className="font-semibold">{new Date(hover.point.timestamp).toLocaleString(undefined,{timeZoneName:"short"})}</p>
+      <p>Bids {hover.point.bid_contracts?.toLocaleString() ?? "unavailable"} · Asks {hover.point.ask_contracts?.toLocaleString() ?? "unavailable"}</p>
+      <p>{hover.point.bid_levels} bid levels / {hover.point.ask_levels} ask levels · Mid {hover.point.mid_price ?? "unavailable"}</p>
+      <p>Quality: {hover.point.quality_flags.join(", ").replaceAll("_"," ") || "No flags"}</p>
+      <p>{hover.point.capture_id.startsWith("live") ? "Provisional live sample" : "Recorded observation"} · Generation {hover.point.generation}</p>
+      {hoverGap && <p className="text-amber-400">Gap {(hoverGap.end-hoverGap.start).toFixed(2)}s: {hoverGap.reason}. Values are from the nearest observation.</p>}
+    </div>}
   </div>;
 });

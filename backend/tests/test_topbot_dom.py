@@ -134,6 +134,9 @@ def test_trail_activation_and_never_widen(side,entry,mfe,current,expected):
 
 @pytest.fixture
 def dom_entry(db_session, monkeypatch, open_exchange_session):
+    def unexpected_context(*args, **kwargs):
+        raise AssertionError("Optional context must not delay a DOM entry")
+    monkeypatch.setattr("app.services.market_context_bundle.build_collected_context", unexpected_context)
     for key in ("TOPSIGNAL_LIVE_EXECUTION_ENABLED", "TOPSIGNAL_BOT_WORKER_ENABLED", "TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION"):
         monkeypatch.setenv(key,"true")
     monkeypatch.setattr(bot_service,"running_under_tests",lambda:False)
@@ -210,6 +213,97 @@ def test_api_entry_has_only_25_point_stop_and_durable_runner(dom_entry):
     assert client.place_order_calls[0]["stop_loss_bracket"] == {"ticks":100,"type":4}
     assert client.place_order_calls[0].get("take_profit_bracket") is None
     assert result.order_attempt.raw_request["timeExit"]["runner"]["activation_points"] == 25
+    assert result.analysis["collected_context"]["status"] == "not_collected"
+
+
+@pytest.mark.parametrize("tick_age,blocked", [(0.25, False), (3.0, True), (-0.25, True)])
+def test_dom_risk_reads_clock_with_depth_after_database_work(db_session, monkeypatch, tick_age, blocked):
+    from app.services import topbot_depth
+    account, config = _add_account_and_config(db_session)
+    config.strategy_type = "topbot_adaptive"
+    config.strategy_params = dict(strategy.DEFAULTS)
+    started = datetime(2026, 11, 2, 18, 0, tzinfo=timezone.utc)
+    clock = [started]
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0].astimezone(tz or timezone.utc)
+
+    monkeypatch.setattr(bot_service, "datetime", Clock)
+    monkeypatch.setattr(topbot_depth, "datetime", Clock)
+    state = DepthState(CONTRACT_ID)
+    for i in range(31):
+        at = started - timedelta(seconds=30-i)
+        state.apply(snapshot_event(at, i+1), at)
+    decision = SimpleNamespace(raw_payload={"depth_entry": state.snapshot(started)})
+    monkeypatch.setitem(feed.streams, (str(USER_A), CONTRACT_ID), {"state": state})
+
+    def database_work(*args, **kwargs):
+        # A fresh tick arrives while database/provider checks are in progress.
+        tick_at = started + timedelta(seconds=.5)
+        state.apply(snapshot_event(tick_at, 32), tick_at)
+        assert not state.snapshot(started)["ready"]  # reproduces the old false rejection
+        clock[0] = tick_at + timedelta(seconds=tick_age)
+        return 0
+
+    monkeypatch.setattr(bot_service, "_todays_account_net_pnl", database_work)
+    blocks = bot_service.evaluate_risk_gates(db_session, user_id=USER_A, config=config, account=account,
+        latest_candle=None, contract_id=CONTRACT_ID, symbol="MNQ", action="SELL",
+        dry_run=True, confirm_live_order_routing=False, decision=decision)
+    assert ("dom_signal_expired" in {b.code for b in blocks}) is blocked
+    details = decision.raw_payload["depth_recheck"]
+    assert details["checked_at"] == clock[0].isoformat()
+    assert details["failed_checks"] == (["depth_unavailable"] if blocked else [])
+    if not blocked:
+        assert not blocks
+        assert details["age_seconds"] == .25
+
+
+@pytest.mark.parametrize("patch,reason", [
+    ({"ready": False, "reason": "Depth disconnected or stale"}, "depth_unavailable"),
+    ({"episode_at": None}, "no_qualifying_episode"),
+    ({"episode_at": "2026-11-02T17:59:59+00:00"}, "episode_changed"),
+    ({"imbalance": .09}, "imbalance_below_threshold"),
+    ({"persistence_seconds": 29}, "persistence_too_short"),
+    ({"imbalance": -.2}, "direction_changed"),
+])
+def test_dom_recheck_keeps_each_validity_fence_and_records_reason(db_session, monkeypatch, patch, reason):
+    account, config = _add_account_and_config(db_session)
+    config.strategy_type = "topbot_adaptive"
+    config.strategy_params = dict(strategy.DEFAULTS)
+    now = datetime(2026, 11, 2, 18, 0, tzinfo=timezone.utc)
+    initial = observation(now)
+    decision = SimpleNamespace(raw_payload={"depth_entry": initial})
+    monkeypatch.setattr(feed, "snapshot", lambda *args, **kwargs: {**initial, **patch})
+    blocks = bot_service.evaluate_risk_gates(db_session, user_id=USER_A, config=config, account=account,
+        latest_candle=None, contract_id=CONTRACT_ID, symbol="MNQ", action="SELL",
+        dry_run=True, confirm_live_order_routing=False, decision=decision, now=now)
+    assert "dom_signal_expired" in {b.code for b in blocks}
+    assert reason in decision.raw_payload["depth_recheck"]["failed_checks"]
+    assert reason.replace("_", " ") in next(b.message for b in blocks if b.code == "dom_signal_expired")
+    assert decision.raw_payload["depth_entry"] == initial
+
+
+def test_dom_execution_still_rejects_depth_that_expires_after_the_signal(db_session, monkeypatch, open_exchange_session):
+    account, config = _add_account_and_config(db_session)
+    config.strategy_type = "topbot_adaptive"
+    config.strategy_params = dict(strategy.DEFAULTS)
+    db_session.commit()
+    now = datetime.now(timezone.utc)
+    snapshots = iter([observation(now), {"ready": False, "reason": "depth_gap"}])
+    monkeypatch.setattr(feed, "ensure", lambda *args, **kwargs: None)
+    monkeypatch.setattr(feed, "snapshot", lambda *args, **kwargs: next(snapshots))
+    client = RecordingClient()
+    result = bot_service.evaluate_bot_config(db_session, user_id=USER_A, config=config,
+        account=account, client=client, dry_run=True)
+    assert result.decision.action == "SELL"
+    assert result.status == "risk_blocked"
+    assert "dom_signal_expired" in {event.code for event in result.risk_events}
+    event = next(event for event in result.risk_events if event.code == "dom_signal_expired")
+    assert event.raw_payload["depth_recheck"]["failed_checks"] == ["depth_unavailable"]
+    assert event.raw_payload["depth_recheck"]["reason"] == "depth_gap"
+    assert not client.place_order_calls
 
 
 def test_same_episode_never_places_twice(db_session,dom_entry):

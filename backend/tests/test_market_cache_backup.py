@@ -4,8 +4,48 @@ from pathlib import Path
 import sqlite3
 import io
 import tarfile
+from contextlib import closing
 
 import pytest
+
+
+def test_wal_snapshot_finishes_under_continuous_external_writes(tmp_path):
+    from tools.backup_market_cache import backup_sqlite
+    path = tmp_path / 'busy.sqlite3'
+    with closing(sqlite3.connect(path)) as writer:
+        writer.execute('PRAGMA journal_mode=WAL')
+        writer.execute('CREATE TABLE events(id INTEGER PRIMARY KEY,payload BLOB)')
+        writer.executemany('INSERT INTO events VALUES(?,zeroblob(4096))', [(i,) for i in range(1000)])
+        writer.commit()
+        writes = []
+        def concurrent_write(status, remaining, total):
+            # A separate connection commits after every backup step. Without
+            # the pinned snapshot this workload continually restarts the copy.
+            writer.execute('INSERT INTO events(payload) VALUES(zeroblob(4096))')
+            writer.commit()
+            writes.append(remaining)
+            assert len(writes) < 20, 'Backup keeps restarting'
+        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as source:
+            with closing(sqlite3.connect(tmp_path / 'copy.sqlite3')) as destination:
+                backup_sqlite(source, destination, progress=concurrent_write)
+                assert len(writes) > 1
+                assert destination.execute('SELECT count(*) FROM events').fetchone()[0] == 1000
+                assert destination.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+                assert not source.in_transaction
+            assert writer.execute('SELECT count(*) FROM events').fetchone()[0] == 1000 + len(writes)
+
+
+def test_snapshot_deadline_releases_wal_reader(tmp_path):
+    from tools.backup_market_cache import backup_sqlite
+    path = tmp_path / 'deadline.sqlite3'
+    with closing(sqlite3.connect(path)) as source:
+        source.execute('PRAGMA journal_mode=WAL')
+        source.execute('CREATE TABLE events(id INTEGER PRIMARY KEY)')
+        source.commit()
+        with closing(sqlite3.connect(tmp_path / 'incomplete.sqlite3')) as destination:
+            with pytest.raises(TimeoutError, match='deadline'):
+                backup_sqlite(source, destination, timeout_seconds=0)
+        assert not source.in_transaction
 
 
 def test_optional_quote_spool_is_copied_before_archive_handoff(tmp_path, monkeypatch):

@@ -51,6 +51,7 @@ def database(monkeypatch):
     recorder = market.ObservationWriter(factory, auto_start=False, capacity=4, record_cap=3, retention_days=3)
     monkeypatch.setattr(market, "writer", recorder)
     monkeypatch.setenv("TOPSIGNAL_MARKET_CAPTURE_ENABLED", "true")
+    monkeypatch.setenv("TOPSIGNAL_RAW_MARKET_CAPTURE_ENABLED", "true")
     yield factory, recorder
     engine.dispose()
 
@@ -144,6 +145,47 @@ def test_database_failure_is_contained(database):
     recorder.flush()
     assert recorder.stats(USER)["write_errors"] == 1
     assert recorder.queue.empty()
+
+
+def test_raw_capture_defaults_off_but_decisions_remain_enabled(database, monkeypatch):
+    factory, recorder = database
+    monkeypatch.delenv("TOPSIGNAL_RAW_MARKET_CAPTURE_ENABLED")
+    assert market.enabled()
+    assert not market.raw_capture_enabled()
+    assert not market.capture_depth(user_id=USER, contract_id=CONTRACT, entry=depth())
+    assert not market.capture_gap(user_id=USER, contract_id=CONTRACT, reason="disconnected")
+    assert not market.capture_trade(user_id=USER, contract_id=CONTRACT,
+        payload={"timestamp": NOW.isoformat(), "price": 100, "volume": 2})
+    assert recorder.queue.empty()
+    with factory() as db:
+        stage(db)
+        db.commit()
+    recorder.flush()
+    with factory() as db:
+        assert db.query(DecisionResearchSnapshot).count() == 1
+        assert db.query(MarketObservation).count() == 0
+        status = market.observation_status(db, user_id=USER)
+        assert status["enabled"] is False
+        assert status["decision_capture_enabled"] is True
+
+
+def test_decision_only_write_does_not_scan_or_delete_market_history(database):
+    from sqlalchemy import event
+    factory, recorder = database
+    statements = []
+    with factory() as db:
+        stage(db)
+        db.commit()
+    engine = factory.kw["bind"]
+    def capture(_conn, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        recorder.flush()
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert statements
+    assert not any("market_observations" in statement for statement in statements)
 
 
 def test_snapshot_waits_for_commit_and_copies_original_features(database):

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import type { AppShellOutletContext } from "../../app/AppShell";
 import { useDemoMode } from "../../lib/demoMode";
@@ -6,11 +6,13 @@ import { getBotProviderAccountId } from "./botAccountIsolation";
 import { BotSignalChart } from "./BotSignalChart";
 import { ProjectXSignalChart } from "./ProjectXSignalChart";
 import { OrderBookPanel } from "./OrderBookPanel";
+import { OrderBookStore } from "./orderBook";
 import { TopBotBiasStrip } from "./TopBotBiasStrip";
 import { TopBotActivity, TopBotEvaluation, TopBotThinking } from "./TopBotEvaluation";
 import { TopBotPosition } from "./TopBotPosition";
 import { TopBotStrategyPanel } from "./TopBotStrategyPanel";
 import { TopBotLiveImbalance } from "./TopBotLiveImbalance";
+import { HistoryView } from "../orderBookHistory/OrderBookHistoryPage";
 import { useTopBotMonitor } from "./useTopBotMonitor";
 import { usePageVisibility } from "./usePageVisibility";
 import { timeLabel } from "./topBotPresentation";
@@ -49,6 +51,10 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
     setResolvedMarket(market); setSnapshot(null);
   }, []);
   const market = monitor.bot ?? resolvedMarket;
+  const depthContract = demoMode || pending || unavailable ? null : market?.contract_id;
+  // Reset buffered depth when the authenticated account scope changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const depthStore = useMemo(() => new OrderBookStore(depthContract, "all", 100), [depthContract, monitor.scope]);
   const matchingSnapshot = market && snapshot?.contractKey.split(":")[0] === market.contract_id ? snapshot : null;
   const strategyActivity = monitor.bot?.strategy_params?.revision === "custom_unconfigured" ? null : monitor.activity;
   const strategyUnconfigured = monitor.status.label === "Inactive · strategy not configured";
@@ -72,18 +78,21 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
           : <MarketChart monitorOnly enabled={!demoMode} onMarketData={setSnapshot} onMarketResolved={onMarketResolved} />}
         <TopBotPosition key={`${accountId}:${market?.contract_id}`} accountId={accountId} contractId={market?.contract_id} demoMode={demoMode} />
       </section>
-      <aside className="topbot-book-shell"><Depth key={market?.contract_id ?? "none"} contractId={market?.contract_id} symbol={market?.symbol} demoMode={demoMode} /></aside>
+      <aside className="topbot-book-shell"><Depth key={`${monitor.scope}:${depthContract}`} contractId={depthContract} symbol={market?.symbol} demoMode={demoMode} sharedStore={depthStore} /></aside>
     </div>
-    <div className="topbot-insight-grid">
       <TopBotThinking activity={strategyActivity} status={monitor.status} snapshot={matchingSnapshot} now={now} error={monitor.error} strategyUnconfigured={strategyUnconfigured}
+        liquidityHistory={!demoMode && !pending && !unavailable && accountId != null && (
+          <div className="mt-4 space-y-4" aria-label="Recorded liquidity history">
+            <HistoryView key={`${accountId}:${monitor.scope}:${depthContract}`} accountId={accountId} compact liveStore={depthStore} />
+          </div>
+        )}
         liveImbalance={monitor.bot?.strategy_params?.revision === "dom_contrarian_v1" && <TopBotLiveImbalance
           key={`${accountId}:${monitor.bot.id}:${monitor.bot.contract_id}`} contractId={monitor.bot.contract_id}
           threshold={Number(monitor.bot.strategy_params.imbalance_threshold) || .1}
           requiredSeconds={Number(monitor.bot.strategy_params.persistence_seconds) || 30}
           enabled={!demoMode && !pending && !unavailable && accountId != null} />} />
-      <TopBotEvaluation activity={strategyActivity} now={now} failed={Boolean(monitor.error)} strategyUnconfigured={strategyUnconfigured} />
-    </div>
     <TopBotActivity activity={monitor.activity} />
+    <TopBotEvaluation activity={strategyActivity} now={now} failed={Boolean(monitor.error)} strategyUnconfigured={strategyUnconfigured} />
     <TopBotStrategyPanel key={`${accountId}:${demoMode}`} accountId={accountId} bot={monitor.bot} activity={monitor.activity}
       demoMode={demoMode || pending || unavailable} onChanged={() => setRefreshToken(value => value + 1)} />
     <footer className="topbot-footer"><span>TOPBOT / OBSERVATION WORKSPACE</span><span>Live market streams · recorded bot decisions · times in New York</span></footer>

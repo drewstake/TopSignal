@@ -168,8 +168,12 @@ class DepthFeed:
 
     def snapshot(self, owner, contract, *, now=None):
         with self.lock:
+            # Read the clock under the same lock as the book. A timestamp captured
+            # before database/provider work can precede a newly arrived tick.
+            checked_at = now or datetime.now(timezone.utc)
             stream = self.streams.get((str(owner),contract))
-            return stream["state"].snapshot(now or datetime.now(timezone.utc)) if stream else {"ready": False, "reason": "Waiting for worker depth subscription"}
+            result = stream["state"].snapshot(checked_at) if stream else {"ready": False, "reason": "Waiting for worker depth subscription"}
+            return {**result, "checked_at": checked_at.isoformat()}
 
     def observation(self, owner, contract, *, now=None):
         """Read-only UI telemetry from the same state used by entry checks.

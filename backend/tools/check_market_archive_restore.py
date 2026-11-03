@@ -21,6 +21,12 @@ def digest(value):
 def restore_check(source, output):
     verify(source)
     backup(source, output)
+    return verify_restored_content(output)
+
+
+def verify_restored_content(output):
+    """Check immutable restored files and the original decision dependencies."""
+    verify(output)
     samples = []
     for path in sorted(output.glob('market-archive/v1/*/archive.sqlite3')):
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as db:
@@ -28,9 +34,11 @@ def restore_check(source, output):
             for index, row in enumerate(rows):
                 record = json.loads(zlib.decompress(row[1]))
                 model = record['forecast'].get('artifact_sha256')
+                # A rule-based BUY/SELL can legitimately use no probabilistic
+                # model. The producer records model use in forecast/artifact
+                # metadata, independently of the chosen trading direction.
                 if not model and (record.get('artifact_status') != 'no_model_used'
-                                  or record['forecast'].get('forecasts')
-                                  or record.get('action') in ('BUY', 'SELL')):
+                                  or record['forecast'].get('forecasts')):
                     raise ValueError('Original model missing or corrupt')
                 # Check the latest decision even when it legitimately used no
                 # model, then find the most recent model-bearing decision too.

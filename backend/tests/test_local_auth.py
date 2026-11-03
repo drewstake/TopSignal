@@ -76,7 +76,13 @@ def test_no_supabase_key_confusion_or_disabled_fallback(local, monkeypatch):
     with pytest.raises(AuthError): authenticate_request_token(forged)
     monkeypatch.delenv("TOPSIGNAL_LOCAL_AUTH_DB")
     with pytest.raises(AuthUnavailable): authenticate_request_token(token)
-    assert local[0].get("/auth/local/status").status_code == 404
+    response = local[0].get("/auth/local/status")
+    assert response.status_code == 200
+    assert response.json() == dict(enabled=False, needs_setup=False)
+    assert response.headers["Cache-Control"] == "no-store"
+    for endpoint in ("device", "setup", "login", "logout"):
+        assert local[0].post(f"/auth/local/{endpoint}", json={}).status_code == 404
+    assert local[0].get("/auth/local/session").status_code == 404
 
 
 @pytest.mark.parametrize("headers", [
@@ -84,7 +90,10 @@ def test_no_supabase_key_confusion_or_disabled_fallback(local, monkeypatch):
     {"Host": "hostile.example"}, {"Sec-Fetch-Site": "cross-site"},
     {"Host": "hostile.example", "X-Forwarded-Host": "localhost"},
 ])
-def test_login_rejects_untrusted_browser_requests(local, headers):
+@pytest.mark.parametrize("enabled", [True, False])
+def test_login_rejects_untrusted_browser_requests(local, monkeypatch, headers, enabled):
+    if not enabled:
+        monkeypatch.delenv("TOPSIGNAL_LOCAL_AUTH_DB")
     assert local[0].get("/auth/local/status", headers=headers).status_code == 403
     assert local[0].post("/auth/local/login", headers=headers, json={"password": PASSWORD}).status_code == 403
 

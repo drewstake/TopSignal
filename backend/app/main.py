@@ -31,6 +31,7 @@ from cryptography.fernet import Fernet
 from urllib.parse import urlsplit
 
 from .services.readiness_schema import schema_cache
+from .database_errors import install_database_error_handlers
 
 from .input_bounds import MAX_DATABASE_ID, MAX_QUERY_OFFSET, MIN_SUPPORTED_DATE, MAX_SUPPORTED_DATE
 from .local_request_security import anonymous_request_error
@@ -499,6 +500,8 @@ async def incomplete_trade_pnl_handler(_request: Request, _exc: IncompleteTradeP
         headers={"Cache-Control": "no-store"},
     )
 
+install_database_error_handlers(app)
+
 app.add_middleware(
     RequestBodyLimitMiddleware,
     # Multipart framing is permitted up to 1 MiB beyond the per-file limit;
@@ -926,6 +929,10 @@ def _validate_readiness_schema(db: Session):
 def _readiness(db: Session, *, response: Response = None, require_bot_runtime: bool = True):
     failed_checks: list[str] = []
     try:
+        from .research_storage import validate_configuration as validate_research_storage
+        from .execution_storage import validate_authority
+        validate_research_storage()
+        validate_authority(db.get_bind())
         db.execute(text("select 1"))
         table_names = schema_cache.get(db.get_bind(), lambda: _validate_readiness_schema(db))
         if "topsignal_schema_migrations" in table_names:
@@ -2485,6 +2492,11 @@ def get_projectx_market_candles(
             limit=limit,
             include_partial_bar=include_partial_bar,
         )
+        # These are read-only chart snapshots. Credential/provider lookups below
+        # release transactions with rollback; attached ORM rows would expire and
+        # timestamp/serialization loops would issue one SELECT per candle.
+        for row in cached_candles:
+            db.expunge(row)
         fallback_candles = cached_candles
         cached_covers_request = market_candle_cache_covers_request(
             cached_candles,
@@ -2531,6 +2543,8 @@ def get_projectx_market_candles(
                 limit=limit,
                 include_partial_bar=include_partial_bar,
             )
+            for row in cached_candles:
+                db.expunge(row)
             if cached_candles:
                 fallback_candles = cached_candles
             cached_covers_request = market_candle_cache_covers_request(
@@ -3751,6 +3765,7 @@ def get_order_book_history(
     start: datetime | None = None,
     end: datetime | None = None,
     scope: Literal["all", "1", "5", "10", "20", "50", "100"] = "all",
+    window: Literal["latest", "session"] = "latest",
     db: Session = Depends(get_db),
 ):
     from .services.depth_history import account_history
@@ -3759,14 +3774,14 @@ def get_order_book_history(
     db.rollback()  # Release the read transaction before any filesystem/host IO.
     response.headers["Cache-Control"] = "no-store"
     if bool(start) != bool(end) or (start and (
-        start.tzinfo is None or end.tzinfo is None or not timedelta(0) < end-start <= timedelta(hours=1)
-    )):
-        raise HTTPException(status_code=422, detail="Choose a timezone-aware time range of one hour or less.")
+        start.tzinfo is None or end.tzinfo is None or not timedelta(0) < end-start <= timedelta(hours=24)
+    )) or (window == "session" and start):
+        raise HTTPException(status_code=422, detail="Choose a timezone-aware range of up to 24 hours, or the current session.")
     try:
         return account_history(user_id=user_id, start=start.isoformat() if start else None,
-                               end=end.isoformat() if end else None, scope=scope)
+                               end=end.isoformat() if end else None, scope=scope, window=window)
     except (ValueError, OverflowError) as exc:
-        raise HTTPException(status_code=422, detail="Choose a shorter history range, up to one hour.") from exc
+        raise HTTPException(status_code=422, detail="History exceeds the bounded session reader; choose a shorter range.") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -4706,6 +4721,10 @@ def _runtime_is_local_only() -> bool:
 
 
 def _validate_runtime_security_configuration() -> None:
+    from .research_storage import validate_configuration
+    validate_configuration()
+    from .execution_storage import validate_authority
+    validate_authority(engine)
     from .local_auth import validate_configuration as validate_local_auth
     validate_local_auth()
     from .services.probabilistic_observation import enabled as observation_enabled, stop_policy

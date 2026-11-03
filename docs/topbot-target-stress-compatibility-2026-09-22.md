@@ -38,3 +38,18 @@ engine `5.4.0-topbot-all-sessions+target-through-1tick-v3`, execution model
 `observed_1m_target_through_one_tick_v3`, with the new normalized hashes pinned.
 No historical replay was run for this revision. Earlier v1/v2 results remain
 immutable and cannot be reproduced byte-identically from the current sources.
+
+## v4 storage compatibility revision — 3 November 2026
+
+Before any new historical replay, the wrapper is registered as engine
+`5.4.0-topbot-all-sessions+target-through-1tick-v4`, execution model
+`observed_1m_target_through_one_tick_v4`. The only change to the pinned replay
+source replaces the provider candle-fetch session with `StorageSession`, which
+routes research tables to the configured local store. The replay engine's fill,
+stop, fee, signal and calendar logic is unchanged. The other two pinned sources
+are unchanged, and exact normalized source checks remain enforced.
+
+This revision runs synthetic compatibility tests only. It does not run historical
+experiments, alter prior results or promote a strategy. Existing v1/v2/v3 source
+captures and result identifiers remain immutable; future results must identify
+the v4 source and execution model.

@@ -1109,8 +1109,8 @@ class ProjectXMarketDepthSession:
         if not self._observation_user_id:
             return
         try:
-            from .market_observations import enabled
-            if not enabled():
+            from .market_observations import raw_capture_enabled
+            if not raw_capture_enabled():
                 return
             payload = {"type": 1, "target": "SubscribeContractTrades" if subscribe else "UnsubscribeContractTrades",
                        "arguments": [contract_id], "invocationId": f"observations-{generation}-{int(subscribe)}|{contract_id}"}

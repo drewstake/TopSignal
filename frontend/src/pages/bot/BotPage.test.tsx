@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { botsApi } from "../../lib/api";
 import type { BotActivity, BotConfig } from "../../lib/types";
@@ -18,6 +18,9 @@ vi.mock("./ProjectXSignalChart", () => ({ ProjectXSignalChart: () => <div>Market
 vi.mock("./OrderBookPanel", () => ({ OrderBookPanel: () => <div>Order book</div> }));
 vi.mock("./TopBotBiasStrip", () => ({ TopBotBiasStrip: () => <div>Biases</div> }));
 vi.mock("./TopBotPosition", () => ({ TopBotPosition: () => <div>Position</div> }));
+vi.mock("../orderBookHistory/OrderBookHistoryPage", () => ({
+  HistoryView: ({ accountId }: { accountId: number }) => <div>Liquidity history for {accountId}</div>,
+}));
 
 const bot = { id: 10, account_id: 1, enabled: true, strategy_type: "topbot_adaptive" } as BotConfig;
 const activity = { config: bot, decisions: [], order_attempts: [], risk_events: [], runs: [{ id: 1, account_id: 1, bot_config_id: 10, status: "running", started_at: "2026-10-31T10:00:00Z", dry_run: true, stopped_at: null, stop_reason: null, last_heartbeat_at: null }] } as BotActivity;
@@ -40,6 +43,7 @@ it("shows green only for a confirmed running bot and healthy worker", async () =
   expect(screen.getByRole("heading", { name: "TopBot" })).not.toBeNull();
   await waitFor(() => expect(screen.getByRole("status").title).toBe("Dry Run active"));
   expect(screen.getByRole("status").querySelector(".bg-emerald-400")).not.toBeNull();
+  expect(within(screen.getByRole("region", { name: "What TopBot sees" })).getByText("Liquidity history for 1")).toBeTruthy();
 });
 
 it("shows red when there is no configured TopBot", async () => {

@@ -38,6 +38,9 @@ const UNIT_SECONDS_BY_NAME: Record<BotTimeframeUnit, number> = {
 };
 
 const SIGNAL_ACTIONS = new Set(["BUY", "SELL", "HOLD"]);
+const SIGNAL_PRICE_FORMAT = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+// The marker footprint also reserves the gap between the wick and its label.
+const SIGNAL_MARKER_SIZE = 2.5;
 
 export interface BotChartQueryWindow {
   start: string;
@@ -750,11 +753,12 @@ export function buildSignalMarkers(input: {
   for (const attempt of input.orderAttempts ?? []) {
     if (attempt.execution_mode !== "live") continue;
     for (const event of attempt.execution_observations ?? []) {
+      if (event.kind !== "fill") continue;
       const time = toDecisionMarkerTimestamp(event.timestamp, candleTimes, sortedCandleTimes, input.timeframeUnit, input.timeframeUnitNumber);
       if (time === null || !candleTimes.has(Number(time))) continue;
-      const id = event.kind === "fill" ? `fill-${event.id}` : `flat-${attempt.id}`;
+      const id = `fill-${event.id}`;
       markersByKey.set(id, { id, time, position: "inBar", shape: "square", size: .65,
-        color: "rgb(56,189,248)", text: event.kind === "fill" ? `FILL ${attempt.side} @ ${event.price}` : "FLAT VERIFIED" });
+        color: "rgb(56,189,248)", text: `FILL ${attempt.side} @ ${event.price}` });
     }
   }
   return Array.from(markersByKey.values()).sort((left, right) => Number(left.time) - Number(right.time));
@@ -783,9 +787,12 @@ function buildDecisionMarker(
     return null;
   }
 
+  const signalText = `${decision.action} @ ${typeof decision.price === "number" && Number.isFinite(decision.price)
+    ? SIGNAL_PRICE_FORMAT.format(decision.price) : "—"}`;
+
   if (decision.decision_type === "risk_reject") return {
-    id: markerId(decision), time, position: "aboveBar", shape: "circle",
-    color: "rgb(148,163,184)", text: `○ BLOCKED ${decision.action}`, size: 0,
+    id: markerId(decision), time, position: decision.action === "BUY" ? "belowBar" : "aboveBar", shape: "circle",
+    color: "rgb(148,163,184)", text: `○ BLOCKED ${signalText}`, size: SIGNAL_MARKER_SIZE,
   };
 
   if (decision.action === "BUY") {
@@ -795,8 +802,8 @@ function buildDecisionMarker(
       position: "belowBar",
       shape: "arrowUp",
       color: BOT_CHART_BUY_COLOR,
-      text: "BUY",
-      size: 1.15,
+      text: signalText,
+      size: SIGNAL_MARKER_SIZE,
     };
   }
 
@@ -807,8 +814,8 @@ function buildDecisionMarker(
       position: "aboveBar",
       shape: "arrowDown",
       color: BOT_CHART_SELL_COLOR,
-      text: "SELL",
-      size: 1.15,
+      text: signalText,
+      size: SIGNAL_MARKER_SIZE,
     };
   }
 

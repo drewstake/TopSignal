@@ -3,7 +3,8 @@
 The dashboard opens at `/` and `/dashboard`. The playable local exchange is
 available at `/simulation` inside the shared workspace navigation. All these
 routes use `AccountAccess`, including client-side navigation and sign-in returns.
-`npm run dev` starts the cloud backend and frontend together at `http://localhost:5173`.
+`npm run dev` starts the cloud app at `http://localhost:5173` and the ProjectX-connected
+local workspace at `http://127.0.0.1:5174`, with local live orders disabled.
 The simulation engine remains local and
 does not contact a broker or write historical data to Supabase. The explicit
 account-workspace launch commands remain available.

@@ -61,6 +61,23 @@ def test_real_sqlite_writer_contention_retries_without_losing_or_duplicating():
     assert spool.flush(now=3) == 0
 
 
+def test_background_quote_batch_survives_lock_longer_than_execution_timeout():
+    target=archive.Archive(OWNER)
+    with target.transaction():pass
+    acquired=Event();release=Event()
+    def hold():
+        with target.transaction():
+            acquired.set();release.wait(.6)
+    thread=Thread(target=hold);thread.start();assert acquired.wait(2)
+    spool=quotes.QuoteSpool(OWNER)
+    for i in range(1,5):spool.enqueue(quote(i),now=0)
+    try:
+        assert spool.flush(now=0)==4
+        assert spool.status()['persisted']==4 and spool.status().get('dropped',0)==0
+        assert target.write_timeout==.25
+    finally:release.set();thread.join(2)
+
+
 def test_process_exit_after_archive_commit_before_ack_replays_idempotently(tmp_path):
     code = '''import os,sys,json
 from app.services.market_archive_quotes import QuoteSpool

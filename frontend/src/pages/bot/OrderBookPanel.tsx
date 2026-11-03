@@ -31,6 +31,7 @@ export interface OrderBookPanelProps {
   symbol?: string | null;
   demoMode?: boolean;
   streamFactory?: MarketDepthStreamFactory;
+  sharedStore?: OrderBookStore;
 }
 
 export function OrderBookPanel({
@@ -38,11 +39,12 @@ export function OrderBookPanel({
   symbol,
   demoMode = false,
   streamFactory = streamProjectXMarketDepth,
+  sharedStore,
 }: OrderBookPanelProps) {
   const pageVisible = usePageVisibility();
   const normalizedContractId = normalizeOrderBookContractId(contractId);
   const liveContractId = demoMode ? null : normalizedContractId;
-  const store = useMemo(() => new OrderBookStore(liveContractId, "all"), [liveContractId]);
+  const store = useMemo(() => sharedStore ?? new OrderBookStore(liveContractId, "all"), [liveContractId, sharedStore]);
 
   useEffect(() => {
     if (demoMode || !pageVisible || !normalizedContractId) {
@@ -51,6 +53,7 @@ export function OrderBookPanel({
     const close = connectOrderBookPanelStream({ contractId: normalizedContractId, store, streamFactory });
     return () => {
       close();
+      store.cancelPendingPresentation();
       // A new subscription must establish a fresh snapshot before accepting deltas.
       store.setConnectionState({ contract_id: normalizedContractId, state: "disconnected" });
     };

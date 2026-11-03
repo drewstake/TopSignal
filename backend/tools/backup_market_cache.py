@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import tarfile
+import time
 from datetime import datetime, timezone
 
 
@@ -50,9 +51,39 @@ def verify(root):
             raise ValueError('Backup checksum mismatch: '+name)
         if expected['sqlite']:
             with closing(sqlite3.connect(readonly_sqlite_uri(path), uri=True)) as db:
+                # Connection-local, on-demand read cache. A tiny default cache
+                # thrashes while checking research indexes on the background HDD.
+                # Verify one database at a time and release its cache on close.
+                db.execute('PRAGMA cache_size=-131072')
                 if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
                     raise ValueError('SQLite integrity failure: '+name)
     return manifest
+
+
+def backup_sqlite(source, destination, *, progress=None, timeout_seconds=900):
+    """Bound a WAL snapshot so continuous writers cannot restart every step.
+
+    WAL readers leave writers free to commit. For rollback-journal databases,
+    retain incremental read locks rather than blocking writers for the copy.
+    The deadline bounds snapshot lifetime and resulting WAL retention.
+    """
+    if source.in_transaction:
+        raise ValueError('Backup requires an idle source connection')
+    pinned = source.execute('PRAGMA journal_mode').fetchone()[0].lower() == 'wal'
+    started = time.monotonic()
+    def step(status, remaining, total):
+        if time.monotonic() - started >= timeout_seconds:
+            raise TimeoutError('SQLite snapshot backup deadline exceeded')
+        if progress is not None:
+            progress(status, remaining, total)
+    try:
+        if pinned:
+            source.execute('BEGIN')
+            source.execute('SELECT count(*) FROM sqlite_schema').fetchone()
+        source.backup(destination, pages=256, sleep=.01, progress=step)
+    finally:
+        if pinned:
+            source.rollback()
 
 
 def backup(source, output):
@@ -98,7 +129,7 @@ def backup(source, output):
         is_sqlite = path.suffix in {'.sqlite3', '.sqlite', '.db'}
         if is_sqlite:
             with closing(sqlite3.connect(readonly_sqlite_uri(path), uri=True)) as src, closing(sqlite3.connect(target)) as dst:
-                src.backup(dst, pages=256, sleep=.01)
+                backup_sqlite(src, dst)
         else:
             shutil.copyfile(path, target)
             if checksum(path) != checksum(target):
@@ -128,6 +159,17 @@ def main():
     parser.add_argument('--verify', type=Path)
     parser.add_argument('--pack', type=Path, help='Pack an already verified snapshot into --output')
     args = parser.parse_args()
+    if os.name == 'nt':
+        # Backups share the HDD with live SQLite stores and the recorder.
+        # CPU-only priority does not reduce disk/memory contention on Windows.
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.SetPriorityClass.restype = wintypes.BOOL
+        if not kernel.SetPriorityClass(kernel.GetCurrentProcess(), 0x00100000):
+            raise RuntimeError('Unable to enable background resource scheduling')
     if args.pack and args.output:
         print(json.dumps(pack(args.pack,args.output)))
         return

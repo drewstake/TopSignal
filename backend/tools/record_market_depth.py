@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
+import shutil
 
 SUBSCRIPTION_TIMEOUT_SECONDS = 15
 TRANSPORT_TIMEOUT_SECONDS = 45
@@ -15,6 +17,62 @@ if __package__:
     from .depth_recording import SegmentRecorder, StorageLimit, atomic_json, inventory, utc, verify_segments
 else:
     from depth_recording import SegmentRecorder, StorageLimit, atomic_json, inventory, utc, verify_segments
+
+
+class CapacityMonitor:
+    """One bounded inventory job; never scan the archive on the socket thread.
+
+    Charge all uncompressed bytes written since the scan START against its result.
+    This deliberately overestimates growth while a scan overlaps segment writes.
+    Failed/stalled checks stop capture, never silently waive the storage limits.
+    """
+    def __init__(self, root, config):
+        self.root, self.config = root, config
+        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='depth-capacity')
+        self.pending = None
+        self.baseline = self.scan_bytes = 0
+        self.started = time.monotonic()
+        self.value = self._scan()
+        self.last_scan_seconds = time.monotonic() - self.started
+
+    def _scan(self):
+        # Sealing atomically renames .partial files while this read-only scan is
+        # running. Retry that specific race, without concealing other I/O errors.
+        for attempt in range(3):
+            try:
+                return inventory(self.root, max_bytes=self.config['max_bytes'], reserve_bytes=self.config['reserve_bytes'],
+                                 max_age_days=self.config['review_after_days'])
+            except FileNotFoundError:
+                if attempt == 2:
+                    raise
+
+    def check(self, written=0, *, opening=False):
+        now = time.monotonic()
+        if self.pending and self.pending.done():
+            try:
+                self.value = self.pending.result()
+            except Exception as exc:
+                raise StorageLimit('capacity_check_failed') from exc
+            self.baseline = self.scan_bytes
+            self.last_scan_seconds = now - self.started
+            self.pending = None
+        if self.pending and now - self.started > 90:
+            raise StorageLimit('capacity_check_stalled')
+        if self.pending is None and now - self.started >= 30:
+            self.scan_bytes, self.started = written, now
+            self.pending = self.pool.submit(self._scan)
+        value = dict(self.value, scan_seconds=self.last_scan_seconds, scan_pending=self.pending is not None)
+        growth = max(0, written - self.baseline)
+        value['uncompressed_growth_allowance'] = growth
+        if value['bytes'] + growth + 32*1024**2 > self.config['max_bytes']:
+            value['blocked_reason'] = 'recording_budget_reached'
+        free = shutil.disk_usage(self.root).free if opening else value['free_bytes'] - growth
+        if free < self.config['reserve_bytes'] + 32*1024**2:
+            value['blocked_reason'] = 'disk_free_reserve'
+        return value
+
+    def close(self):
+        self.pool.shutdown(wait=False, cancel_futures=True)
 
 
 class ProcessLock:
@@ -67,29 +125,42 @@ async def record(config,client,owner,root,*,seconds=0):
     from app.services.projectx_client import validate_projectx_url,ProjectXClientError
     from app.services.projectx_hubs import _open_hub,_append_query,_signalr_handshake
     runtime=Path(config['runtime_root']);status_path=runtime/'status.json';stop=runtime/'STOP'
-    started=time.monotonic();recorder=None;contract=None;connections=0;errors=0;last_error=None;acks={};connection_at=None;last_frame_at=None
-    storage={};last_inventory=last_status=0.;state='starting';reason=None
+    started=time.monotonic();recorder=None;contract=None;connections=0;errors=0;failure_streak=0;last_error=None;acks={};connection_at=None;last_frame_at=None
+    storage={};last_status=0.;state='starting';reason=None;capacity=None
+    def written_bytes():
+        if recorder is None:return 0
+        if hasattr(recorder, 'totals'):return recorder.raw.raw_bytes + recorder.totals.raw_bytes
+        return recorder.raw_bytes
     def stopped():return stop.exists() or (seconds>0 and time.monotonic()-started>=seconds)
     def checkpoint(force=False):
-        nonlocal last_status,last_inventory,storage
+        nonlocal last_status,storage
         now=time.monotonic()
-        if force or now-last_inventory>=30:
-            storage=inventory(root,max_bytes=config['max_bytes'],reserve_bytes=config['reserve_bytes'],max_age_days=config['review_after_days'])
-            last_inventory=now
+        storage=capacity.check(written_bytes())
         if force or now-last_status>=5:
             atomic_json(status_path,dict(schema='mnq-depth-recorder-status-v1',at=utc(),pid=os.getpid(),state=state,reason=reason,
                 started_at=begin,contract_id=contract,data_live=False,paper_only=True,broker_mutation_calls=0,
                 connections=connections,reconnects=max(0,connections-1),errors=errors,last_error=last_error,
                 subscription_acknowledgements=acks,connection_started_at=connection_at,last_frame_at=last_frame_at,storage=storage,
                 recording=recorder.status() if recorder else None))
+            recording = recorder.status() if recorder else {}
+            totals = recorder.totals.status() if recorder and hasattr(recorder, 'totals') else {}
+            atomic_json(root/'recording-health.json',dict(owner_hash=owner,at=utc(),state=state,reason=reason,
+                last_write_at=recording.get('last_durable_at'),last_event_at=recording.get('last_event_at'),
+                last_totals_write_at=totals.get('last_durable_at'),
+                recorded_measurements=totals.get('received_events'),durable_measurement_index=totals.get('durable_event_index'),
+                pending_measurements=totals.get('received_events',0)-totals.get('durable_event_index',0),
+                pending_events=recording.get('received_events',0)-recording.get('durable_event_index',0),
+                rejected_events=recording.get('counts',{}).get('gap',0),dropped_measurements=None,
+                loss_accounting='Network omissions and process-crash losses are unknown; rejected envelopes are counted.',
+                reconnects=max(0,connections-1),last_error=last_error,capacity_scan_seconds=storage.get('scan_seconds')))
             last_status=now
     begin=utc()
     def capacity_check():
-        nonlocal storage,last_inventory
-        storage=inventory(root,max_bytes=config['max_bytes'],reserve_bytes=config['reserve_bytes'],max_age_days=config['review_after_days'])
-        last_inventory=time.monotonic()
+        nonlocal storage
+        storage=capacity.check(written_bytes(), opening=True)
         if storage['blocked_reason']:raise StorageLimit(storage['blocked_reason'])
     try:
+        capacity=CapacityMonitor(root,config)
         checkpoint(True)
         if storage['blocked_reason']:raise StorageLimit(storage['blocked_reason'])
         recorder=SegmentRecorder(root,owner,segment_seconds=config['segment_seconds'],before_segment=capacity_check)
@@ -145,6 +216,7 @@ async def record(config,client,owner,root,*,seconds=0):
                             except (ValueError,TypeError):
                                 recorder.append(contract,'gap',{'reason':'malformed_frame'});raise ConnectionError('Malformed frame')
                         received=utc();mono=time.monotonic_ns();last_frame=time.monotonic();last_frame_at=received
+                        if state=='recording' and time.monotonic()-connected>=30:failure_streak=0
                         for frame in frames:
                             if frame.get('type')==3:
                                 ident=frame.get('invocationId')
@@ -171,14 +243,14 @@ async def record(config,client,owner,root,*,seconds=0):
             except StorageLimit:raise
             except Exception as exc:
                 # Exception strings may contain bearer tokens: persist type/code only.
-                errors+=1;last_error=dict(at=utc(),type=type(exc).__name__,status_code=getattr(exc,'status_code',None))
+                errors+=1;failure_streak+=1;last_error=dict(at=utc(),type=type(exc).__name__,status_code=getattr(exc,'status_code',None))
                 if isinstance(exc,OSError) and getattr(exc,'errno',None) in {13,28,30}:raise
                 state='reconnecting';reason='provider_or_transport_error'
                 if contract:recorder.append(contract,'disconnect',{'reason':type(exc).__name__})
                 recorder.seal();checkpoint(True)
                 # Re-authenticate on the next supervised process start for credentials/auth errors.
                 if isinstance(exc,PermissionError) or getattr(exc,'status_code',None) in {401,403}:raise
-                for _ in range(min(60,2**min(errors,6))):
+                for _ in range(min(60,2**min(failure_streak,6))):
                     if stopped():break
                     checkpoint();await asyncio.sleep(1)
         state='stopped';reason='stop_file' if stop.exists() else 'bounded_verification_complete'
@@ -193,7 +265,9 @@ async def record(config,client,owner,root,*,seconds=0):
                 try:recorder.append(contract,'end',{'reason':reason or 'process_end'})
                 except StorageLimit:pass
             recorder.close()
-        checkpoint(True)
+        if capacity:
+            try:checkpoint(True)
+            finally:capacity.close()
     return state
 
 

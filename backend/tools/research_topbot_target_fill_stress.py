@@ -23,11 +23,11 @@ from tools import research_topbot as _original_runner
 
 # Prospective compatibility review: docs/topbot-target-stress-compatibility-2026-09-22.md.
 BASE_ENGINE_VERSION = "5.4.0-topbot-all-sessions"
-STRESS_ENGINE_VERSION = BASE_ENGINE_VERSION + "+target-through-1tick-v3"
-EXECUTION_MODEL = "observed_1m_target_through_one_tick_v3"
+STRESS_ENGINE_VERSION = BASE_ENGINE_VERSION + "+target-through-1tick-v4"
+EXECUTION_MODEL = "observed_1m_target_through_one_tick_v4"
 TARGET_CONFIRMATION_TICKS = 1
 SOURCE_HASHES = {
-    "app/services/bot_backtesting.py": "be2fccf067180a16a84c45f7b210d1f186a729401b8df8e1e55a94deaf51110f",
+    "app/services/bot_backtesting.py": "5d9268375c2c2dca53881332b348d9742a507320fbee46f08fca403c90855955",
     "tools/research_topbot.py": "57fc67b564465abbceba9209fa0f6af2c198b2aa0bc5de18697351a5e882865e",
     "tools/fixtures/topbot_research.py": "90df94dbbc44990341f7eb10a46a1b474e8026befdbae0274c373db7c8e5e442",
 }

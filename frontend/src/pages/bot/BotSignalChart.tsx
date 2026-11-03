@@ -588,10 +588,10 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
   const visibleSignalMarkers = useMemo(
     () =>
       signalMarkers.filter((marker) => {
-        if (marker.text === "BUY") {
+        if (marker.text?.startsWith("BUY @ ")) {
           return visibleChartLayers.buySignals;
         }
-        if (marker.text === "SELL") {
+        if (marker.text?.startsWith("SELL @ ")) {
           return visibleChartLayers.sellSignals;
         }
         return true;
@@ -3252,7 +3252,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
               <label> Run <select aria-label="Signal run" value={signalRun} onChange={e => setSignalRun(e.target.value)} className="rounded border border-app-border bg-app-surface p-1">
                 <option value="all">All runs</option>{activity?.runs.map(run => <option key={run.id} value={run.id}>Run {run.id}</option>)}
               </select></label>
-              <span>Arrows: model decisions · ○: blocked · squares: observed fills / verified flat</span>
+              <span>Arrows: model decisions · ○: blocked · squares: observed fills</span>
               {signalHistory?.key === signalHistoryKey && signalHistory.error && <span>Signal history unavailable; showing recent activity.</span>}
               {chartActivity && chartActivity.decisions.length >= 2000 && <span>Showing the latest 2,000 decisions in the loaded range.</span>}
             </div>}
