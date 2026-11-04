@@ -1250,6 +1250,7 @@ export interface BotStrategyParams {
   imbalance_threshold?: number;
   persistence_seconds?: number;
   daily_entry_limit_enabled?: boolean;
+  fixed_bracket_session?: string | null;
   revision?: string;
   model_version?: string;
   routing_policy?: string;

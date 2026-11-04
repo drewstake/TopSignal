@@ -245,7 +245,7 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
                 if is_runner:
                     from .topbot_runner import manage
                     flatten_runner = manage(db, entry=entry, plan=plan, client=client, stops=stops,
-                                            worker_lease_token=worker_lease_token, now=now)
+                                            worker_lease_token=worker_lease_token, now=now, orders=orders)
                 if not flatten_runner:
                     save()
                     return False

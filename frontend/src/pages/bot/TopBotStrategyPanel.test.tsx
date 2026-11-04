@@ -13,6 +13,16 @@ beforeEach(() => {
   vi.spyOn(botsApi, "getTopBotAudit").mockResolvedValue({ items: [], next_before: null, storage: "Worker" });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+it.each([true, false])("shows the session exit policy (active=%s)", async active => {
+  render(<TopBotStrategyPanel accountId={123}
+    bot={{ id: 39, strategy_params: { fixed_bracket_session: "2026-11-04" } } as BotConfig}
+    activity={{ runs: [], profit_guard: { available: true, trading_day: active ? "2026-11-04" : "2026-11-05" } } as unknown as BotActivity}
+    demoMode={false} onChanged={() => {}} />);
+  expect(screen.getByText(active ? /Fixed stop 25 pts · Take-profit 25 pts · No trailing/ : /Trail 25 pts after \+25/)).toBeTruthy();
+  expect(screen.getByText(/Break-even profit stop disabled/)).toBeTruthy();
+  if (active) expect(screen.getByText(/Trailing exits resume for new entries next session/)).toBeTruthy();
+  await waitFor(() => expect(screen.getByText("$23.56")).toBeTruthy());
+});
 it("shows the saved entry-limit preference", async () => {
   render(<TopBotStrategyPanel accountId={123} bot={{ id: 39, enabled: true, strategy_params: { daily_entry_limit_enabled: false } } as BotConfig}
     activity={null} demoMode={false} onChanged={() => {}} />);

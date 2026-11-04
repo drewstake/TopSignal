@@ -11464,6 +11464,10 @@ def evaluate_risk_gates(
         signal_depth = (decision.raw_payload or {}).get("depth_entry", {}) if decision is not None else {}
         latest_candle_age_seconds = (now-utc(depth["observed_at"])).total_seconds() if depth.get("ready") else None
         params = _normalize_strategy_params("topbot_adaptive", config.strategy_params)
+        from .topbot_strategy import exit_mode
+        if decision is not None and (decision.raw_payload or {}).get("exit_mode", "trailing") != exit_mode(params, now):
+            additional_blocks.append(RiskBlock(code="dom_exit_policy_changed",
+                message="The session exit settings changed; wait for a fresh entry signal."))
         failed_checks = []
         if not depth.get("ready"):
             failed_checks.append("depth_unavailable")
@@ -12981,6 +12985,8 @@ def _create_order_attempt(
                 "exit_deadline",
                 "protective_stop_ticks",
                 "take_profit_ticks",
+                "exit_mode",
+                "fixed_bracket_session",
             ]
             if key in decision_payload
         }
@@ -13005,7 +13011,7 @@ def _create_order_attempt(
     from .topbot_strategy import selected as dom_selected
     if execution_mode == "live" and str(config.strategy_type) == "topbot_adaptive" and dom_selected(config.strategy_params):
         from .topbot_runner import runner_plan
-        request_payload["timeExit"] = runner_plan()
+        request_payload["timeExit"] = runner_plan(exit_mode=(decision.raw_payload or {}).get("exit_mode", "trailing"))
         from .topbot_evidence import binding
         payload = decision.raw_payload or {}
         request_payload["entryEvidence"] = {"implementation": binding(),
@@ -13661,6 +13667,12 @@ def _order_attempt_protection_block(
             message="The live order is missing a valid protective stop bracket.",
             severity="critical",
         )
+    runner = (request.get("timeExit") or {}).get("runner") or {}
+    if runner.get("exit_mode") == "fixed" and (
+            stop_bracket != {"ticks": 100, "type": 4}
+            or request.get("takeProfitBracket") != {"ticks": 100, "type": 1}):
+        return RiskBlock(code="fixed_brackets_invalid",
+                         message="Fixed exits require a 100-tick stop and 100-tick take-profit bracket.", severity="critical")
     target_present, _ = _planned_take_profit(plan)
     if target_present and not _valid_bracket_payload(request.get("takeProfitBracket"), expected_type=1):
         return RiskBlock(

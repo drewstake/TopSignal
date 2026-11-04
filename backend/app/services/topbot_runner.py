@@ -12,12 +12,15 @@ from .topbot_depth import feed, utc
 from .topbot_audit import record, scope, client_for
 
 
-def runner_plan(now=None):
+def runner_plan(now=None, *, exit_mode="trailing"):
     from .topbot_session import flat_deadline, CLOSE_BUFFER
     now = now or datetime.now(timezone.utc)
+    if exit_mode not in {"trailing", "fixed"}:
+        raise ValueError("Unknown position exit mode")
     return {"status": "pending", "deadline": (flat_deadline(now)-CLOSE_BUFFER).isoformat(),
             "prepared_at": now.isoformat(), "attempts": 0, "reconciliation_cycles": 0,
-            "runner": {"version": 1, "initial_stop_points": 25, "activation_points": 25,
+            "runner": {"version": 1, "exit_mode": exit_mode, "take_profit_points": 25 if exit_mode == "fixed" else None,
+                       "initial_stop_points": 25, "activation_points": 25,
                        "trail_points": 25, "stats_status": "awaiting_fill"}}
 
 
@@ -59,7 +62,7 @@ def initialize(entry, plan, client, now):
     return True
 
 
-def manage(db, *, entry, plan, client, stops, worker_lease_token, now):
+def manage(db, *, entry, plan, client, stops, worker_lease_token, now, orders=None):
     """Return True when a retraced price requires the existing verified flatten path."""
     from .bot_service import _ProviderMutationFence
     runner = plan["runner"]
@@ -98,6 +101,22 @@ def manage(db, *, entry, plan, client, stops, worker_lease_token, now):
                stop_price=current, observed_at=verified_at,
                fill_to_observation_ms=execution["fill_to_protection_observation_ms"])
     runner["confirmed_stop"] = current
+    fixed = runner.get("exit_mode") == "fixed"
+    if fixed:
+        target_price = runner["entry_price"] + (25 if entry.side == "BUY" else -25)
+        targets = [order for order in (orders or [])
+                   if order.get("account_id") == entry.account_id and order.get("contract_id") == entry.contract_id
+                   and str(order.get("parent_order_id")) == str(entry.provider_order_id)
+                   and order.get("order_type") == 1 and order.get("status") == 1
+                   and order.get("side") == (1 if entry.side == "BUY" else 0)
+                   and order.get("size") == float(entry.size)
+                   and (order.get("raw_payload") or {}).get("limitPrice") == target_price]
+        if len(targets) != 1:
+            plan["runner_exit_reason"] = "fixed_take_profit_not_verified"
+            return True
+        runner.update(confirmed_target=target_price, target_order_id=str(targets[0]["order_id"]),
+                      trailing_active=False, desired_stop=current, management_status="Fixed stop and target",
+                      decision_reason="Keep the broker's fixed 25-point stop and 25-point target")
     if not quote.get("ready") or not quote.get("observed_at") or not 0 <= (checked_at-utc(quote["observed_at"])).total_seconds() <= 2:
         runner["management_status"] = "Waiting for fresh prices; broker stop remains active"
         return False
@@ -110,6 +129,8 @@ def manage(db, *, entry, plan, client, stops, worker_lease_token, now):
     for label, crossed in (("plus_10", points >= 10), ("plus_25", points >= 25), ("minus_10", points <= -10)):
         if crossed and label not in runner:
             runner[label] = max(0, (utc(quote["observed_at"])-utc(runner["entry_at"])).total_seconds())
+    if fixed:
+        return False
     wanted = desired_stop(entry.side, runner["entry_price"], runner["mfe_points"], current)
     runner["trailing_active"] = runner["mfe_points"] >= 25
     if runner["trailing_active"] and not was_trailing:
