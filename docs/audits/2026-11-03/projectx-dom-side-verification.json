@@ -1,0 +1,91 @@
+{
+  "schema": "projectx-dom-side-audit-v1",
+  "sources": [
+    {
+      "capture_id": "f43278d890fa40368906111a3ca652e9",
+      "first_index": 1,
+      "last_index": 9892,
+      "sha256": "66224194327dd3763ba5e556ae2e945fc7b98ae69d86fdb0c10630629b0da1db"
+    },
+    {
+      "capture_id": "b95f4939b1794ff0aca5787161b16a94",
+      "first_index": 1892556,
+      "last_index": 1902675,
+      "sha256": "a9182b1c1a3ad6e43ddcf19dbd051188f8df2457c505c12b35dbcf838ded94f3"
+    },
+    {
+      "capture_id": "b95f4939b1794ff0aca5787161b16a94",
+      "first_index": 3334298,
+      "last_index": 3344881,
+      "sha256": "be3e7dae118d9b61f808eeb26b9e822a9ee8746169ba9fe251cded8d6cb54a38"
+    },
+    {
+      "capture_id": "b95f4939b1794ff0aca5787161b16a94",
+      "first_index": 6547523,
+      "last_index": 6577195,
+      "sha256": "f30d58f801c6a91ec7b1b469bf43edc0315d475d1b70369237b141e5ed38bc47"
+    },
+    {
+      "capture_id": "b95f4939b1794ff0aca5787161b16a94",
+      "first_index": 11180348,
+      "last_index": 11209879,
+      "sha256": "5bfad0f46dde10d9f55aea5ea02131fa2171e73d565d24a9096f892be450dee1"
+    },
+    {
+      "capture_id": "b95f4939b1794ff0aca5787161b16a94",
+      "first_index": 14900486,
+      "last_index": 14918132,
+      "sha256": "3d18d2f1f219591b13e7ce8d35144f14f719da367a96afea3bd248e10b6d6ea8"
+    },
+    {
+      "capture_id": "b95f4939b1794ff0aca5787161b16a94",
+      "first_index": 18044294,
+      "last_index": 18054551,
+      "sha256": "53d228d674b4c32b3bb7e5f8704c095fa92904f1db17ab070895827ab79f0b1e"
+    },
+    {
+      "capture_id": "b95f4939b1794ff0aca5787161b16a94",
+      "first_index": 20280960,
+      "last_index": 20310617,
+      "sha256": "13eea6aceade5a1e617508ec8a5d64a5bc87fd9abee0c7e6ca7fcc91b153ba7d"
+    }
+  ],
+  "trade_types": {
+    "1": 7925,
+    "0": 7596
+  },
+  "depth_types": {
+    "6": 1,
+    "1": 53170,
+    "2": 52643,
+    "5": 7688,
+    "10": 5992,
+    "9": 6045,
+    "8": 1,
+    "7": 1
+  },
+  "counts": {
+    "1:bid_or_below": 2544,
+    "stale_or_later_provider_best": 8822,
+    "0:ask_or_above": 2371,
+    "0:bid_or_below": 429,
+    "1:ask_or_above": 429,
+    "0:inside": 415,
+    "1:inside": 339,
+    "missing_preceding_best": 15,
+    "unreliable_trade_time": 157
+  },
+  "volume": {
+    "1:bid_or_below": 2881,
+    "stale_or_later_provider_best": 9759,
+    "0:ask_or_above": 2654,
+    "0:bid_or_below": 453,
+    "1:ask_or_above": 453,
+    "0:inside": 432,
+    "1:inside": 355,
+    "missing_preceding_best": 17,
+    "unreliable_trade_time": 157
+  },
+  "method": "Prior received DOM BestBid/BestAsk/NewBestBid/NewBestAsk; both receipt and provider ages 0..500ms; trade delivery lag 0..2s. No future events or sequence-based reordering.",
+  "conclusion": "A DOM consistency cross-check, not proof of provider aggressor semantics. No strategy or feed changes."
+}

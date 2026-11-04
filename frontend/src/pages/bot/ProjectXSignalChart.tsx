@@ -60,6 +60,7 @@ function ProjectXChartConnection({ enabled, monitorOnly, onMarketData, onMarketR
         market: {
           contract_id: contract.id,
           symbol: contract.symbol_id ?? "MNQ",
+          tick_size: contract.tick_size,
           timeframe_unit: "minute",
           timeframe_unit_number: 5,
           lookback_bars: BOT_CHART_INITIAL_BARS,

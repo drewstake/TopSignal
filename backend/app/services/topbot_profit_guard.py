@@ -13,11 +13,8 @@ from .topbot_audit import connection
 from .trading_day import as_utc, trading_day_key
 
 TARGET = 400.0
-ARM_AT = 200.0
-FLOOR = 0.0
 MESSAGES = {
     "daily_profit_target_reached": "Daily P&L reached +$400. Close the TopBot position and pause entries until the next trading session.",
-    "daily_profit_breakeven_stop": "Daily P&L returned to $0 after reaching +$200. Close the TopBot position and pause entries until the next trading session.",
 }
 
 
@@ -26,8 +23,16 @@ def _table(db):
 
 
 def _empty(now):
-    return dict(trading_day=trading_day_key(now), target=TARGET, arm_at=ARM_AT, floor=FLOOR,
+    return dict(trading_day=trading_day_key(now), target=TARGET, arm_at=None, floor=None,
                 armed=False, trigger=None, triggered_at=None, observed_at=None, pnl=None, peak_pnl=None, error=None)
+
+
+def _current_policy(state):
+    """Retire saved break-even latches without deleting historical audit events."""
+    state.update(armed=False, arm_at=None, floor=None)
+    if state.get("trigger") == "daily_profit_breakeven_stop":
+        state.update(trigger=None, triggered_at=None)
+    return state
 
 
 def read(owner, account_id, *, now=None):
@@ -38,7 +43,7 @@ def read(owner, account_id, *, now=None):
     state = json.loads(row[0]) if row else _empty(now)
     if state["trading_day"] > trading_day_key(now):
         raise ValueError("Profit guard cannot move backwards to an older session")
-    return state if state["trading_day"] == trading_day_key(now) else _empty(now)
+    return _current_policy(state) if state["trading_day"] == trading_day_key(now) else _empty(now)
 
 
 def observe(owner, account_id, pnl, *, now=None):
@@ -55,23 +60,21 @@ def observe(owner, account_id, pnl, *, now=None):
             raise ValueError("Out-of-order daily profit observation")
         if state["trading_day"] != day:
             state = _empty(now)
-        previous_armed, previous_trigger = state["armed"], state["trigger"]
+        state = _current_policy(state)
+        previous_trigger = state["trigger"]
         state.update(pnl=float(pnl), observed_at=now.isoformat(), error=None,
                      peak_pnl=max(state["peak_pnl"] if state["peak_pnl"] is not None else pnl, pnl))
-        state["armed"] = state["armed"] or pnl >= ARM_AT
         if not state["trigger"]:
             if pnl >= TARGET:
                 state["trigger"] = "daily_profit_target_reached"
-            elif state["armed"] and pnl <= FLOOR:
-                state["trigger"] = "daily_profit_breakeven_stop"
             if state["trigger"]:
                 state["triggered_at"] = now.isoformat()
         db.execute("INSERT INTO daily_profit_guard(account,state) VALUES(?,?) ON CONFLICT(account) DO UPDATE SET state=excluded.state",
                    (int(account_id), json.dumps(state, allow_nan=False, separators=(",", ":"))))
-        if (state["armed"], state["trigger"]) != (previous_armed, previous_trigger):
+        if state["trigger"] != previous_trigger:
             # State and its explanation commit together, before any close order.
             db.execute("INSERT INTO events(account,at,kind,payload) VALUES(?,?,?,?)",
-                       (int(account_id), now.isoformat(), "daily_profit_stop" if state["trigger"] else "daily_profit_protection_armed",
+                       (int(account_id), now.isoformat(), "daily_profit_stop",
                         json.dumps(state, allow_nan=False, separators=(",", ":"))))
     return state
 
@@ -89,7 +92,7 @@ def mark_unavailable(owner, account_id, *, now=None):
         _table(db)
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT state FROM daily_profit_guard WHERE account=?", (int(account_id),)).fetchone()
-        state = json.loads(row[0]) if row else _empty(now)
+        state = _current_policy(json.loads(row[0])) if row else _empty(now)
         state["error"] = "Daily P&L could not be verified. New entries are paused; existing position protection continues."
         db.execute("INSERT INTO daily_profit_guard(account,state) VALUES(?,?) ON CONFLICT(account) DO UPDATE SET state=excluded.state",
                    (int(account_id), json.dumps(state, allow_nan=False)))

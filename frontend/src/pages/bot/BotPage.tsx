@@ -7,7 +7,9 @@ import { BotSignalChart } from "./BotSignalChart";
 import { ProjectXSignalChart } from "./ProjectXSignalChart";
 import { OrderBookPanel } from "./OrderBookPanel";
 import { OrderBookStore } from "./orderBook";
+import { LiquidityHeatmapPanel } from "./LiquidityHeatmapPanel";
 import { TopBotBiasStrip } from "./TopBotBiasStrip";
+import { SessionOrderFlowPanel } from "./SessionOrderFlowPanel";
 import { TopBotActivity, TopBotEvaluation, TopBotThinking } from "./TopBotEvaluation";
 import { TopBotPosition } from "./TopBotPosition";
 import { TopBotStrategyPanel } from "./TopBotStrategyPanel";
@@ -70,6 +72,8 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
         <span>{monitor.status.label}</span><small>{monitor.updatedAt ? `Bot checked ${timeLabel(monitor.updatedAt)}` : "Waiting for bot status"} · polls every 15s</small>
       </div>
     </header>
+    <SessionOrderFlowPanel accountId={accountId} contractId={market?.contract_id ?? null} scope={monitor.scope}
+      enabled={!demoMode && !pending && !unavailable} />
     <TopBotBiasStrip key={`${market?.contract_id ?? "pending"}:${demoMode}`} market={market} demoMode={demoMode} />
     <div className="topbot-market-grid">
       <section className="topbot-chart-shell" aria-label="Live market chart">
@@ -80,6 +84,8 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
       </section>
       <aside className="topbot-book-shell"><Depth key={`${monitor.scope}:${depthContract}`} contractId={depthContract} symbol={market?.symbol} demoMode={demoMode} sharedStore={depthStore} /></aside>
     </div>
+    <LiquidityHeatmapPanel key={`${monitor.scope}:${depthContract}`} store={depthStore} contractId={depthContract}
+      symbol={market?.symbol} tickSize={resolvedMarket?.contract_id === depthContract ? resolvedMarket?.tick_size : null} demoMode={demoMode} />
       <TopBotThinking activity={strategyActivity} status={monitor.status} snapshot={matchingSnapshot} now={now} error={monitor.error} strategyUnconfigured={strategyUnconfigured}
         liquidityHistory={!demoMode && !pending && !unavailable && accountId != null && (
           <div className="mt-4 space-y-4" aria-label="Recorded liquidity history">

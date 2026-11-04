@@ -1,4 +1,5 @@
 import { TradeRefreshCache } from "./tradeRefreshCache";
+import { parseMarketTradeBatch, type MarketTradeBatch } from "./marketTradeTypes";
 import type { ForwardResults } from "../pages/bot/BotForwardResultsPanel";
 import type { ManualOrderInput, ManualOrderResult, ManualOrderState } from "./manualOrderTypes";
 import { ACCOUNT_EXPENSES_UPDATED_EVENT } from "./financialEvents";
@@ -2211,6 +2212,85 @@ function marketDepthErrorMessage(error: unknown): string {
     }
   }
   return error instanceof Error && error.message.trim() ? error.message : "Market depth connection failed.";
+}
+
+export interface MarketTradesStreamCallbacks {
+  onTrades: (batch: MarketTradeBatch) => void;
+  onState: (state: ProjectXMarketDepthState) => void;
+}
+
+/** Display-only prints; independent from price coalescing and strategy feeds. */
+export function streamProjectXMarketTrades(contractId: string, callbacks: MarketTradesStreamCallbacks): () => void {
+  const contract = normalizeContractId(contractId);
+  const controller = new AbortController();
+  const { signal } = controller;
+  const state = (status: ProjectXMarketDepthState["state"], message: string) => {
+    if (!signal.aborted) callbacks.onState({ contract_id: contract, state: status, message });
+  };
+  const unsubscribe = subscribeToDemoModeChanges(({ enabled }) => {
+    if (enabled) { state("unavailable", "Trade bubbles unavailable in Demo Mode."); controller.abort(); }
+  });
+  async function run() {
+    if (!contract || isDemoModeEnabled()) { state("unavailable", "Live trade feed unavailable."); return; }
+    let delay = 500;
+    while (!signal.aborted && !isDemoModeEnabled()) {
+      state("reconnecting", "Connecting trade feed…");
+      try {
+        const token = await getAccessToken();
+        if (signal.aborted || isDemoModeEnabled()) return;
+        const response = await fetch(buildUrl("/api/projectx/market-trades/stream", { contract_id: contract }), {
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined, signal, cache: "no-store",
+        });
+        if (!response.ok) {
+          if ([400, 401, 403, 404, 422].includes(response.status)) {
+            state("unavailable", `Trade feed unavailable (${response.status}).`); return;
+          }
+          throw new Error("Trade feed request failed.");
+        }
+        if (!response.body) throw new Error("Trade feed has no body.");
+        const reader = response.body.getReader();
+        const cancel = () => { void reader.cancel().catch(() => undefined); };
+        signal.addEventListener("abort", cancel, { once: true });
+        try {
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (!signal.aborted) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer = (buffer + decoder.decode(value, { stream: true })).replaceAll("\r\n", "\n");
+            if (buffer.length > 2_000_000) throw new Error("Trade feed frame exceeds display limit.");
+            let boundary = buffer.indexOf("\n\n");
+            while (boundary >= 0) {
+              const event = parseBacktestSseFrame(buffer.slice(0, boundary));
+              buffer = buffer.slice(boundary + 2);
+              if (signal.aborted || isDemoModeEnabled()) return;
+              if (event?.event === "trades") {
+                const batch = parseMarketTradeBatch(event.data);
+                if (!batch) throw new Error("Invalid trade feed batch.");
+                if (contractIdsMatch(batch.contract_id, contract)) { delay = 500; callbacks.onTrades(batch); }
+              } else if (event?.event === "state") {
+                const parsed = parseMarketDepthState(event.data);
+                if (parsed && contractIdsMatch(parsed.contract_id, contract)) callbacks.onState(parsed);
+              }
+              boundary = buffer.indexOf("\n\n");
+            }
+          }
+        } finally {
+          signal.removeEventListener("abort", cancel);
+          await reader.cancel().catch(() => undefined);
+          reader.releaseLock();
+        }
+        state("disconnected", "Trade feed disconnected · missing prints are not backfilled.");
+      } catch (error) {
+        if (signal.aborted || isAbortError(error)) return;
+        state("disconnected", "Trade feed interrupted · missing prints are not backfilled.");
+      }
+      if (!(await waitForAbortableDelay(delay, signal))) return;
+      delay = Math.min(delay * 2, 10_000);
+    }
+  }
+  void run().finally(unsubscribe);
+  return () => { controller.abort(); unsubscribe(); };
 }
 
 function waitForAbortableDelay(delayMs: number, signal: AbortSignal): Promise<boolean> {

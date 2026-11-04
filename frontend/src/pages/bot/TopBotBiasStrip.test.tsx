@@ -27,14 +27,16 @@ it("restores persisted biases after reload, skips recent reads, and retains them
   const element = <TopBotBiasStrip market={{ contract_id: "CON.F.US.MNQ.Z26", symbol: "MNQ", timeframe_unit: "minute", timeframe_unit_number: 5, lookback_bars: 100 }} demoMode={false} />;
   const initial = render(element);
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-  expect(screen.getAllByText("Bullish")).toHaveLength(6);
+  expect(screen.getAllByText("Upward")).toHaveLength(6);
+  expect(screen.getByRole("heading", { name: "Price trend by timeframe" })).not.toBeNull();
+  expect(screen.queryByText("EMA spread + slope agree")).toBeNull();
   expect(get.mock.calls.every(([query]) => query.includePartialBar === false && query.limit === 80)).toBe(true);
   initial.unmount();
   resetBotCandleMemoryCacheForTests(); // Simulate a full reload, not just React retaining state.
   get.mockClear();
   const restored = render(element);
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-  expect(screen.getAllByText("Bullish")).toHaveLength(6);
+  expect(screen.getAllByText("Upward")).toHaveLength(6);
   expect(screen.queryByText("Checking…")).toBeNull();
   expect(get).not.toHaveBeenCalled();
   get.mockRejectedValue(new Error("Offline"));
@@ -47,12 +49,12 @@ it("restores persisted biases after reload, skips recent reads, and retains them
   get.mockReturnValue(new Promise(() => {}));
   const aged = render(element);
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-  expect(screen.getAllByText("Bullish")).toHaveLength(6);
+  expect(screen.getAllByText("Upward")).toHaveLength(6);
   expect(screen.getAllByText("Stale · awaiting fresh data").length).toBeGreaterThan(0);
   aged.unmount();
   vi.mocked(api.getAuthenticatedCacheScope).mockResolvedValue("different-user");
   render(element);
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-  expect(screen.queryByText("Bullish")).toBeNull();
+  expect(screen.queryByText("Upward")).toBeNull();
   expect(screen.getAllByText("Checking…")).toHaveLength(6);
 });

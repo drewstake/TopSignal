@@ -83,6 +83,11 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
                    or plan.get("runner", {}).get("management_status") or "Awaiting broker reconciliation",
                    retry_at=plan.get("retry_at"), cycle_duration_ms=round((perf_counter()-started)*1000, 3))
 
+    if plan.get("profit_stop_reason") == "daily_profit_breakeven_stop":
+        plan.pop("profit_stop_reason")
+        if plan.get("runner_exit_reason") == "daily_profit_breakeven_stop":
+            plan.pop("runner_exit_reason")
+        save()
     deadline = service._as_utc(datetime.fromisoformat(plan["deadline"]))
     if is_runner and live_execution_environment_enabled() and worker_lease_token is not None:
         from . import topbot_profit_guard
