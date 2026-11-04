@@ -71,6 +71,9 @@ export class OrderBookStore {
   private lastTimestampMs: number | null = null;
   private awaitingSnapshot = true;
   private generation = 0;
+  // Observation-only continuity marker. Includes snapshot coalescing and brief
+  // disconnects that can occur entirely between heatmap samples.
+  private heatmapEpoch = 0;
   private readonly captureId = `live-${crypto.randomUUID()}`;
   private visibleLevelCount: OrderBookLevelCount;
   private askSlots: Array<OrderBookLevelView | null> = [];
@@ -135,6 +138,30 @@ export class OrderBookStore {
     };
   }
 
+  /** Read-only, bounded view; never changes the ladder filter or subscription. */
+  getHeatmapObservation(now: number, levelLimit: number) {
+    const fresh = this.lastTimestampMs !== null && now - this.lastTimestampMs <= 2000 && this.lastTimestampMs <= now + 1000;
+    const ready = !this.awaitingSnapshot && this.meta.connection === "connected" && fresh;
+    const nearest = (levels: Map<number, number>, direction: number): Array<[number, number]> => {
+      // Bound temporary memory as well as retained frames, even for a large book.
+      const result: Array<[number, number]> = [];
+      for (const [price, size] of levels) {
+        const index = result.findIndex(([other]) => direction * (price - other) < 0);
+        if (index >= 0) result.splice(index, 0, [price, size]);
+        else if (result.length < levelLimit) result.push([price, size]);
+        if (result.length > levelLimit) result.pop();
+      }
+      return result;
+    };
+    return {
+      contractId: this.contractId, epoch: this.heatmapEpoch, connection: this.meta.connection,
+      timestampMs: this.lastTimestampMs, awaitingSnapshot: this.awaitingSnapshot, fresh,
+      sequenceKnown: this.sequence !== null,
+      bids: ready ? nearest(this.bids, -1) : [], asks: ready ? nearest(this.asks, 1) : [],
+      truncated: this.bids.size > levelLimit || this.asks.size > levelLimit,
+    };
+  }
+
   getAskSlotSnapshot = (index: number): OrderBookLevelView | null => this.askSlots[index] ?? null;
 
   getBidSlotSnapshot = (index: number): OrderBookLevelView | null => this.bidSlots[index] ?? null;
@@ -159,6 +186,7 @@ export class OrderBookStore {
       return false;
     }
     this.contractId = normalized;
+    this.heatmapEpoch += 1;
     this.bids.clear();
     this.asks.clear();
     this.sequence = null;
@@ -187,6 +215,7 @@ export class OrderBookStore {
     if (!this.matchesContract(state.contract_id)) {
       return false;
     }
+    if (state.state !== "connected" && state.state !== this.meta.connection) this.heatmapEpoch += 1;
     if (state.state === "disconnected" || state.state === "reconnecting") {
       // Incremental events are unsafe until the reconnect's authoritative
       // snapshot has re-established the book.
@@ -221,6 +250,11 @@ export class OrderBookStore {
       return false;
     }
     const snapshotTimestampMs = parseTimestampMs(snapshot.timestamp);
+    if (this.awaitingSnapshot || snapshot.reset ||
+        (snapshot.sequence !== null && this.sequence !== null && snapshot.sequence !== this.sequence + 1 && snapshot.sequence !== this.sequence) ||
+        (snapshotTimestampMs !== null && this.lastTimestampMs !== null && snapshotTimestampMs < this.lastTimestampMs)) {
+      this.heatmapEpoch += 1;
+    }
     const resetPresentation = this.awaitingSnapshot || snapshot.reset;
     if (this.awaitingSnapshot || snapshot.reset || (snapshot.sequence !== null && this.sequence !== null && snapshot.sequence < this.sequence)) {
       this.generation += 1;
@@ -263,6 +297,7 @@ export class OrderBookStore {
       return "ignored";
     }
     if (update.sequence !== null && this.sequence !== null && update.sequence !== this.sequence + 1) {
+      this.heatmapEpoch += 1;
       this.awaitingSnapshot = true;
       this.cancelPendingPresentation();
       this.replaceMeta({

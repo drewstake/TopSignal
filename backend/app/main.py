@@ -235,6 +235,7 @@ from .services.projectx_client import (
 )
 from .services.projectx_order_book import ProjectXOrderBookRegistry
 from .services.projectx_market_price import ProjectXMarketPriceSession, stream_market_prices
+from .services.projectx_market_trades import ProjectXMarketTradesSession, stream_market_trades
 from .services.projectx_streaming_runtime import (
     ProjectXAccountClassificationProbeTimeout,
     ProjectXAccountClassificationProbeUnavailable,
@@ -329,6 +330,7 @@ _bot_worker_runtime: BotWorkerRuntime | None = None
 # while the browser is closed. Provider outages still invalidate stale books.
 _order_book_registry = ProjectXOrderBookRegistry(keep_alive_without_viewers=True)
 _market_price_registry = ProjectXOrderBookRegistry(session_factory=ProjectXMarketPriceSession)
+_market_trades_registry = ProjectXOrderBookRegistry(session_factory=ProjectXMarketTradesSession)
 _backtest_capacity_lock = Lock()
 _backtest_active_total = 0
 _backtest_active_by_user: dict[str, "_BacktestCapacityLease"] = {}
@@ -471,7 +473,7 @@ async def app_lifespan(_: FastAPI):
             except asyncio.CancelledError:
                 pass
             try:
-                await asyncio.gather(_order_book_registry.close(), _market_price_registry.close())
+                await asyncio.gather(_order_book_registry.close(), _market_price_registry.close(), _market_trades_registry.close())
             finally:
                 _stop_streaming_runtime()
                 from .services.market_observations import writer as market_observation_writer
@@ -2884,6 +2886,28 @@ async def stream_projectx_market_price(
     )
 
 
+@app.get("/api/projectx/market-trades/stream")
+async def stream_projectx_market_trades(
+    request: Request,
+    contract_id: str = Query(..., min_length=1, max_length=120),
+):
+    user_id = get_authenticated_user_id()
+    client = await run_in_threadpool(_stream_client_for_user, user_id)
+    subscription = await _market_trades_registry.subscribe(user_id=user_id, client=client, contract_id=contract_id)
+
+    async def events():
+        trades = stream_market_trades(request, subscription)
+        try:
+            async for event in trades:
+                yield _serialize_sse_event(event) if event is not None else ": keepalive\n\n"
+        finally:
+            await trades.aclose()
+            await subscription.close()
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.get("/api/projectx/market-depth/stream")
 async def stream_projectx_market_depth(
     request: Request,
@@ -3761,6 +3785,27 @@ def get_trading_bot_activity(
         "order_attempts": [serialize_bot_order_attempt(row) for row in payload["order_attempts"]],
         "risk_events": [serialize_bot_risk_event(row) for row in payload["risk_events"]],
     }
+
+
+@app.get("/api/accounts/{account_id}/session-order-flow")
+def get_session_order_flow(
+    account_id: int,
+    response: Response,
+    contract_id: str,
+    data_live: bool = False,
+    db: Session = Depends(get_db),
+):
+    from .services.session_order_flow import account_session_flow
+    user_id = get_authenticated_user_id()
+    _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
+    db.rollback()
+    response.headers["Cache-Control"] = "no-store"
+    if not re.fullmatch(r"CON\.F\.US\.MNQ\.[A-Z0-9]{1,12}", contract_id):
+        raise HTTPException(status_code=422, detail="Session order flow requires an explicit MNQ delivery contract.")
+    try:
+        return account_session_flow(user_id=user_id, contract_id=contract_id, data_live=data_live)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/accounts/{account_id}/order-book-history")

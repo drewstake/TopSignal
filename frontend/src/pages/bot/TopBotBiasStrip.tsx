@@ -96,19 +96,27 @@ function BiasReadings({ market, demoMode, scope }: BiasProps & { scope: string |
   const fresh = readings.filter(row => row.trend && !row.stale);
   const bullish = fresh.filter(row => row.trend?.direction === "bullish").length;
   const bearish = fresh.filter(row => row.trend?.direction === "bearish").length;
-  const alignment = !fresh.length ? "Waiting for timeframe data" : bullish && bearish ? "Timeframes are mixed"
-    : bullish ? `${bullish} bullish · ${fresh.length - bullish} neutral` : bearish ? `${bearish} bearish · ${fresh.length - bearish} neutral` : "No directional agreement";
+  const majority = bullish > fresh.length / 2 ? "bullish" : bearish > fresh.length / 2 ? "bearish" : null;
+  const exceptions = fresh.filter(row => row.trend?.direction !== majority && row.trend?.direction !== "neutral");
+  const alignment = !fresh.length ? "Waiting for timeframe data" : majority
+    ? `${majority === "bullish" ? "Mostly upward" : "Mostly downward"}${exceptions.length ? ` · ${exceptions.map(row => row.frame.id.toUpperCase()).join(", ")} ${majority === "bullish" ? "points downward" : "points upward"}` : ""}`
+    : `${bullish} upward · ${bearish} downward · ${fresh.length - bullish - bearish} flat`;
+  const directionLabel = (label: string) => label === "bullish" ? "Upward" : label === "bearish" ? "Downward" : label === "neutral" ? "Flat" : label === "loading" ? "Checking…" : "Unavailable";
 
-  return <section className="topbot-bias" aria-label="Timeframe biases">
-    <div className="topbot-section-heading"><div><h2>Market bias</h2><p>Candle context · separate from the bot’s recorded decision</p></div><span>{alignment}</span></div>
+  return <section className="topbot-bias" aria-label="Price trend by timeframe">
+    <div className="topbot-section-heading"><div><h2>Price trend by timeframe</h2><p>Completed candles · overlapping views of price, not independent signals</p></div><span>{alignment}{fresh.length > 0 && fresh.length < readings.length ? ` · ${fresh.length}/${readings.length} current` : ""}</span></div>
     <div className="topbot-bias-grid">{readings.map(({ frame, trend, stale, close, label, context }) =>
       <article key={frame.id} className="topbot-bias-cell" data-tone={stale ? "warning" : label}>
         <div className="topbot-bias-label"><span>{frame.id === "1d" ? "DAILY" : frame.label.toUpperCase()}</span><span aria-hidden="true">{trend?.direction === "bullish" ? "↗" : trend?.direction === "bearish" ? "↘" : "—"}</span></div>
-        <strong>{label === "loading" ? "Checking…" : label.charAt(0).toUpperCase() + label.slice(1)}</strong>
-        <p>{stale ? "Stale · awaiting fresh data" : trend ? trend.direction === "neutral" ? "No clear trend in closed bars" : "EMA spread + slope agree" : demoMode ? "Live data paused in demo" : "Needs 25 completed candles"}</p>
+        <strong>{directionLabel(label)}</strong>
+        <p>{stale ? "Stale · awaiting fresh data" : trend ? trend.direction === "neutral" ? "No clear price momentum" : trend.direction === "bullish" ? "Recent price momentum points up" : "Recent price momentum points down" : demoMode ? "Live data paused in demo" : "Needs 25 completed candles"}</p>
         <time title={timeLabel(close)}>{close ? timeLabel(close).replace(/:\d{2} (?=[AP]M)/, " ") : "Close time unavailable"}</time>
-        <div className="topbot-bias-rule" title={`${context?.provenance.closedCandleCount ?? 0} completed candles · EMA 9/21 trend, not a forecast probability`} />
+        <div className="topbot-bias-rule" title={`${context?.provenance.closedCandleCount ?? 0} completed candles · weighted EMA 9/21 trend, not a forecast probability`} />
       </article>,
     )}</div>
+    <details className="session-flow-method topbot-trend-method"><summary>How price trend is measured</summary>
+      <p>An exponential moving average (EMA) is an average price that gives newer candles more weight. We compare the 9-candle average with the 21-candle average and measure how the 21-candle average changed over three candles. Their weighted score describes price momentum; the two measures do not have to agree. Small scores read Flat.</p>
+      <p>This uses completed candles only. It does not measure executed buying or selling and does not change the bot’s trading decision.{fresh.length < readings.length ? ` ${readings.length-fresh.length} timeframe(s) are missing or stale and excluded from the summary.` : ""}</p>
+    </details>
   </section>;
 }

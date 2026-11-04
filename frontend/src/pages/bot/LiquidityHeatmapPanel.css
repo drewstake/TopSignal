@@ -1,0 +1,34 @@
+.liquidity-heatmap { padding:16px; }
+.liquidity-heading,.liquidity-toolbar,.liquidity-navigation { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px 16px; }
+.liquidity-heading h2 { font-size:14px; font-weight:600; }
+.liquidity-heading h2 span { margin-left:8px; font-size:11px; font-weight:400; color:rgb(var(--theme-muted)); }
+.liquidity-heading p,.liquidity-navigation>span { font-size:10px; color:rgb(var(--theme-muted)); margin-top:4px; overflow-wrap:anywhere; }
+.liquidity-actions { display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
+.liquidity-heatmap button,.liquidity-heatmap select { border:1px solid rgb(var(--theme-border)); background:rgb(var(--theme-bg)/.6); border-radius:5px; padding:6px 8px; color:rgb(var(--theme-text)); font-size:11px; min-height:30px; }
+.liquidity-heatmap button:hover { background:rgb(var(--theme-raised)); }
+.liquidity-heatmap button:disabled { opacity:.4; cursor:default; }
+.liquidity-heatmap :is(button,select,input):focus-visible { outline:2px solid rgb(var(--theme-accent)); outline-offset:2px; }
+.liquidity-status { font-size:11px; color:#e6ba70; max-width:100%; }
+.liquidity-status[data-live="true"] { color:#6ed7ac; }
+.liquidity-toolbar { margin:12px 0 10px; justify-content:flex-start; }
+.liquidity-toolbar label { display:flex; align-items:center; gap:6px; font-size:11px; color:rgb(var(--theme-muted)); }
+.liquidity-toolbar .liquidity-actions { margin-left:auto; }
+.liquidity-intensity input { width:90px; accent-color:#7cb7dd; }
+.liquidity-trade-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px 16px; margin:0 0 12px; }
+.liquidity-trade-toolbar label { display:flex; align-items:center; gap:6px; font-size:11px; color:rgb(var(--theme-muted)); }
+.liquidity-trade-toolbar input { accent-color:#42dda0; }
+.liquidity-trade-toolbar input[type="range"] { width:76px; }
+.liquidity-trade-toolbar>span { margin-left:auto; font-size:10px; color:rgb(var(--theme-muted)); }
+.liquidity-legend { display:flex; flex-wrap:wrap; align-items:center; gap:6px 14px; font-size:10px; color:rgb(var(--theme-muted)); margin-bottom:9px; }
+.liquidity-legend span { display:inline-flex; align-items:center; gap:5px; }
+.liquidity-legend i { display:inline-block; width:14px; height:4px; border-radius:2px; }
+.liquidity-bids { background:#4bd6b0; }.liquidity-asks { background:#ff7b86; }
+.liquidity-legend :is(.liquidity-trade-buy,.liquidity-trade-sell,.liquidity-trade-unknown) { width:8px; height:8px; border-radius:50%; }
+.liquidity-trade-buy { background:#42dda0; }.liquidity-trade-sell { background:#ff607c; }.liquidity-trade-unknown { background:#b6c1d1; }
+.liquidity-legend .liquidity-gradient { width:92px; height:7px; border-radius:1px; background:linear-gradient(90deg,#0d1728,#1a3d66,#307fa4,#a8d0cc,#f4e59d,#f7a339,#e84525); }
+.liquidity-legend .liquidity-quality { margin-left:auto; color:#c5a477; }
+.liquidity-canvas { display:block; width:100%; min-width:0; border-radius:6px; touch-action:pan-y; }
+.liquidity-inspector { min-height:32px; display:flex; align-items:center; font-size:11px; color:rgb(var(--theme-text)); font-variant-numeric:tabular-nums; padding:7px 0; }
+.liquidity-navigation { padding:3px 0 8px; border-bottom:1px solid rgb(var(--theme-border)/.6); }
+.liquidity-footnote { font-size:10px; line-height:1.6; color:rgb(var(--theme-muted)); margin-top:7px; }
+@media(max-width:600px) { .liquidity-heatmap { padding:12px; }.liquidity-toolbar { gap:8px 12px; }.liquidity-toolbar .liquidity-actions { margin-left:0; width:100%; }.liquidity-legend .liquidity-quality { margin-left:0; width:100%; }.liquidity-heatmap button { min-height:34px; } }

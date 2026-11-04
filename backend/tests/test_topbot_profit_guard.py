@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -13,13 +14,13 @@ NOW = datetime(2026, 11, 3, 15, tzinfo=timezone.utc)
 
 @pytest.mark.parametrize("values,armed,trigger", [
     ([199.99, 0, -249], False, None),
-    ([200, 100, .01], True, None),
-    ([200, 0], True, "daily_profit_breakeven_stop"),
-    ([220, -10], True, "daily_profit_breakeven_stop"),
-    ([399.99], True, None),
-    ([400], True, "daily_profit_target_reached"),
-    ([420, 150, 0], True, "daily_profit_target_reached"),
-    ([200, 0, 500], True, "daily_profit_breakeven_stop"),
+    ([200, 100, .01], False, None),
+    ([200, 0], False, None),
+    ([220, -10], False, None),
+    ([399.99], False, None),
+    ([400], False, "daily_profit_target_reached"),
+    ([420, 150, 0], False, "daily_profit_target_reached"),
+    ([200, 0, 500], False, "daily_profit_target_reached"),
 ])
 def test_thresholds_and_sticky_daily_stop(values, armed, trigger):
     for index, value in enumerate(values):
@@ -33,11 +34,12 @@ def test_thresholds_and_sticky_daily_stop(values, armed, trigger):
 def test_persistent_account_state_survives_sql_rollback_and_is_scoped(db_session):
     guard.observe(USER_A, 9001, 200, now=NOW)
     db_session.rollback()
-    assert guard.read(USER_A, 9001, now=NOW)["armed"]
+    assert not guard.read(USER_A, 9001, now=NOW)["armed"]
     assert not guard.read(USER_A, 9002, now=NOW)["armed"]
     assert not guard.read(USER_B, 9001, now=NOW)["armed"]
     guard.observe(USER_A, 9001, 0, now=NOW + timedelta(seconds=1))
-    assert guard.read(USER_A, 9001, now=NOW + timedelta(seconds=2))["trigger"]
+    assert guard.read(USER_A, 9001, now=NOW + timedelta(seconds=2))["trigger"] is None
+    assert guard.read(USER_A, 9001, now=NOW)["peak_pnl"] == 200
 
 
 def test_session_rollover_resets_at_6pm_new_york():
@@ -50,6 +52,26 @@ def test_session_rollover_resets_at_6pm_new_york():
         guard.observe(USER_A, 9001, 500, now=before)
 
 
+@pytest.mark.parametrize("trigger", [None, "daily_profit_breakeven_stop", "daily_profit_target_reached"])
+def test_saved_break_even_state_is_retired_but_target_stop_survives(trigger, monkeypatch):
+    state = guard.observe(USER_A, 9001, 220, now=NOW)
+    state.update(armed=True, arm_at=200, floor=0, trigger=trigger,
+                 triggered_at=NOW.isoformat() if trigger else None)
+    with topbot_audit.connection(USER_A) as db:
+        db.execute("UPDATE daily_profit_guard SET state=? WHERE account=?", (json.dumps(state), 9001))
+    expected = "daily_profit_target_reached" if trigger == "daily_profit_target_reached" else None
+    status = guard.public_status(USER_A, 9001, now=NOW)
+    assert status["available"] and not status["armed"]
+    assert status["arm_at"] is None and status["floor"] is None
+    assert status["trigger"] == expected
+    assert bool(guard.risk_block(status)) == bool(expected)
+    monkeypatch.setattr(bot_service, "_fetch_account_daily_pnl", lambda *a, **kw: (0, 1, None))
+    monkeypatch.setattr("app.services.topbot_depth.feed.snapshot", lambda *a, **kw: {})
+    assert guard.poll(USER_A, 9001, CONTRACT_ID, RecordingClient(), now=NOW)["trigger"] == expected
+    guard.mark_unavailable(USER_A, 9001, now=NOW)
+    assert guard.read(USER_A, 9001, now=NOW)["trigger"] == expected
+
+
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), None, True])
 def test_invalid_observations_cannot_disarm_or_change_latch(value):
     guard.observe(USER_A, 9001, 400, now=NOW)
@@ -59,10 +81,10 @@ def test_invalid_observations_cannot_disarm_or_change_latch(value):
 
 
 def test_only_transitions_add_audit_events_and_state_is_bounded():
-    for index, value in enumerate([0, 100, 200, 210, 100, 0, -10]):
+    for index, value in enumerate([0, 100, 200, 210, 100, 0, -10, 400, 0]):
         guard.observe(USER_A, 9001, value, now=NOW + timedelta(seconds=index))
     events = topbot_audit.page(USER_A, 9001)["items"]
-    assert [e["kind"] for e in events] == ["daily_profit_stop", "daily_profit_protection_armed"]
+    assert [e["kind"] for e in events] == ["daily_profit_stop"]
     with topbot_audit.connection(USER_A) as db:
         assert db.execute("SELECT count(*) FROM daily_profit_guard").fetchone()[0] == 1
 
@@ -74,7 +96,7 @@ def test_poll_combines_net_realized_with_liquidation_side_unrealized(monkeypatch
         dict(ready=True, bid=bid, ask=ask, observed_at=NOW.isoformat()))
     client = RecordingClient(positions=[dict(account_id=9001, contract_id=CONTRACT_ID, signed_size=size, average_price=20000)])
     state = guard.poll(USER_A, 9001, CONTRACT_ID, client, now=NOW)
-    assert state["pnl"] == expected and state["armed"]
+    assert state["pnl"] == expected and not state["armed"]
     assert not client.place_order_calls and not client.close_position_calls
 
 
@@ -89,7 +111,7 @@ def test_incomplete_pnl_cannot_trip_or_clear_protection(monkeypatch, fault):
     guard.observe(USER_A, 9001, 200, now=NOW)
     with pytest.raises(ValueError):
         guard.poll(USER_A, 9001, CONTRACT_ID, RecordingClient(positions=[row]), now=NOW)
-    assert guard.read(USER_A, 9001, now=NOW)["armed"]
+    assert not guard.read(USER_A, 9001, now=NOW)["armed"]
     assert guard.read(USER_A, 9001, now=NOW)["trigger"] is None
 
 
@@ -113,7 +135,7 @@ def test_position_closing_during_pnl_read_does_not_falsely_trigger_zero(monkeypa
 
 
 @pytest.mark.parametrize("arm,pnl,reason", [
-    (False, 400, "daily_profit_target_reached"), (True, 0, "daily_profit_breakeven_stop"),
+    (False, 400, "daily_profit_target_reached"), (True, 400, "daily_profit_target_reached"),
 ])
 def test_profit_stop_closes_owned_position_before_deadline_even_when_stopped(db_session, dom_entry, monkeypatch, arm, pnl, reason):
     from app.services.topbot_time_exit import process_time_exit
@@ -135,9 +157,36 @@ def test_profit_stop_closes_owned_position_before_deadline_even_when_stopped(db_
     assert guard.read(USER_A, 9001)["trigger"] == reason
 
 
-def test_latched_stop_blocks_reentry_after_config_restart(db_session, dom_entry):
+@pytest.mark.parametrize("legacy_exit", [False, True])
+def test_return_to_zero_keeps_position_management_running(db_session, dom_entry, monkeypatch, legacy_exit):
+    from app.services.topbot_time_exit import process_time_exit
     result, client, token = dom_entry
-    guard.observe(USER_A, 9001, 400)
+    entry = result.order_attempt
+    guard.observe(USER_A, 9001, 220)
+    if legacy_exit:
+        request = dict(entry.raw_request)
+        request["timeExit"] = {**request["timeExit"], "profit_stop_reason": "daily_profit_breakeven_stop",
+                               "runner_exit_reason": "daily_profit_breakeven_stop"}
+        entry.raw_request = request
+    client.positions = [dict(account_id=9001, contract_id=CONTRACT_ID, signed_size=1, unrealized_pnl=0)]
+    client.open_orders = [dict(account_id=9001, contract_id=CONTRACT_ID, order_id="stop", order_type=4,
+        parent_order_id=entry.provider_order_id, side=1, status=1, size=1, raw_payload={"stopPrice":19975})]
+    managed = []
+    monkeypatch.setattr("app.services.topbot_runner.manage", lambda *a, **kw: managed.append(kw["entry"].id) or False)
+    db_session.commit()
+    assert not process_time_exit(db_session, entry_id=entry.id, client=client, worker_lease_token=token)
+    assert managed == [entry.id]
+    assert not client.close_position_calls
+    assert not entry.raw_request["timeExit"].get("profit_stop_reason")
+    assert entry.raw_request["timeExit"].get("runner_exit_reason") != "daily_profit_breakeven_stop"
+    assert guard.read(USER_A, 9001)["trigger"] is None
+
+
+@pytest.mark.parametrize("pnl,expected", [(400, True), (0, False)])
+def test_daily_target_blocks_reentry_but_return_to_zero_does_not(db_session, dom_entry, pnl, expected):
+    result, client, token = dom_entry
+    guard.observe(USER_A, 9001, 220)
+    guard.observe(USER_A, 9001, pnl)
     # Simulate a new run/config evaluation with recovered P&L. The guard is keyed
     # by account and trading session, not either run ID or configuration ID.
     result.config.enabled = True
@@ -146,7 +195,8 @@ def test_latched_stop_blocks_reentry_after_config_restart(db_session, dom_entry)
         account=bot_service._require_owned_account(db_session, user_id=USER_A, account_id=9001),
         latest_candle=None, contract_id=CONTRACT_ID, symbol="MNQ", action="BUY", decision=decision,
         dry_run=False, confirm_live_order_routing=True, client=client)
-    assert "daily_profit_target_reached" in {b.code for b in blocks}
+    assert ("daily_profit_target_reached" in {b.code for b in blocks}) is expected
+    assert "daily_profit_breakeven_stop" not in {b.code for b in blocks}
     assert len(client.place_order_calls) == 1
 
 

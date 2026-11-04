@@ -96,12 +96,12 @@ it("reads nested rejection evidence without inventing a broker pass", () => {
   expect(screen.getByText("Protective stop is missing.")).toBeTruthy();
 });
 
-it("shows armed profit protection and the measured account P&L", () => {
+it("shows the disabled break-even stop and the measured account P&L", () => {
   const state = monitor();
-  state.activity!.profit_guard = { available: true, armed: true, trigger: null, observed_at: at, pnl: 150, peak_pnl: 220 };
+  state.activity!.profit_guard = { available: true, armed: false, arm_at: null, floor: null, trigger: null, observed_at: at, pnl: 150, peak_pnl: 220 };
   render(<TopBotEntryChecks {...props} monitor={state} />);
   expect(row("Daily profit protection").getByText("Passing")).toBeTruthy();
-  expect(screen.getByText(/Break-even protection armed: stop at \$0/)).toBeTruthy();
+  expect(screen.getByText(/Break-even profit stop disabled. Daily target \+\$400/)).toBeTruthy();
   expect(screen.getByText(/Daily account P&L: \+\$150.00 · Highest observed: \+\$220.00/)).toBeTruthy();
 });
 

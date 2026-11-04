@@ -16,6 +16,8 @@ vi.mock("./usePageVisibility", () => ({ usePageVisibility: () => true }));
 vi.mock("./BotSignalChart", () => ({ BotSignalChart: () => <div>Chart</div> }));
 vi.mock("./ProjectXSignalChart", () => ({ ProjectXSignalChart: () => <div>Market chart</div> }));
 vi.mock("./OrderBookPanel", () => ({ OrderBookPanel: () => <div>Order book</div> }));
+vi.mock("./LiquidityHeatmapPanel", () => ({ LiquidityHeatmapPanel: () => <div>Liquidity heatmap</div> }));
+vi.mock("./SessionOrderFlowPanel", () => ({ SessionOrderFlowPanel: () => <div>Session order flow</div> }));
 vi.mock("./TopBotBiasStrip", () => ({ TopBotBiasStrip: () => <div>Biases</div> }));
 vi.mock("./TopBotPosition", () => ({ TopBotPosition: () => <div>Position</div> }));
 vi.mock("../orderBookHistory/OrderBookHistoryPage", () => ({
