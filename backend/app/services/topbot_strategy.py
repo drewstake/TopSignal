@@ -1,5 +1,5 @@
 """Contrarian observed-depth entries; position management is separate."""
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import math
 
 REVISION = "dom_contrarian_v1"
@@ -8,7 +8,7 @@ MESSAGE = "TopBot has no strategy configured. Define your strategy before starti
 DEFAULTS = {"revision": REVISION, "imbalance_threshold": 0.10, "persistence_seconds": 30,
             "depth_levels": 100, "initial_stop_points": 25, "trail_activation_points": 25,
             "trail_distance_points": 25, "practice_auto_resume": False,
-            "daily_entry_limit_enabled": True}
+            "daily_entry_limit_enabled": True, "fixed_bracket_session": None}
 
 
 def selected(params):
@@ -26,6 +26,11 @@ def normalize_params(params=None):
     if params and not selected(params):
         return {"revision": "custom_unconfigured"}
     result = dict(DEFAULTS)
+    session = (params or {}).get("fixed_bracket_session")
+    if session is not None:
+        if not isinstance(session, str) or date.fromisoformat(session).isoformat() != session:
+            raise ValueError("Invalid fixed_bracket_session; expected YYYY-MM-DD")
+    result["fixed_bracket_session"] = session
     auto_resume = (params or {}).get("practice_auto_resume", False)
     if not isinstance(auto_resume, bool):
         raise ValueError("Invalid practice_auto_resume")
@@ -40,6 +45,13 @@ def normalize_params(params=None):
             raise ValueError(f"Invalid {name}")
         result[name] = value
     return result
+
+
+def exit_mode(params, now=None):
+    """A session override affects new entries only; saved trade plans never expire."""
+    from .trading_day import trading_day_key
+    session = (params or {}).get("fixed_bracket_session")
+    return "fixed" if session and session == trading_day_key(now or datetime.now(timezone.utc)) else "trailing"
 
 
 def require_configured():
@@ -67,6 +79,7 @@ def evaluate(candles, *, strategy_params=None, owner=None, contract_id=None, obs
                "strategy_configured": selected(params), "live_routing_allowed": False,
                "implementation": binding()}
     payload["daily_entry_limit_enabled"] = params.get("daily_entry_limit_enabled", True)
+    payload["exit_mode"] = exit_mode(params, now)
     if not CONFIGURED or not selected(params):
         return SignalResult("HOLD", MESSAGE, None, None, payload)
     from .topbot_session import runner_entry_pause_reason
@@ -87,5 +100,8 @@ def evaluate(candles, *, strategy_params=None, owner=None, contract_id=None, obs
     payload.update(live_routing_allowed=True, signal_category="entry", protective_stop_ticks=100,
                    stop_loss=price + (25 if action == "SELL" else -25),
                    current_position_qty=0, target_position_qty=-1 if action == "SELL" else 1, effective_order_size=1)
+    if payload["exit_mode"] == "fixed":
+        payload.update(take_profit_ticks=100, take_profit=price + (-25 if action == "SELL" else 25),
+                       fixed_bracket_session=params["fixed_bracket_session"])
     return SignalResult(action, f"Contrarian {action}: {observation['bid_total']:g} bid / {observation['ask_total']:g} ask contracts",
                         at, price, payload)

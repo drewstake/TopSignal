@@ -135,7 +135,7 @@ def test_trail_activation_and_never_widen(side,entry,mfe,current,expected):
 
 
 @pytest.fixture
-def dom_entry(db_session, monkeypatch, open_exchange_session):
+def dom_entry(db_session, monkeypatch, open_exchange_session, request):
     def unexpected_context(*args, **kwargs):
         raise AssertionError("Optional context must not delay a DOM entry")
     monkeypatch.setattr("app.services.market_context_bundle.build_collected_context", unexpected_context)
@@ -154,6 +154,9 @@ def dom_entry(db_session, monkeypatch, open_exchange_session):
     account, config = _add_account_and_config(db_session, enabled=False, execution_mode="live")
     config.strategy_type = "topbot_adaptive"
     config.strategy_params = dict(strategy.DEFAULTS)
+    if getattr(request, "param", None) == "fixed":
+        from app.services.trading_day import trading_day_key
+        config.strategy_params = {**config.strategy_params, "fixed_bracket_session": trading_day_key(now)}
     db_session.commit()
     client = RecordingClient()
     result = bot_service.start_bot_run(db_session,user_id=USER_A,bot_config_id=config.id,client=client,
