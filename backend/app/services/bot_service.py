@@ -13017,6 +13017,9 @@ def _create_order_attempt(
         request_payload["entryEvidence"] = {"implementation": binding(),
             "decision_id": decision.id, "decision_at": _as_utc(decision.created_at).isoformat() if decision.created_at else None,
             "signal": payload.get("depth_entry"), "recheck": payload.get("depth_recheck")}
+        from .topbot_study import entry_snapshot
+        request_payload["strategySnapshot"] = entry_snapshot(config, account=int(config.account_id),
+            contract=contract_id, side=action, quantity=order_size, plan=request_payload["timeExit"])
     row = BotOrderAttempt(
         user_id=user_id,
         bot_config_id=int(config.id),
@@ -13051,7 +13054,8 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
             evidence["pre_submit"] = {"ready": False, "error_type": type(exc).__name__}
         request_payload = {**request_payload, "entryEvidence": evidence}
         order_attempt.raw_request = request_payload
-        client = client_for(client, order_attempt, reason="Confirmed contrarian DOM entry", entry_evidence=evidence)
+        client = client_for(client, order_attempt, reason="Confirmed contrarian DOM entry", entry_evidence=evidence,
+                            strategy_snapshot=request_payload.get("strategySnapshot"))
     started = perf_counter()
     diagnostic_context = {
         key: getattr(order_attempt, attribute, None) for key, attribute in (

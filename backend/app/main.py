@@ -448,6 +448,9 @@ async def app_lifespan(_: FastAPI):
     from .services.historical_trade_excursions import ExcursionRecorder
     excursion_recorder = ExcursionRecorder(SessionLocal, _projectx_client_for_user_without_open_transaction)
     excursion_recorder.start()
+    from .services.topbot_study_worker import StudyRecorder
+    study_recorder = StudyRecorder(SessionLocal, _projectx_client_for_user_without_open_transaction)
+    study_recorder.start()
     try:
         _start_streaming_runtime_if_enabled()
         _bot_worker_runtime = BotWorkerRuntime(
@@ -457,6 +460,7 @@ async def app_lifespan(_: FastAPI):
         await _bot_worker_runtime.start()
         yield
     finally:
+        study_stopped = await asyncio.to_thread(study_recorder.stop)
         recorder_stopped = await asyncio.to_thread(excursion_recorder.stop)
         if not recorder_stopped:
             logger.error("trade_excursion_recorder_shutdown_incomplete")
@@ -480,7 +484,7 @@ async def app_lifespan(_: FastAPI):
                 drained = await asyncio.to_thread(market_observation_writer.shutdown, timeout_seconds=5.0)
                 if not drained:
                     logger.warning("market_observation_shutdown_incomplete")
-                if _bot_worker_runtime is None and recorder_stopped:
+                if _bot_worker_runtime is None and recorder_stopped and study_stopped:
                     engine.dispose()
 
 
@@ -3346,6 +3350,39 @@ def get_topbot_statistics(account_id: int, db: Session = Depends(get_db)):
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="account_not_found") from exc
     return statistics(db, user_id=user_id, account_id=account_id)
+
+
+@app.get("/api/accounts/{account_id}/topbot/comparison")
+def get_topbot_comparison(account_id: int, response: Response,
+                         version: str | None = Query(default=None, max_length=100),
+                         strategy: str | None = Query(default=None, pattern="^(fixed|trailing|unknown)$"),
+                         start: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+                         end: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+                         phase: str = Query(default="exploratory", pattern="^(exploratory|holdout)$"),
+                         db: Session = Depends(get_db)):
+    from .services.topbot_runner import study_statistics
+    user_id = get_authenticated_user_id()
+    try:
+        _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="account_not_found") from exc
+    response.headers["Cache-Control"] = "no-store"
+    return study_statistics(db, user_id=user_id, account_id=account_id, version=version, strategy=strategy, start=start, end=end, phase=phase)
+
+
+@app.post("/api/accounts/{account_id}/topbot/comparison/candidate")
+def register_topbot_candidate(account_id: int, ratio: float = Query(), db: Session = Depends(get_db)):
+    from .services.topbot_study_store import selection
+    user_id = get_authenticated_user_id()
+    try:
+        _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="account_not_found") from exc
+    db.rollback()
+    try:
+        return selection(user_id, account_id, ratio=ratio)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/accounts/{account_id}/topbot/audit")

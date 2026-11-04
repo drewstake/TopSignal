@@ -2550,6 +2550,12 @@ export const botsApi = {
       query: { contract_id: contractId }, signal: options.signal }),
   getTopBotStatistics: (accountId: number, options: RequestSignalOptions = {}) =>
     requestJson<import("../pages/bot/TopBotStrategyPanel").TopBotStatistics>(`/api/accounts/${accountId}/topbot/statistics`, { signal: options.signal }),
+  getTopBotComparison: (accountId: number, filters: Record<string, string>, options: RequestSignalOptions = {}) =>
+    requestJson<import("../pages/bot/TopBotComparison").Comparison>(`/api/accounts/${accountId}/topbot/comparison`, {
+      query: Object.fromEntries(Object.entries(filters).filter(([, value]) => value !== "")), signal: options.signal }),
+  registerTopBotCandidate: (accountId: number, ratio: number) =>
+    requestJson<{ ratio: number; registered_at: string }>(`/api/accounts/${accountId}/topbot/comparison/candidate`, {
+      method: "POST", query: { ratio } }),
   getTopBotAudit: (accountId: number, before: number | null = null, options: RequestSignalOptions = {}) =>
     requestJson<import("../pages/bot/TopBotAuditTrail").AuditPage>(`/api/accounts/${accountId}/topbot/audit`, {
       query: before == null ? undefined : { before }, signal: options.signal }),

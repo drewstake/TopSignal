@@ -10,7 +10,8 @@ export type ExcursionCoverage = {
   open_gap?: { reason: string; start: string };
 };
 export type RecordingEvidence = {
-  recording?: { state?: string; dropped_events?: number };
+  recording?: { state?: string; dropped_events?: number; last_durable_at?: string | null;
+    durable_events?: number; queued_events?: number; inflight_events?: number; phase?: string; phase_elapsed_seconds?: number };
 };
 const milliseconds = (value: number | null | undefined) =>
   value == null || !Number.isFinite(value) ? "Unknown" : `${value.toFixed(0)} ms`;
@@ -18,8 +19,11 @@ const milliseconds = (value: number | null | undefined) =>
 export function TopBotRecordingStatus({ evidence }: { evidence?: RecordingEvidence }) {
   const recording = evidence?.recording;
   const state = recording?.state;
-  return <p className="topbot-footnote" role={state === "error" || state === "storage_blocked" || (recording?.dropped_events ?? 0) > 0 ? "status" : undefined}>
-    Worker feed recording: {state === "recording" ? "Active" : state === "starting" ? "Starting" : state === "storage_blocked" ? "Paused for storage review" : state === "error" ? "Unavailable — recording failed" : "Unavailable"}.
+  return <p className="topbot-footnote" role={state === "stalled" || state === "error" || state === "storage_blocked" || (recording?.dropped_events ?? 0) > 0 ? "status" : undefined}>
+    Worker feed recording: {state === "recording" ? "Active" : state === "stalled" ? "Stalled — durable progress overdue" : state === "starting" ? "Starting" : state === "storage_blocked" ? "Paused for storage review" : state === "error" ? "Unavailable — recording failed" : "Unavailable"}.
+    {` Last durable batch: ${recording?.last_durable_at ? new Date(recording.last_durable_at).toLocaleString() : "not recorded"}.`}
+    {recording?.durable_events != null ? ` ${recording.durable_events.toLocaleString()} durable events; ${recording.queued_events ?? 0} queued, ${recording.inflight_events ?? 0} in flight.` : ""}
+    {state === "stalled" ? ` Phase: ${recording?.phase ?? "unknown"}, ${recording?.phase_elapsed_seconds ?? "unknown"}s.` : ""}
     {recording?.dropped_events ? ` ${recording.dropped_events} capture events missing; replay coverage is incomplete.` : ""}
     {state === "recording" ? " Provider gaps can still occur." : ""}
   </p>;

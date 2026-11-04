@@ -283,6 +283,79 @@ def test_latency_slippage_and_clock_skew_are_explicit():
     assert entry_metrics(request, "BUY", 20000, None, None)["entry_slippage_ticks"] is None
 
 
+def test_startup_schema_is_one_atomic_transaction_and_health_tracks_commits(tmp_path, monkeypatch):
+    import app.services.topbot_evidence as module
+    original = sqlite3.connect
+    ddl = []
+    settings = []
+    class Connection(sqlite3.Connection):
+        def commit(self):
+            settings.append((self.execute("PRAGMA synchronous").fetchone()[0],
+                             self.execute("PRAGMA wal_autocheckpoint").fetchone()[0]))
+            return super().commit()
+        def executescript(self, script):
+            self.set_trace_callback(lambda statement: ddl.append((statement.strip(), self.in_transaction)))
+            return super().executescript(script)
+    monkeypatch.setattr(module.sqlite3, "connect", lambda *a, **kw: original(*a, **kw, factory=Connection))
+    cap = Capture("owner", CONTRACT, root=tmp_path, free_floor=0)
+    cap.append(book(datetime.now(timezone.utc), 1), datetime.now(timezone.utc), [])
+    cap.close()
+    assert all(in_transaction for sql, in_transaction in ddl if sql.startswith("CREATE"))
+    assert settings and all(full == 2 and checkpoint == 0 for full, checkpoint in settings)
+    status = cap.status()
+    assert status["durable_events"] == 1 and status["committed_batches"] == 1
+    assert status["last_durable_at"] and status["last_commit_completed_at"]
+    assert status["inflight_events"] == 0
+
+
+def test_stalled_writer_health_does_not_report_active(tmp_path, monkeypatch):
+    monkeypatch.setattr(Capture, "_run", lambda self: self.stop.wait())
+    cap = Capture("owner", CONTRACT, root=tmp_path)
+    cap.append(book(datetime.now(timezone.utc), 1), datetime.now(timezone.utc), [])
+    cap.last_progress -= 6
+    assert cap.status()["state"] == "stalled"
+    assert cap.status()["last_durable_at"] is None
+    cap.close()
+
+
+def test_restart_preserves_committed_prefix_and_reports_unknown_tail(tmp_path):
+    import subprocess, sys, time
+    from pathlib import Path
+    script = '''import sys,time
+from datetime import datetime,timezone
+from app.services.topbot_evidence import Capture
+cap=Capture('restart-owner','contract',root=sys.argv[1],free_floor=0)
+while True:
+ cap.append({'event':'state','data':{'state':'connected'}},datetime.now(timezone.utc),[])
+ time.sleep(.001)
+'''
+    process = subprocess.Popen([sys.executable, "-B", "-c", script, str(tmp_path)], cwd=Path(__file__).parents[1],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    path = None
+    try:
+        deadline = time.monotonic()+10
+        while time.monotonic() < deadline:
+            paths = list(tmp_path.rglob("*.sqlite3"))
+            if paths:
+                try:
+                    rows = list(recorded_batches(paths[0]))
+                    if len(rows) > 10:
+                        path = paths[0]; break
+                except sqlite3.Error: pass
+            time.sleep(.05)
+        assert path is not None
+    finally:
+        process.kill(); process.wait(timeout=5)
+    committed = list(recorded_batches(path))
+    assert len(committed) > 10
+    cap = Capture("restart-owner", "contract", root=tmp_path, free_floor=0)
+    cap.append({"event": "state", "data": {"state": "connected"}}, datetime.now(timezone.utc), [])
+    cap.close()
+    assert cap.capture_id != committed[0]["metadata"]["capture_id"]
+    assert list(recorded_batches(path)) == committed
+    assert cap.durable_events == 1
+
+
 def test_timeline_includes_linked_evaluation_but_not_other_account():
     audit.record("owner", 1, "evaluation_started", correlation_id="correlation")
     audit.record("owner", 1, "evaluation_result", correlation_id="correlation", order_attempt_id=7)

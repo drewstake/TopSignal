@@ -38,7 +38,20 @@ def _trades(client, entry, now):
     rows = client.fetch_trade_history(account_id=entry.account_id,
                                      start=_as_utc(entry.created_at)-timedelta(minutes=1), end=now,
                                      require_valid_collection=True)
-    return [r for r in rows if r["account_id"] == entry.account_id and r["contract_id"] == entry.contract_id and not r["voided"]]
+    scoped = [r for r in rows if r["account_id"] == entry.account_id and r["contract_id"] == entry.contract_id and not r["voided"]]
+    unique, seen = [], {}
+    for row in scoped:
+        identity = row.get("source_trade_id")
+        if identity is not None:
+            key = str(identity)
+            if key in seen:
+                # Identical retries are one execution. Conflicting versions are
+                # retained for explicit reconciliation, never silently replaced.
+                fields = ("order_id", "side", "size", "price", "timestamp", "fees", "commissions")
+                if all(row.get(k) == seen[key].get(k) for k in fields): continue
+            seen[key] = row
+        unique.append(row)
+    return unique
 
 
 def initialize(entry, plan, client, now):
@@ -47,16 +60,22 @@ def initialize(entry, plan, client, now):
     fills = [r for r in _trades(client, entry, now) if str(r["order_id"]) == str(entry.provider_order_id)]
     if not fills: return False
     if len(fills) != 1 or fills[0]["side"] != entry.side or fills[0]["size"] != 1 or float(entry.size) != 1:
+        runner["stats_status"] = "ambiguous_entry_fills"
+        runner["reconciliation"] = {"entry_fill_count": len(fills), "reason": "partial_or_mismatched_entry_fills"}
         raise ValueError("Runner requires an exact single-contract entry fill; reconcile mismatched exposure.")
     fill = fills[0]
     if not math.isfinite(fill["price"]) or fill["price"] <= 0: raise ValueError("Invalid entry fill price")
     runner.update(entry_at=fill["timestamp"].isoformat(), entry_price=fill["price"], entry_fees=fill["fees"],
                   side=entry.side, mfe_points=0., mae_points=0., stats_status="open", coverage_complete=False)
+    runner.update(entry_order_id=str(entry.provider_order_id), entry_fill_id=fill.get("source_trade_id", fill.get("trade_id", fill.get("id"))),
+                  quantity=float(fill["size"]), contract_id=entry.contract_id, account_id=entry.account_id,
+                  initial_risk_usd=float(runner.get("initial_stop_points", 25))*2*float(fill["size"]))
     from .topbot_execution_trace import entry_metrics
     observed_at = datetime.now(timezone.utc).isoformat()
     runner["execution"] = entry_metrics(getattr(entry, "raw_request", None) or {}, entry.side, fill["price"], runner["entry_at"], observed_at)
     plan["position_observed_at"] = now.isoformat()
-    record(**scope(entry), kind="entry_fill_verified", price=fill["price"], fees=fill["fees"],
+    record(**scope(entry), kind="entry_fill_verified", operation=f"entry-fill:{entry.id}:{runner['entry_fill_id']}",
+           fill_id=runner["entry_fill_id"], quantity=fill["size"], price=fill["price"], fees=fill["fees"],
            fill_at=runner["entry_at"], observed_at=observed_at, order_id=entry.provider_order_id,
            side=entry.side, execution=runner["execution"])
     return True
@@ -160,6 +179,7 @@ def manage(db, *, entry, plan, client, stops, worker_lease_token, now, orders=No
         raise ValueError("Stop modification not yet verified at the broker")
     runner["confirmed_stop"] = wanted
     runner["stop_verified_at"] = datetime.now(timezone.utc).isoformat()
+    runner["last_verified_trail_stop"] = wanted
     runner["execution"]["last_stop_request_to_verified_ms"] = round((perf_counter()-client.request_started)*1000, 3)
     record(**scope(entry), kind="stop_change_verified", operation=client.last_operation,
            old_stop=current, new_stop=wanted, market_price=mark, order_id=stop["order_id"],
@@ -172,6 +192,7 @@ def manage(db, *, entry, plan, client, stops, worker_lease_token, now, orders=No
 def finalize(entry, plan, client, now):
     """Broker-flat is verified by the caller. Missing/ambiguous fills stay unknown."""
     runner = plan["runner"]
+    if runner.get("stats_status") == "complete": return True
     if not initialize(entry, plan, client, now):
         if entry.status == "cancelled":
             runner["stats_status"] = "not_filled"
@@ -185,6 +206,7 @@ def finalize(entry, plan, client, now):
         return False
     if len(exits) != 1 or exits[0]["side"] == entry.side or exits[0]["size"] != 1:
         runner["stats_status"] = "ambiguous_fills"
+        runner["reconciliation"] = {"exit_fill_count": len(exits), "reason": "partial_or_ambiguous_exit_fills"}
         return False
     exit_fill = exits[0]
     if any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in
@@ -197,11 +219,35 @@ def finalize(entry, plan, client, now):
     costs = cost_summary(runner["entry_fees"]+exit_fill["fees"], points,
                          exit_fill["timestamp"], entry.contract_id, exit_fill.get("commissions"))
     fees = costs["fees_usd"]
+    from .topbot_study import exit_classification
+    # A fast native bracket may fill before management sees its working child.
+    # Match broker order identity; price resemblance is never proof of an exit.
+    if str(exit_fill["order_id"]) not in {runner.get("stop_order_id"), runner.get("target_order_id")} and hasattr(client, "search_orders"):
+        try:
+            history = client.search_orders(account_id=entry.account_id, start=utc(runner["entry_at"])-timedelta(minutes=1), end=now)
+            matching = [o for o in history if o.get("account_id") == entry.account_id and o.get("contract_id") == entry.contract_id
+                and str(o.get("order_id")) == str(exit_fill["order_id"])
+                and str(o.get("parent_order_id")) == str(entry.provider_order_id)
+                and o.get("status") == 2 and o.get("size") == float(entry.size)
+                and o.get("side") == (1 if entry.side == "BUY" else 0)]
+            if len(matching) == 1:
+                key = {1: "target_order_id", 4: "stop_order_id"}.get(matching[0].get("order_type"))
+                if key:
+                    runner[key] = str(exit_fill["order_id"])
+                    price_key = "limitPrice" if key == "target_order_id" else "stopPrice"
+                    order_price = (matching[0].get("raw_payload") or {}).get(price_key)
+                    if isinstance(order_price, (float, int)) and math.isfinite(order_price):
+                        runner["confirmed_target" if key == "target_order_id" else "confirmed_stop"] = order_price
+        except Exception:
+            runner["exit_order_history_status"] = "unavailable"
+    reason, reason_basis = exit_classification(runner, plan, exit_fill["order_id"])
+    runner.setdefault("initial_risk_usd", float(runner.get("initial_stop_points", 25))*2*float(entry.size))
     runner.update(stats_status="complete", exit_at=exit_fill["timestamp"].isoformat(), exit_price=exit_fill["price"],
                   hold_seconds=max(0,(exit_fill["timestamp"]-utc(runner["entry_at"])).total_seconds()),
                   gross_points=points, fees_usd=fees, net_pnl_usd=points*2-fees,
-                  exit_reason=plan.get("runner_exit_reason") or ("trailing_stop" if runner.get("trailing_active") else "initial_stop")
-                  if str(exit_fill["order_id"]) == runner.get("stop_order_id") else plan.get("runner_exit_reason", "session_or_external_exit"))
+                  exit_reason=reason, exit_reason_basis=reason_basis,
+                  exit_order_id=str(exit_fill["order_id"]), exit_fill_id=exit_fill.get("source_trade_id", exit_fill.get("trade_id", exit_fill.get("id"))),
+                  gross_pnl_usd=points*2, realized_r=(points*2-fees)/runner["initial_risk_usd"])
     runner.update(costs)
     runner["mfe_points"] = max(runner["mfe_points"], points)
     runner["mae_points"] = min(runner["mae_points"], points)
@@ -211,7 +257,11 @@ def finalize(entry, plan, client, now):
     execution["exit_fill_to_observation_ms"] = delta_ms(datetime.now(timezone.utc).isoformat(), runner["exit_at"])
     if str(exit_fill["order_id"]) == runner.get("stop_order_id") and runner.get("confirmed_stop") is not None:
         execution["exit_slippage_from_last_verified_stop_ticks"] = round((runner["confirmed_stop"]-exit_fill["price"])*direction*4, 6)
-    record(**scope(entry), kind="exit_fill_verified", order_id=exit_fill["order_id"],
+    record(**scope(entry), kind="exit_fill_verified", operation=f"exit-fill:{entry.id}:{runner['exit_fill_id']}",
+           fill_id=runner["exit_fill_id"], quantity=exit_fill["size"], order_id=exit_fill["order_id"],
+           broker_exit_fees=exit_fill["fees"], broker_fees_usd=costs["broker_fees_usd"],
+           commissions_usd=costs["commissions_usd"], commission_basis=costs["commission_basis"],
+           gross_pnl_usd=runner["gross_pnl_usd"], initial_risk_usd=runner["initial_risk_usd"], realized_r=runner["realized_r"],
            exit_price=exit_fill["price"], exit_at=runner["exit_at"], reason=runner["exit_reason"],
            net_pnl_usd=runner["net_pnl_usd"], fees_usd=fees, hold_seconds=runner["hold_seconds"],
            execution=execution, coverage=runner.get("coverage"))
@@ -230,16 +280,26 @@ def cost_summary(broker_fees, gross_points, exit_at, contract_id, commissions=No
         raw_fee_is_per_side=False, commissions=commissions)
     if not math.isfinite(fees): raise ValueError("Invalid runner commission")
     return {"fee_basis": "broker_fees_plus_commission_v1", "broker_fees_usd": broker_fees,
+            "commission_basis": "broker_explicit" if commissions is not None else "configured_round_turn_schedule",
             "commissions_usd": fees-broker_fees, "fees_usd": fees, "net_pnl_usd": gross_points*2-fees}
 
 
 def statistics_item(row):
-    item = {"entry_id": row.id, "side": row.side, **row.raw_request["timeExit"]["runner"]}
+    item = {"entry_id": row.id, "side": row.side, "attempt_status": getattr(row, "status", None),
+            **row.raw_request["timeExit"]["runner"]}
+    from .topbot_study import classify
+    item.update(classify(row.raw_request))
+    from .trading_day import trading_day_key
+    if item.get("entry_at"): item["session"] = trading_day_key(utc(item["entry_at"]))
     if (item.get("stats_status") == "complete" and not item.get("fee_basis")
             and all(item.get(k) is not None for k in ("fees_usd", "gross_points", "exit_at"))):
         # Derive a corrected display without rewriting historical execution/audit records.
         item.update(cost_summary(item["fees_usd"], item["gross_points"], utc(item["exit_at"]), row.contract_id))
         item["costs_derived_from_legacy_record"] = True
+    if item.get("initial_stop_points") and item.get("net_pnl_usd") is not None:
+        quantity = item.get("quantity", float(getattr(row, "size", 1)))
+        risk = item["initial_stop_points"]*2*quantity
+        item.update(initial_risk_usd=risk, realized_r=item["net_pnl_usd"]/risk)
     return item
 
 
@@ -263,3 +323,21 @@ def statistics(db, *, user_id, account_id):
             "winner_hold_median_seconds": median(wins) if wins else None,
             "loser_hold_mean_seconds": mean(losses) if losses else None,
             "loser_hold_median_seconds": median(losses) if losses else None}
+
+
+def study_statistics(db, *, user_id, account_id, **filters):
+    from ..models import BotOrderAttempt
+    from .topbot_study_store import comparison
+    rows = db.query(BotOrderAttempt).filter(BotOrderAttempt.user_id == user_id,
+        BotOrderAttempt.account_id == account_id,
+        BotOrderAttempt.raw_request["timeExit"]["runner"]["version"].as_integer() == 1
+    ).order_by(BotOrderAttempt.id.desc()).limit(5001).all()
+    truncated = len(rows) > 5000
+    items = [statistics_item(row) for row in rows[:5000]]
+    db.rollback()
+    result = comparison(user_id, account_id, items, **filters)
+    result["actual_scope"] = "Most recent 5,000 runner entries; dates use UTC entry dates"
+    result["actual_truncated"] = truncated
+    from .topbot_study_worker import HEALTH
+    result["research_health"] = dict(HEALTH)
+    return result

@@ -37,7 +37,8 @@ def implementation():
     base = Path(__file__).parent
     names = ("topbot_strategy.py", "topbot_depth.py", "topbot_evidence.py", "topbot_runner.py",
              "topbot_audit.py", "topbot_execution_trace.py", "topbot_time_exit.py", "topbot_session.py", "bot_service.py",
-             "projectx_order_book.py", "topstep_fees.py", "topbot_profit_guard.py", "topbot_entry_checks.py", "../bot_worker.py")
+             "projectx_order_book.py", "projectx_client.py", "topstep_fees.py", "topbot_profit_guard.py", "topbot_entry_checks.py", "../bot_worker.py")
+    names += ("topbot_study.py", "topbot_study_store.py", "topbot_study_worker.py")
     try:
         files = {name: sha256((base / name).read_text(encoding="utf-8").encode()).hexdigest()
                  for name in names if (base / name).exists()}
@@ -85,6 +86,14 @@ class Capture:
         self.queue_lock, self.queued_bytes = Lock(), 0
         self.stop = Event()
         self.index = self.durable_index = self.dropped = 0
+        self.durable_events = self.committed_batches = 0
+        self.last_durable_at = self.last_durable_received_at = None
+        self.last_commit_completed_at = None
+        self.last_drop = None
+        self.phase, self.phase_started = "initializing", monotonic()
+        self.phase_seconds = {}
+        self.last_progress = monotonic()
+        self.pending_events = 0
         self.state, self.error_type = "starting", None
         self.budget, self.free_floor = budget, free_floor
         self.thread = Thread(target=self._run, daemon=True, name="topbot-evidence")
@@ -109,6 +118,7 @@ class Capture:
                 self.queued_bytes += len(raw)
         except (Full, ValueError, TypeError, KeyError):
             self.dropped += 1
+            self.last_drop = {"event_index": self.index, "received_at": at.isoformat()}
             if self.dropped & (self.dropped-1) == 0:
                 from ..bot_diagnostics import event as diagnostic
                 diagnostic(logger, "topbot_evidence_loss", level=logging.WARNING,
@@ -116,11 +126,22 @@ class Capture:
         return reference
 
     def status(self):
-        return {"state": self.state, "durable_index": self.durable_index,
+        stalled = self.state in {"starting", "recording"} and (self.queue.qsize() or self.pending_events) and monotonic()-self.last_progress > 5
+        return {"state": "stalled" if stalled else self.state, "durable_index": self.durable_index,
                 "dropped_events": self.dropped, "queued_events": self.queue.qsize(),
+                "inflight_events": self.pending_events, "durable_events": self.durable_events,
+                "committed_batches": self.committed_batches, "last_durable_at": self.last_durable_at,
+                "last_durable_received_at": self.last_durable_received_at, "last_drop": self.last_drop,
+                "last_commit_completed_at": self.last_commit_completed_at,
+                "phase": self.phase, "phase_elapsed_seconds": round(monotonic()-self.phase_started, 3),
+                "phase_seconds": dict(self.phase_seconds), "writer_alive": self.thread.is_alive(),
                 "produced_index": self.index,
                 "budget_bytes": self.budget, "free_floor_bytes": self.free_floor,
                 "error_type": self.error_type, "durability": "Only committed batches are replayable"}
+
+    def _phase(self, name):
+        self.phase_seconds[self.phase] = round(monotonic()-self.phase_started, 6)
+        self.phase, self.phase_started = name, monotonic()
 
     def _capacity(self, growth=0):
         paths = [p for p in self.root.rglob("*") if p.is_file()]
@@ -132,9 +153,15 @@ class Capture:
             if path not in self.capture_dates:
                 stamp = _ACTIVE_STARTS.get(path)
                 if stamp is None:
-                    reader = sqlite3.connect(path.resolve().as_uri()+"?mode=ro", uri=True, timeout=1)
-                    try: stamp = json.loads(reader.execute("SELECT value FROM metadata").fetchone()[0])["started_at"]
-                    finally: reader.close()
+                    # Metadata sidecars avoid opening every old WAL database on
+                    # each process restart. Legacy captures remain readable.
+                    sidecar = path.with_suffix(".metadata.json")
+                    if sidecar.exists():
+                        stamp = json.loads(sidecar.read_text(encoding="utf-8"))["started_at"]
+                    else:
+                        reader = sqlite3.connect(path.resolve().as_uri()+"?mode=ro", uri=True, timeout=1)
+                        try: stamp = json.loads(reader.execute("SELECT value FROM metadata").fetchone()[0])["started_at"]
+                        finally: reader.close()
                 self.capture_dates[path] = datetime.fromisoformat(stamp).timestamp()
             starts.append(self.capture_dates[path])
         oldest = min(starts, default=None)
@@ -147,12 +174,23 @@ class Capture:
         db = None
         try:
             _ACTIVE_STARTS[self.path] = self.started_at
+            self._phase("capacity_startup")
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self._capacity()
+            self._phase("sqlite_open")
             db = sqlite3.connect(self.path, timeout=1)
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=FULL")
-            db.executescript("""CREATE TABLE metadata(value TEXT NOT NULL);
+            # The default 1,000-page auto-checkpoint runs inside commit(). On
+            # the archive HDD it can block this sole writer for a minute while
+            # bulk readers compete for seeks. Keep FULL WAL durability, but
+            # defer checkpointing until this capture closes. Both database and
+            # WAL count toward the existing disk budget/free-space guard.
+            db.execute("PRAGMA wal_autocheckpoint=0")
+            # executescript otherwise autocommits each DDL statement. Under
+            # disk contention that delayed first recording through seven FULL
+            # sync transactions. Schema and metadata need one atomic commit.
+            db.executescript("""BEGIN IMMEDIATE; CREATE TABLE metadata(value TEXT NOT NULL);
                 CREATE TABLE status(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);
                 CREATE TABLE batches(id INTEGER PRIMARY KEY, first_index INTEGER, last_index INTEGER,
                   count INTEGER, previous_hash TEXT, hash TEXT, payload BLOB);
@@ -162,10 +200,19 @@ class Capture:
                     "contract_id": self.contract, "started_at": self.started_at,
                     "implementation": implementation(), "provider_snapshot_complete": False}
             db.execute("INSERT INTO metadata VALUES(?)", (canonical(meta).decode(),))
+            self._phase("metadata_commit")
             db.commit()
+            temporary_metadata = self.path.with_suffix(".metadata.pending")
+            with temporary_metadata.open("xb") as sidecar:
+                sidecar.write(canonical(meta))
+                sidecar.flush()
+                os.fsync(sidecar.fileno())
+            os.replace(temporary_metadata, self.path.with_suffix(".metadata.json"))
             previous = sha256(canonical(meta)).hexdigest()
             self.state = "recording"
+            self.last_progress = monotonic()
             while not self.stop.is_set() or not self.queue.empty():
+                self._phase("collecting")
                 batch = []
                 try:
                     batch.append(self.queue.get(timeout=.25))
@@ -184,16 +231,32 @@ class Capture:
                     except Empty: break
                 with self.queue_lock:
                     self.queued_bytes -= sum(len(item[1]) for item in batch)
+                self.pending_events = len(batch)
+                self._phase("compressing")
                 raw = b"\n".join(item[1] for item in batch)
                 digest = sha256(previous.encode()+raw).hexdigest()
                 compressed = zlib.compress(raw, 3)
                 with _DISK_LOCK:
+                    self._phase("capacity_batch")
                     self._capacity(len(compressed))
+                    self._phase("batch_commit")
+                    committed_at = datetime.now(timezone.utc).isoformat()
+                    received_at = json.loads(batch[-1][1])["received_at"]
+                    durable_status = {**self.status(), "durable_index": batch[-1][0],
+                        "durable_events": self.durable_events+len(batch), "committed_batches": self.committed_batches+1,
+                        "last_durable_at": received_at, "last_durable_received_at": received_at,
+                        "commit_started_at": committed_at, "inflight_events": 0}
                     db.execute("INSERT INTO batches(first_index,last_index,count,previous_hash,hash,payload) VALUES(?,?,?,?,?,?)",
                                (batch[0][0], batch[-1][0], len(batch), previous, digest, compressed))
-                    db.execute("INSERT OR REPLACE INTO status VALUES(1,?)", (canonical({**self.status(), "durable_index": batch[-1][0]}).decode(),))
+                    db.execute("INSERT OR REPLACE INTO status VALUES(1,?)", (canonical(durable_status).decode(),))
                     db.commit()
                 previous, self.durable_index = digest, batch[-1][0]
+                self.last_durable_at = self.last_durable_received_at = received_at
+                self.last_commit_completed_at = datetime.now(timezone.utc).isoformat()
+                self.durable_events += len(batch)
+                self.committed_batches += 1
+                self.pending_events = 0
+                self.last_progress = monotonic()
             self.state = "closed"
         except Exception as exc:
             self.state = "storage_blocked" if isinstance(exc, OverflowError) else "error"
