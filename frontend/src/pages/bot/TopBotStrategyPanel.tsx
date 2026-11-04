@@ -3,6 +3,7 @@ import { botsApi } from "../../lib/api";
 import type { BotActivity, BotConfig } from "../../lib/types";
 import { usePageVisibility } from "./usePageVisibility";
 import { TopBotAuditTrail } from "./TopBotAuditTrail";
+import { TopBotComparison } from "./TopBotComparison";
 import { TopBotExecutionEvidence, TopBotRecordingStatus, type ExecutionEvidence, type ExcursionCoverage, type RecordingEvidence } from "./TopBotExecutionEvidence";
 
 type RunnerTrade = {
@@ -11,6 +12,7 @@ type RunnerTrade = {
   giveback_points?: number; plus_10?: number; plus_25?: number; minus_10?: number;
   confirmed_stop?: number; management_status?: string; exit_reason?: string;
   execution?: ExecutionEvidence; coverage?: ExcursionCoverage;
+  strategy_class?: string; classification_basis?: string; strategy_version_id?: string;
 };
 export type TopBotStatistics = {
   depth?: { ready: boolean; reason: string; bid_total?: number; ask_total?: number; imbalance?: number; persistence_seconds?: number; evidence?: RecordingEvidence } | null;
@@ -83,10 +85,11 @@ export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChan
       <div><dt>Loser hold · avg / median</dt><dd>{duration(stats?.loser_hold_mean_seconds)} / {duration(stats?.loser_hold_median_seconds)}</dd></div>
     </dl>
     {stats?.items.length ? <div className="topbot-stat-table"><table><thead><tr>
-      <th>Entry (New York)</th><th>Side</th><th>Net / fees</th><th>Hold</th><th>Best / worst (pts)</th>
+      <th>Entry (New York)</th><th>Strategy</th><th>Side</th><th>Net / fees</th><th>Hold</th><th>Best / worst (pts)</th>
       <th>Giveback (pts)</th><th>Time to +10 / +25 / −10</th><th>Exit / status</th><th>Evidence</th>
     </tr></thead><tbody>{stats.items.map(row => <tr key={row.entry_id}>
       <td>{row.entry_at ? new Date(row.entry_at).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "Awaiting fill"}</td>
+      <td title={row.strategy_version_id}>{row.strategy_class ?? "unknown"}<small> · {row.classification_basis?.replaceAll("_", " ") ?? "unsupported"}</small></td>
       <td>{row.side}</td><td>{number(row.net_pnl_usd)} / {number(row.fees_usd)}</td><td>{duration(row.hold_seconds)}</td>
       <td>{number(row.mfe_points)} / {number(row.mae_points)}</td><td>{number(row.giveback_points)}</td>
       <td>{duration(row.plus_10)} / {duration(row.plus_25)} / {duration(row.minus_10)}</td>
@@ -97,5 +100,6 @@ export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChan
     <p className="topbot-footnote">{stats?.scope ?? "Most recent 500 strategy entries on this account"}. Excursions and milestone times use observed executable quotes and may miss moves during data gaps. A dash means not observed, not zero. Holding-time statistics do not delay stops.</p>
     <TopBotAuditTrail key={accountId} accountId={accountId} demoMode={demoMode} />
     <TopBotRecordingStatus evidence={stats?.depth?.evidence} />
+    {accountId != null && !demoMode && <TopBotComparison key={accountId} accountId={accountId} />}
   </section>;
 }

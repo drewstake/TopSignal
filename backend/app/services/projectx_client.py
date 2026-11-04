@@ -537,6 +537,10 @@ class ProjectXClient:
                     "update_timestamp": _parse_datetime(
                         _first_value(row, ["updateTimestamp", "updatedAt"])
                     ),
+                    "parent_order_id": _string_or_none(_first_value(row, ["parentOrderId", "parent_order_id"])),
+                    "order_type": _safe_int(_first_value(row, ["type", "orderType", "order_type"])),
+                    "side": _safe_int(_first_value(row, ["side", "orderSide", "order_side"])),
+                    "size": _safe_float(_first_value(row, ["size", "quantity", "qty"]), default=None),
                     "raw_payload": row,
                 }
             )

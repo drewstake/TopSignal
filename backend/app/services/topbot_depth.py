@@ -224,6 +224,19 @@ class DepthFeed:
         self.lock = RLock()
         self.streams = {}
 
+    def retain(self, owner, contract, client_factory, until, params):
+        """Research subscription retention; never changes an existing signal rule."""
+        key = (str(owner), contract)
+        with self.lock:
+            existing = self.streams.get(key)
+            if existing:
+                existing["retain_until"] = max(existing.get("retain_until", until), until)
+                return
+        client = client_factory()
+        self.ensure(owner, contract, client, params.get("imbalance_threshold", .1), params.get("persistence_seconds", 30))
+        with self.lock:
+            if key in self.streams: self.streams[key]["retain_until"] = until
+
     def ensure(self, owner, contract, client, threshold=.1, persistence_seconds=30):
         key = (str(owner), contract)
         with self.lock:
@@ -263,7 +276,8 @@ class DepthFeed:
                 sub = await registry.subscribe(user_id=key[0], client=client, contract_id=key[1])
                 for event in sub.initial_events:
                     with self.lock: stream["state"].apply(event, datetime.now(timezone.utc))
-                while monotonic()-stream["touched"] < 120:
+                while (monotonic()-stream["touched"] < 120 or
+                       stream.get("retain_until", datetime.min.replace(tzinfo=timezone.utc)) > datetime.now(timezone.utc)):
                     try: event = await asyncio.wait_for(sub.queue.get(), timeout=1)
                     except asyncio.TimeoutError:
                         with self.lock:

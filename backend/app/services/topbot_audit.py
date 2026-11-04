@@ -32,6 +32,8 @@ def connection(owner):
           CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, account INTEGER NOT NULL,
             at TEXT NOT NULL, kind TEXT NOT NULL, operation TEXT, payload TEXT NOT NULL);
           CREATE INDEX IF NOT EXISTS account_seq ON events(account,seq);
+          CREATE TABLE IF NOT EXISTS fill_identity(account INTEGER, kind TEXT, operation TEXT, event_seq INTEGER,
+            PRIMARY KEY(account,kind,operation));
           CREATE TRIGGER IF NOT EXISTS no_event_update BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT,'append_only'); END;
           CREATE TRIGGER IF NOT EXISTS no_event_delete BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT,'append_only'); END;
         ''')
@@ -57,8 +59,16 @@ def record(owner, account_id, kind, *, operation=None, **details):
     if len(payload.encode()) > 32768:
         raise ValueError('topbot_audit_event_too_large')
     with connection(owner) as db:
+        deduplicate = kind in {'entry_fill_verified', 'exit_fill_verified'} and operation is not None
+        if deduplicate:
+            db.execute('BEGIN IMMEDIATE')
+            existing = db.execute('SELECT event_seq FROM fill_identity WHERE account=? AND kind=? AND operation=?',
+                                  (int(account_id), kind, operation)).fetchone()
+            if existing: return existing[0]
         cursor = db.execute('INSERT INTO events(account,at,kind,operation,payload) VALUES(?,?,?,?,?)',
                             (int(account_id), datetime.now(timezone.utc).isoformat(), kind, operation, payload))
+        if deduplicate:
+            db.execute('INSERT INTO fill_identity VALUES(?,?,?,?)', (int(account_id), kind, operation, cursor.lastrowid))
         return cursor.lastrowid
 
 

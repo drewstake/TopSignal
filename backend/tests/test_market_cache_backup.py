@@ -48,6 +48,77 @@ def test_snapshot_deadline_releases_wal_reader(tmp_path):
         assert not source.in_transaction
 
 
+def test_sqlite_scratch_preserves_wal_data_and_unrelated_files(tmp_path):
+    from tools.backup_market_cache import snapshot_sqlite
+    source, target, scratch = tmp_path/'source.sqlite3', tmp_path/'copy.sqlite3', tmp_path/'scratch'
+    scratch.mkdir()
+    original = scratch/'existing-audit.txt'; original.write_text('keep')
+    with closing(sqlite3.connect(source)) as writer:
+        writer.execute('PRAGMA journal_mode=WAL')
+        writer.execute('CREATE TABLE observations(id INTEGER PRIMARY KEY)')
+        writer.execute('INSERT INTO observations VALUES(42)'); writer.commit()
+        snapshot_sqlite(source, target, scratch=scratch)
+        assert writer.execute('SELECT id FROM observations').fetchall() == [(42,)]
+        with closing(sqlite3.connect(target)) as restored:
+            assert restored.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+            assert restored.execute('SELECT id FROM observations').fetchall() == [(42,)]
+    assert list(scratch.iterdir()) == [original]
+    assert original.read_text() == 'keep'
+
+
+def test_sqlite_scratch_capacity_failure_preserves_sources(tmp_path, monkeypatch):
+    from tools import backup_market_cache as tool
+    from types import SimpleNamespace
+    source, target = tmp_path/'source.sqlite3', tmp_path/'copy.sqlite3'
+    with closing(sqlite3.connect(source)) as db:
+        db.execute('CREATE TABLE evidence(id INTEGER)'); db.commit()
+    original = source.read_bytes()
+    monkeypatch.setattr(tool.shutil, 'disk_usage', lambda _: SimpleNamespace(free=1))
+    with pytest.raises(OSError, match='free-space floor'):
+        tool.snapshot_sqlite(source, target, scratch=tmp_path)
+    assert source.read_bytes() == original and not target.exists()
+
+
+def test_sqlite_priority_restores_background_mode_after_error(monkeypatch):
+    from tools import backup_market_cache as tool
+    calls = []
+    monkeypatch.setattr(tool, '_BACKGROUND_RESOURCES', True)
+    monkeypatch.setattr(tool, '_set_windows_priority', calls.append)
+    with pytest.raises(ValueError):
+        with tool._sqlite_priority():
+            assert not tool._BACKGROUND_RESOURCES
+            with tool._sqlite_priority():
+                raise ValueError('failed SQLite operation')
+    assert tool._BACKGROUND_RESOURCES
+    assert calls == [0x00200000, 0x00004000, 0x00100000]
+
+
+def test_integrity_uses_identical_scratch_bytes_and_preserves_original(tmp_path):
+    from tools import backup_market_cache as tool
+    source = tmp_path/'snapshot.sqlite3'
+    scratch = tmp_path/'scratch'; scratch.mkdir()
+    sentinel = scratch/'original-audit'; sentinel.write_bytes(b'keep')
+    with closing(sqlite3.connect(source)) as db:
+        db.execute('CREATE TABLE entries(id INTEGER PRIMARY KEY)')
+        db.execute('INSERT INTO entries VALUES(123)'); db.commit()
+    digest = tool.checksum(source)
+    tool.verify_sqlite(source, digest, scratch=scratch)
+    assert tool.checksum(source) == digest
+    assert list(scratch.iterdir()) == [sentinel]
+
+
+def test_integrity_refuses_corrupted_scratch_copy(tmp_path, monkeypatch):
+    from tools import backup_market_cache as tool
+    source = tmp_path/'snapshot.sqlite3'
+    with closing(sqlite3.connect(source)) as db:
+        db.execute('CREATE TABLE entries(id INTEGER PRIMARY KEY)'); db.commit()
+    digest = tool.checksum(source)
+    monkeypatch.setattr(tool.shutil, 'copyfile', lambda src, dst: Path(dst).write_bytes(b'corrupt copy'))
+    with pytest.raises(ValueError, match='scratch checksum mismatch'):
+        tool.verify_sqlite(source, digest, scratch=tmp_path)
+    assert tool.checksum(source) == digest
+
+
 def test_optional_quote_spool_is_copied_before_archive_handoff(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location('cache_backup_quote_tool', Path(__file__).parents[1]/'tools/backup_market_cache.py')
     tool = importlib.util.module_from_spec(spec); spec.loader.exec_module(tool)

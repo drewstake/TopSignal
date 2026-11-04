@@ -40,19 +40,21 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
+const botStatus = () => within(screen.getByRole("banner")).getByRole("status");
+
 it("shows green only for a confirmed running bot and healthy worker", async () => {
   render(<BotPage />);
   expect(screen.getByRole("heading", { name: "TopBot" })).not.toBeNull();
-  await waitFor(() => expect(screen.getByRole("status").title).toBe("Dry Run active"));
-  expect(screen.getByRole("status").querySelector(".bg-emerald-400")).not.toBeNull();
+  await waitFor(() => expect(botStatus().title).toBe("Dry Run active"));
+  expect(botStatus().querySelector(".bg-emerald-400")).not.toBeNull();
   expect(within(screen.getByRole("region", { name: "What TopBot sees" })).getByText("Liquidity history for 1")).toBeTruthy();
 });
 
 it("shows red when there is no configured TopBot", async () => {
   vi.mocked(botsApi.listConfigsWithCacheScope).mockResolvedValue({ configs: { items: [], total: 0 }, cacheScope: "test" });
   render(<BotPage />);
-  await waitFor(() => expect(screen.getByRole("status").title).toContain("Inactive"));
-  expect(screen.getByRole("status").querySelector(".bg-red-400")).not.toBeNull();
+  await waitFor(() => expect(botStatus().title).toContain("Inactive"));
+  expect(botStatus().querySelector(".bg-red-400")).not.toBeNull();
   expect(botsApi.getActivity).not.toHaveBeenCalled();
 });
 
@@ -61,7 +63,7 @@ it("keeps a reset strategy inactive even if an old running record remains", asyn
   vi.mocked(botsApi.listConfigsWithCacheScope).mockResolvedValue({ configs: { items: [resetBot], total: 1 }, cacheScope: "test" });
   vi.mocked(botsApi.getActivity).mockResolvedValue({ ...activity, config: resetBot });
   render(<BotPage />);
-  await waitFor(() => expect(screen.getByRole("status").title).toBe("Inactive · strategy not configured"));
+  await waitFor(() => expect(botStatus().title).toBe("Inactive · strategy not configured"));
   expect(screen.getByText("NO STRATEGY")).not.toBeNull();
   expect(screen.getByText("Chart")).not.toBeNull();
   expect(screen.getByText("Order book")).not.toBeNull();
@@ -71,14 +73,14 @@ it("keeps a reset strategy inactive even if an old running record remains", asyn
 it("shows yellow if a running record cannot be confirmed by the worker", async () => {
   vi.mocked(botsApi.getRuntimeStatus).mockResolvedValue({ ready: false, provider_status: "unknown", counts: {}, state: "stopped", checks: {} });
   render(<BotPage />);
-  await waitFor(() => expect(screen.getByRole("status").title).toContain("worker needs attention"));
-  expect(screen.getByRole("status").querySelector(".bg-amber-400")).not.toBeNull();
+  await waitFor(() => expect(botStatus().title).toContain("worker needs attention"));
+  expect(botStatus().querySelector(".bg-amber-400")).not.toBeNull();
 });
 
 it("shows yellow when the status request fails", async () => {
   vi.mocked(botsApi.listConfigsWithCacheScope).mockRejectedValue(new Error("Offline"));
   render(<BotPage />);
-  await waitFor(() => expect(screen.getByRole("status").title).toBe("Bot status unavailable"));
+  await waitFor(() => expect(botStatus().title).toBe("Bot status unavailable"));
 });
 
 it("discards a previous account's pending status response", async () => {
@@ -88,8 +90,8 @@ it("discards a previous account's pending status response", async () => {
   await waitFor(() => expect(botsApi.getActivity).toHaveBeenCalled());
   context.selectedAccountId = context.accounts[1].id;
   view.rerender(<BotPage />);
-  await waitFor(() => expect(screen.getByRole("status").title).toContain("Inactive"));
+  await waitFor(() => expect(botStatus().title).toContain("Inactive"));
   await act(async () => { resolve(activity); });
-  expect(screen.getByRole("status").title).toContain("Inactive");
+  expect(botStatus().title).toContain("Inactive");
   expect(botsApi.getRuntimeStatus).not.toHaveBeenCalled();
 });

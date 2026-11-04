@@ -4,7 +4,7 @@ Copy the completed output off-device and run --verify there. A second directory
 on the production drive is staging, not a backup against device failure.
 """
 import argparse
-from contextlib import closing
+from contextlib import closing, contextmanager
 import hashlib
 import json
 import os
@@ -12,8 +12,39 @@ from pathlib import Path
 import shutil
 import sqlite3
 import tarfile
+import tempfile
 import time
 from datetime import datetime, timezone
+
+_BACKGROUND_RESOURCES = False
+
+
+def _set_windows_priority(value):
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.SetPriorityClass.restype = wintypes.BOOL
+    if not kernel.SetPriorityClass(kernel.GetCurrentProcess(), value):
+        raise RuntimeError('Unable to set backup scheduling priority')
+
+
+@contextmanager
+def _sqlite_priority():
+    """Keep bulk work subordinate; avoid starving bounded SQLite operations."""
+    global _BACKGROUND_RESOURCES
+    if not _BACKGROUND_RESOURCES:
+        yield
+        return
+    _set_windows_priority(0x00200000)  # End background resource mode.
+    _BACKGROUND_RESOURCES = False
+    try:
+        _set_windows_priority(0x00004000)  # CPU stays below normal.
+        yield
+    finally:
+        _set_windows_priority(0x00100000)
+        _BACKGROUND_RESOURCES = True
 
 
 def filesystem_path(path):
@@ -50,17 +81,47 @@ def verify(root):
         if checksum(path) != expected['sha256'] or path.stat().st_size != expected['bytes']:
             raise ValueError('Backup checksum mismatch: '+name)
         if expected['sqlite']:
-            with closing(sqlite3.connect(readonly_sqlite_uri(path), uri=True)) as db:
-                # Connection-local, on-demand read cache. A tiny default cache
-                # thrashes while checking research indexes on the background HDD.
-                # Verify one database at a time and release its cache on close.
-                db.execute('PRAGMA cache_size=-131072')
-                if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
-                    raise ValueError('SQLite integrity failure: '+name)
+            verify_sqlite(path, expected['sha256'])
     return manifest
 
 
+def verify_sqlite(path, expected_sha256, *, scratch=None):
+    """Check identical snapshot bytes on SSD without random reads on live HDD."""
+    path = filesystem_path(path)
+    system_temp = filesystem_path(tempfile.gettempdir())
+    if scratch is None and path.drive.casefold() != system_temp.drive.casefold():
+        scratch = system_temp
+
+    def integrity(candidate):
+        with _sqlite_priority(), closing(sqlite3.connect(readonly_sqlite_uri(candidate), uri=True)) as db:
+            db.execute('PRAGMA cache_size=-131072')
+            if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                raise ValueError('SQLite integrity failure: '+path.name)
+
+    if scratch is None:
+        integrity(path)
+        return
+    scratch = filesystem_path(scratch)
+    if shutil.disk_usage(scratch).free < path.stat().st_size + 5_000_000_000:
+        raise OSError('SQLite integrity scratch free-space floor')
+    with tempfile.TemporaryDirectory(prefix='topsignal-integrity-', dir=scratch) as directory:
+        owned = filesystem_path(directory)
+        assert owned.is_relative_to(scratch) and owned != scratch
+        candidate = owned/'snapshot.sqlite3'
+        # This is a closed backup file, never a live database. Copy and hash
+        # at background priority; only the SSD integrity scan raises I/O priority.
+        shutil.copyfile(path, candidate)
+        if checksum(candidate) != expected_sha256:
+            raise ValueError('SQLite integrity scratch checksum mismatch')
+        integrity(candidate)
+
+
 def backup_sqlite(source, destination, *, progress=None, timeout_seconds=900):
+    with _sqlite_priority():
+        return _backup_sqlite(source, destination, progress=progress, timeout_seconds=timeout_seconds)
+
+
+def _backup_sqlite(source, destination, *, progress=None, timeout_seconds=900):
     """Bound a WAL snapshot so continuous writers cannot restart every step.
 
     WAL readers leave writers free to commit. For rollback-journal databases,
@@ -84,6 +145,53 @@ def backup_sqlite(source, destination, *, progress=None, timeout_seconds=900):
     finally:
         if pinned:
             source.rollback()
+
+
+def snapshot_sqlite(path, target, *, scratch=None):
+    """Use disposable scratch on another drive to avoid HDD read/write seeks.
+
+    Only our newly created scratch directory is removed. Source databases and
+    completed/failed backup directories remain untouched. A complete snapshot
+    is copied sequentially and checked before scratch is released.
+    """
+    path, target = filesystem_path(path), filesystem_path(target)
+    system_temp = filesystem_path(tempfile.gettempdir())
+    if scratch is None and path.drive.casefold() != system_temp.drive.casefold():
+        scratch = system_temp
+    if scratch is None:
+        with closing(sqlite3.connect(readonly_sqlite_uri(path), uri=True)) as src, closing(sqlite3.connect(target)) as dst:
+            backup_sqlite(src, dst)
+        return
+    scratch = filesystem_path(scratch)
+    wal = path.with_name(path.name+'-wal')
+    estimate = path.stat().st_size + (wal.stat().st_size if wal.exists() else 0)
+    if shutil.disk_usage(scratch).free < estimate + 5_000_000_000:
+        raise OSError('SQLite snapshot scratch free-space floor')
+    # SQLite requests individual pages. Background-priority 4 KiB reads on a
+    # busy Windows HDD can starve even when the destination is an SSD. Warm
+    # the bounded current file prefix using sequential reads first. These
+    # bytes are never used as the backup: the online API supplies consistency.
+    for member in (path, wal):
+        try:
+            remaining = member.stat().st_size
+            with member.open('rb') as stream:
+                while remaining:
+                    block = stream.read(min(8 * 1024 * 1024, remaining))
+                    if not block:
+                        break
+                    remaining -= len(block)
+        except FileNotFoundError:
+            if member == path:
+                raise
+    with tempfile.TemporaryDirectory(prefix='topsignal-sqlite-', dir=scratch) as directory:
+        owned = filesystem_path(directory)
+        assert owned.is_relative_to(scratch) and owned != scratch
+        snapshot = owned/'snapshot.sqlite3'
+        with closing(sqlite3.connect(readonly_sqlite_uri(path), uri=True)) as src, closing(sqlite3.connect(snapshot)) as dst:
+            backup_sqlite(src, dst)
+        shutil.copyfile(snapshot, target)
+        if checksum(snapshot) != checksum(target):
+            raise ValueError('SQLite snapshot transport checksum mismatch')
 
 
 def backup(source, output):
@@ -128,8 +236,7 @@ def backup(source, output):
         target.parent.mkdir(parents=True, exist_ok=True)
         is_sqlite = path.suffix in {'.sqlite3', '.sqlite', '.db'}
         if is_sqlite:
-            with closing(sqlite3.connect(readonly_sqlite_uri(path), uri=True)) as src, closing(sqlite3.connect(target)) as dst:
-                backup_sqlite(src, dst)
+            snapshot_sqlite(path, target)
         else:
             shutil.copyfile(path, target)
             if checksum(path) != checksum(target):
@@ -160,16 +267,12 @@ def main():
     parser.add_argument('--pack', type=Path, help='Pack an already verified snapshot into --output')
     args = parser.parse_args()
     if os.name == 'nt':
-        # Backups share the HDD with live SQLite stores and the recorder.
-        # CPU-only priority does not reduce disk/memory contention on Windows.
-        import ctypes
-        from ctypes import wintypes
-        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-        kernel.GetCurrentProcess.restype = wintypes.HANDLE
-        kernel.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        kernel.SetPriorityClass.restype = wintypes.BOOL
-        if not kernel.SetPriorityClass(kernel.GetCurrentProcess(), 0x00100000):
-            raise RuntimeError('Unable to enable background resource scheduling')
+        # Bulk scans/copies yield I/O to live recording. Bounded SQLite steps
+        # temporarily retain normal I/O/cache priority and below-normal CPU;
+        # background resource mode starved their small page reads on the HDD.
+        global _BACKGROUND_RESOURCES
+        _set_windows_priority(0x00100000)
+        _BACKGROUND_RESOURCES = True
     if args.pack and args.output:
         print(json.dumps(pack(args.pack,args.output)))
         return
