@@ -316,8 +316,10 @@ def test_wal_is_checkpointed_off_the_commit_path(tmp_path, monkeypatch):
     try:
         for sequence in range(200):
             cap.append(update(sequence), datetime.now(UTC), [])
-        assert wait_for(lambda: cap.durable_events == 200 and cap.checkpoint["runs"] >= 1, 10)
-        assert cap.checkpoint["checkpointed_frames"] >= 1
+        # An early checkpoint may find no committed WAL frames. Wait for the
+        # actual result, not merely an attempt racing the writer's first commit.
+        assert wait_for(lambda: cap.durable_events == 200
+                        and cap.checkpoint.get("checkpointed_frames", 0) >= 1, 10)
     finally:
         cap.close()
     _, rows = events(cap.path)
