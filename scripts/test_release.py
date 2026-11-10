@@ -115,6 +115,30 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             host.check_recording({}, {})
 
+    def test_restart_disarm_is_allowed_only_after_start_and_without_settings_drift(self):
+        before = {"config_sha256": "before", "configs": {"1": {"id": "1", "enabled": "True",
+                  "updated_at": "before", "order_size": "1"}},
+                  "runs": {"1": {"id": 2, "status": "running", "dry_run": False, "stop_reason": None}},
+                  "unresolved_attempts": 0,
+                  "accounts": [{"simulated": True, "can_trade": True, "positions": 0, "orders": 0}]}
+        after = json.loads(json.dumps(before))
+        after["config_sha256"] = "after"
+        after["configs"]["1"].update(enabled="False", updated_at="after")
+        after["runs"]["1"].update(status="stopped", stop_reason="worker_restart_requires_rearm")
+        with self.assertRaises(ValueError):
+            host.check_gate_snapshot(after, before, True)
+        host.check_gate_snapshot(after, before, True, allow_restart_disarm=True)
+        for area, key, value in (("configs", "order_size", "2"), ("configs", "enabled", "True"),
+                                 ("runs", "id", 3), ("runs", "status", "error"),
+                                 ("runs", "stop_reason", "manual_stop"), ("runs", "dry_run", True)):
+            bad = json.loads(json.dumps(after))
+            bad[area]["1"][key] = value
+            with self.subTest(area=area, key=key), self.assertRaises(ValueError):
+                host.check_gate_snapshot(bad, before, True, allow_restart_disarm=True)
+        after["accounts"][0]["positions"] = 1
+        with self.assertRaises(ValueError):
+            host.check_gate_snapshot(after, before, True, allow_restart_disarm=True)
+
     def test_ci_requires_all_jobs_and_exact_commit_and_latest_success(self):
         jobs = [{"name": name, "conclusion": "success"} for name in
                 ("Database migrations", "Backend tests", "Frontend tests", "Frontend quality", "Windows compatibility", "verify")]

@@ -130,6 +130,12 @@ need their own reviewed lifecycle rollout before this application release.
   shutdown. A pre-existing or replaced operator STOP is never removed. The task
   keeps its existing principal, triggers, settings and arguments except release
   paths. No force-kill is used to meet a deadline.
+- After startup, the broker gate accepts the existing worker safeguard that
+  stops a provider-routing run with `worker_restart_requires_rearm` and disables
+  its configuration. It requires the same run ID and unchanged trading settings;
+  only the enabled flag and update timestamp may change. This is never accepted
+  before the switch. Deployment never rearms trading: explicitly restart it from
+  the control UI after reconciling the account if that safeguard applies.
 - Verify actual frontend bytes, API liveness/readiness, worker health, broker
   configuration, independent recorder PID, all other TopSignal task definitions,
   and three recording observations over 20 seconds. Missing recording, new

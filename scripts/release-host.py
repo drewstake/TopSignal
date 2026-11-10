@@ -140,9 +140,37 @@ def check_companions(config: dict, candidate: Path) -> None:
             raise ValueError(f"Independent helper differs: {source}; complete its reviewed rollout before application activation")
 
 
-def check_gate_snapshot(observed: dict, baseline: dict | None, require_flat: bool) -> None:
+def expected_restart_disarm(observed: dict, baseline: dict) -> bool:
+    """Accept only the worker's documented fail-closed restart transition."""
+    before = baseline.get("configs", {})
+    after = observed.get("configs", {})
+    if not before or set(before) != set(after) or set(baseline["runs"]) != set(observed["runs"]):
+        return False
+    for key, old in before.items():
+        new = after[key]
+        old_run, new_run = baseline["runs"].get(key), observed["runs"].get(key)
+        if old == new and old_run == new_run:
+            continue
+        if not old_run or not new_run or not (
+            old_run["id"] == new_run["id"] and old_run["status"] == "running"
+            and old_run.get("dry_run") is False and new_run.get("dry_run") is False
+            and new_run["status"] == "stopped"
+            and new_run.get("stop_reason") == "worker_restart_requires_rearm"
+            and old.get("enabled") == "True" and new.get("enabled") == "False"
+        ):
+            return False
+        if {k: v for k, v in old.items() if k not in {"enabled", "updated_at"}} != {
+            k: v for k, v in new.items() if k not in {"enabled", "updated_at"}
+        }:
+            return False
+    return True
+
+
+def check_gate_snapshot(observed: dict, baseline: dict | None, require_flat: bool,
+                        allow_restart_disarm: bool = False) -> None:
     if baseline and (observed["config_sha256"] != baseline["config_sha256"] or observed["runs"] != baseline["runs"]):
-        raise ValueError("Trading configuration or runner identity/status changed")
+        if not allow_restart_disarm or not expected_restart_disarm(observed, baseline):
+            raise ValueError("Trading configuration or runner identity/status changed")
     if observed["unresolved_attempts"]:
         raise ValueError("Pending/unknown order attempts block release")
     for account in observed["accounts"]:
@@ -152,7 +180,8 @@ def check_gate_snapshot(observed: dict, baseline: dict | None, require_flat: boo
             raise ValueError("Broker exposure is active; wait without interrupting management")
 
 
-def gate(stage: Path, config: dict, root: Path, record: bool, require_flat: bool) -> dict:
+def gate(stage: Path, config: dict, root: Path, record: bool, require_flat: bool,
+         allow_restart_disarm: bool = False) -> dict:
     # Application imports happen only inside the host gate, never at tool import time.
     sys.path.insert(0, str(root / "backend"))
     from dotenv import load_dotenv
@@ -181,7 +210,8 @@ def gate(stage: Path, config: dict, root: Path, record: bool, require_flat: bool
         runs = {}
         for row in configs:
             run = db.query(BotRun).filter(BotRun.bot_config_id == row.id).order_by(BotRun.id.desc()).first()
-            runs[str(row.id)] = {"id": run.id, "status": run.status} if run else None
+            runs[str(row.id)] = {"id": run.id, "status": run.status, "dry_run": run.dry_run,
+                                 "stop_reason": run.stop_reason} if run else None
             key = (str(row.user_id), int(row.account_id))
             if key not in clients:
                 clients[key] = _projectx_client_for_user(db, user_id=str(row.user_id))
@@ -190,6 +220,7 @@ def gate(stage: Path, config: dict, root: Path, record: bool, require_flat: bool
         database_bytes = db.execute(text("select pg_database_size(current_database())")).scalar()
         db.rollback()
     observed = {"config_sha256": hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest(),
+                "configs": {row["id"]: row for row in rows},
                 "runs": runs, "unresolved_attempts": unresolved, "database_bytes": database_bytes, "accounts": []}
     allowed = {"Auth/loginKey", "Account/search", "Position/searchOpen", "Order/searchOpen"}
     for (_, account_id), client in clients.items():
@@ -212,7 +243,8 @@ def gate(stage: Path, config: dict, root: Path, record: bool, require_flat: bool
                     "orders": len(client.search_open_orders(account_id=account_id))})
     baseline_path = stage / "broker-before.json"
     baseline = None if record else json.loads(baseline_path.read_text(encoding="utf-8"))
-    check_gate_snapshot(observed, baseline, require_flat)
+    check_gate_snapshot(observed, baseline, require_flat, allow_restart_disarm)
+    observed["restart_disarmed"] = bool(baseline and observed["runs"] != baseline["runs"])
     if record:
         if baseline_path.exists():
             raise ValueError("Broker baseline already exists; cannot overwrite activation evidence")
@@ -294,6 +326,7 @@ def main() -> None:
     parser.add_argument("--previous", action="store_true")
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--allow-exposure", action="store_true")
+    parser.add_argument("--allow-restart-disarm", action="store_true")
     args = parser.parse_args()
     stage = args.stage.resolve()
     config = json.loads((stage / "host.json").read_text(encoding="utf-8"))
@@ -309,7 +342,7 @@ def main() -> None:
     elif args.command == "verify":
         verify(stage, candidate, previous)
     elif args.command == "gate":
-        gate(stage, config, root, args.record, not args.allow_exposure)
+        gate(stage, config, root, args.record, not args.allow_exposure, args.allow_restart_disarm)
     elif args.command == "health":
         print(json.dumps(health(config, root)))
     elif args.command == "migration-check":

@@ -232,14 +232,14 @@ try {
         Start-Action $newAction 'Candidate'
     } -VerifyCandidate {
         Wait-ReleaseHealth { Invoke-ReleaseTool $python $tool 'health' $Stage }
-        Invoke-ReleaseTool $python $tool 'gate' $Stage @('--allow-exposure')
+        Invoke-ReleaseTool $python $tool 'gate' $Stage @('--allow-exposure', '--allow-restart-disarm')
         Invoke-ReleaseTool $python $tool 'verify' $Stage
         Assert-Sidecars
         Invoke-ReleaseTool $python $tool 'recording' $Stage
         Log 'Candidate frontend, API, worker, broker configuration and sidecars verified.'
     } -CanRollback {
         Invoke-ReleaseTool $python $tool 'verify' $Stage
-        Invoke-ReleaseTool $python $tool 'gate' $Stage
+        Invoke-ReleaseTool $python $tool 'gate' $Stage @('--allow-restart-disarm')
     } -StopCandidate {
         if (-not (Test-Path -LiteralPath (Join-Path $runtime 'STOP'))) { Request-GracefulStop $runtime $marker $taskName }
         else { Assert-OwnedStop $runtime $marker }
@@ -247,7 +247,7 @@ try {
         Start-Action $oldAction 'Previous release'
     } -VerifyPrevious {
         Wait-ReleaseHealth { Invoke-ReleaseTool $previousPython $tool 'health' $Stage @('--previous') }
-        Invoke-ReleaseTool $previousPython $tool 'gate' $Stage @('--previous', '--allow-exposure')
+        Invoke-ReleaseTool $previousPython $tool 'gate' $Stage @('--previous', '--allow-exposure', '--allow-restart-disarm')
         Assert-Sidecars
     }
     Export-ScheduledTask -TaskName $taskName | Set-Content -LiteralPath (Join-Path $Stage 'task-after.xml')
