@@ -176,10 +176,10 @@ describe("AppShell Demo Mode policy", () => {
     expect(main.className).toContain("max-w-[1920px]");
   });
 
-  it("captures the exact live route and account before entering Demo, then reloads", async () => {
+  it("captures the exact live route and account before accounts load when entering Demo", async () => {
     window.localStorage.setItem("topsignal.demoMode", "false");
-    getSelectableAccountsLocalFirstMock.mockResolvedValue([liveAccount]);
-    getSelectableAccountsMock.mockResolvedValue([liveAccount]);
+    getSelectableAccountsLocalFirstMock.mockReturnValue(new Promise(() => {}));
+    getSelectableAccountsMock.mockReturnValue(new Promise(() => {}));
 
     Element.prototype.scrollIntoView = vi.fn();
     const router = createMemoryRouter(

@@ -184,9 +184,13 @@ export function captureLiveModeReturnSnapshot(
   if (scope === "demo") {
     return null;
   }
+  // The route already identifies the live account while account loading is pending.
+  const returnAccountId = accountId ?? parseAccountId(
+    new URLSearchParams(location.search ?? "").get(ACCOUNT_QUERY_PARAM),
+  );
   const snapshot: DemoReturnSnapshot = {
-    accountId,
-    path: safeReturnPath(location, accountId),
+    accountId: returnAccountId,
+    path: safeReturnPath(location, returnAccountId),
     scope,
   };
   volatileDemoReturnSnapshot = snapshot;

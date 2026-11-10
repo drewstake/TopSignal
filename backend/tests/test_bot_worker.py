@@ -599,6 +599,7 @@ def test_daily_boundary_skips_a_full_cme_equity_holiday():
 def test_provider_429_uses_shared_user_backoff_without_cycle_retry_storm(
     session_factory, monkeypatch
 ):
+    monkeypatch.setattr(worker_module, "monotonic", lambda: 10.0)
     _seed_run(session_factory, config_id=1, run_id=1, account_id=101)
     _seed_run(session_factory, config_id=2, run_id=2, account_id=102)
     list_calls = []

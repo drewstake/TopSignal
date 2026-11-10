@@ -219,7 +219,8 @@ class BotWorkerRuntime:
             retrying_runs=0,
             unresolved_live_submissions=0,
         )
-        self._last_provider_probe = 0.0
+        # The first probe is due even during the machine's first minute of uptime.
+        self._last_provider_probe = float("-inf")
         self._retry_not_before_by_run: dict[int, float] = {}
         self._retry_failures_by_run: dict[int, int] = {}
         self._provider_retry_not_before_by_user: dict[str, float] = {}
