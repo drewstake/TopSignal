@@ -1,4 +1,5 @@
 from uuid import uuid4
+import shutil
 
 import pytest
 from pydantic import ValidationError
@@ -49,10 +50,22 @@ class Client:
         return {"order_id": "broker-123", "raw_payload": {"success": True}}
 
 
-@pytest.fixture
-def db(tmp_path, monkeypatch):
-    engine = create_engine(f"sqlite+pysqlite:///{(tmp_path / 'manual.sqlite3').as_posix()}")
+@pytest.fixture(scope="module")
+def empty_schema(tmp_path_factory):
+    # Build identical DDL once; each test still gets its own real, durable SQLite
+    # file and independent connections/commits. Never copy an open WAL database.
+    path = tmp_path_factory.mktemp("manual-schema") / "empty.sqlite3"
+    engine = create_engine(f"sqlite+pysqlite:///{path.as_posix()}")
     Base.metadata.create_all(engine)
+    engine.dispose()
+    return path
+
+
+@pytest.fixture
+def db(tmp_path, monkeypatch, empty_schema):
+    path = tmp_path / 'manual.sqlite3'
+    shutil.copyfile(empty_schema, path)
+    engine = create_engine(f"sqlite+pysqlite:///{path.as_posix()}")
     monkeypatch.setenv("TOPSIGNAL_LIVE_EXECUTION_ENABLED", "true")
     monkeypatch.setenv("TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION", "true")
     monkeypatch.setattr(service, "running_under_tests", lambda: False)

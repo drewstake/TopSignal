@@ -280,7 +280,12 @@ class BotWorkerRuntime:
         from .services.market_archive_decisions import drain as drain_archive_decisions
         if not await asyncio.to_thread(drain_archive_decisions):
             logger.error("market_archive_decisions_unwritten_at_shutdown")
-        if not await asyncio.to_thread(drain_archive_collection) or not await asyncio.to_thread(drain_archive_events):
+        # Stop both independent producers even if one cannot drain. A short-
+        # circuit here left event writers running after collector timeouts.
+        collection_drained, events_drained = await asyncio.gather(
+            asyncio.to_thread(drain_archive_collection), asyncio.to_thread(drain_archive_events),
+        )
+        if not collection_drained or not events_drained:
             logger.error("market_archive_shutdown_incomplete")
             return False
         from .services.market_archive import close_writers as close_archive_writers

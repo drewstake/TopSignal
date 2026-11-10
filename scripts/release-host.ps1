@@ -60,15 +60,18 @@ function Set-ReleaseAcl([string]$Release, [string]$ServiceSid) {
     foreach ($item in $items) {
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Reparse point in candidate' }
     }
-    foreach ($item in $items) {
-        $acl = Get-Acl -LiteralPath $item.FullName
+    # Construct the four complete descriptors once. Do not read the old ACL
+    # just to discard it; every candidate item still receives an explicit ACL.
+    $descriptors = @{}
+    foreach ($kind in @('directory', 'file', 'private-directory', 'private-file')) {
+        $directory = $kind -like '*directory'
+        $acl = if ($directory) { New-Object Security.AccessControl.DirectorySecurity } else { New-Object Security.AccessControl.FileSecurity }
         $acl.SetAccessRuleProtection($true, $false)
-        foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
         $acl.SetOwner([Security.Principal.SecurityIdentifier]'S-1-5-32-544')
-        $inheritance = if ($item.PSIsContainer) { [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' } else { [Security.AccessControl.InheritanceFlags]::None }
+        $inheritance = if ($directory) { [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' } else { [Security.AccessControl.InheritanceFlags]::None }
         foreach ($sid in @('S-1-5-18', 'S-1-5-32-544', $ServiceSid)) {
             $rights = if ($sid -eq $ServiceSid) {
-                if (Test-PrivateEnvironmentFile $item.Name) { [Security.AccessControl.FileSystemRights]::Read }
+                if ($kind -like 'private-*') { [Security.AccessControl.FileSystemRights]::Read }
                 else { [Security.AccessControl.FileSystemRights]::ReadAndExecute }
             } else { [Security.AccessControl.FileSystemRights]::FullControl }
             $rule = New-Object Security.AccessControl.FileSystemAccessRule(
@@ -76,13 +79,32 @@ function Set-ReleaseAcl([string]$Release, [string]$ServiceSid) {
                 [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
             $acl.AddAccessRule($rule)
         }
+        $descriptors[$kind] = $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]'Access,Owner')
+    }
+    # Protect descendants before their parents so Windows does not repeatedly
+    # propagate each ancestor's inherited ACL through the same subtree.
+    foreach ($item in ($items | Sort-Object { $_.FullName.Length } -Descending)) {
+        $kind = if ($item.PSIsContainer) { 'directory' } else { 'file' }
+        if (Test-PrivateEnvironmentFile $item.Name) { $kind = 'private-' + $kind }
+        # Persisting a descriptor can clear its modified flags. Use a fresh
+        # object for every item, including consecutive files of the same kind.
+        $acl = if ($item.PSIsContainer) { New-Object Security.AccessControl.DirectorySecurity } else { New-Object Security.AccessControl.FileSecurity }
+        $acl.SetSecurityDescriptorSddlForm($descriptors[$kind])
         Set-Acl -LiteralPath $item.FullName -AclObject $acl
     }
 }
 
 function Invoke-ReleaseTool([string]$Python, [string]$Tool, [string]$Command, [string]$StagePath, [string[]]$Extra = @()) {
-    & $Python -B $Tool $Command --stage $StagePath @Extra
-    if ($LASTEXITCODE -ne 0) { throw "Release $Command check failed ($LASTEXITCODE)" }
+    Invoke-TimedReleaseStep $Command {
+        & $Python -B $Tool $Command --stage $StagePath @Extra
+        if ($LASTEXITCODE -ne 0) { throw "Release $Command check failed ($LASTEXITCODE)" }
+    }
+}
+
+function Invoke-TimedReleaseStep([string]$Name, [scriptblock]$Action) {
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    try { & $Action }
+    finally { Log ("Step {0}: {1:N3}s" -f $Name, $watch.Elapsed.TotalSeconds) }
 }
 
 function Wait-ReleaseHealth([scriptblock]$Probe, [int]$Seconds = 180) {
@@ -155,8 +177,8 @@ if ($Phase -eq 'Prepare') {
     Invoke-ReleaseTool $previousPython $tool 'prepare' $Stage
     . (Join-Path $release 'scripts\install-windows-startup-task.ps1') -FunctionsOnly
     $identity = Resolve-LocalServiceUser $task.Principal.UserId
-    Set-ReleaseAcl $release $identity.Sid
-    Assert-HardenedDeployment $release $runtime (Join-Path $release 'backend\.env') $python $identity.Sid
+    Invoke-TimedReleaseStep 'set-acl' { Set-ReleaseAcl $release $identity.Sid }
+    Invoke-TimedReleaseStep 'validate-acl' { Assert-HardenedDeployment $release $runtime (Join-Path $release 'backend\.env') $python $identity.Sid }
     Invoke-ReleaseTool $python $tool 'verify' $Stage
     # --check never applies a database migration. Existing checked startup is
     # preserved; pending migrations require the migration-specific runbook.
@@ -188,7 +210,7 @@ if ($ci.commit -ne $config.git_commit -or $age -lt -30 -or $age -gt 900) { throw
 Invoke-ReleaseTool $python $tool 'verify' $Stage
 . (Join-Path $release 'scripts\install-windows-startup-task.ps1') -FunctionsOnly
 $identity = Resolve-LocalServiceUser $task.Principal.UserId
-Assert-HardenedDeployment $release $runtime (Join-Path $release 'backend\.env') $python $identity.Sid
+Invoke-TimedReleaseStep 'validate-acl' { Assert-HardenedDeployment $release $runtime (Join-Path $release 'backend\.env') $python $identity.Sid }
 $sidecars = @{}
 foreach ($sidecar in @(Get-ScheduledTask | Where-Object { $_.TaskName -like 'TopSignal *' -and $_.TaskName -ne $taskName })) {
     $sidecars[$sidecar.TaskName] = Export-ScheduledTask -TaskName $sidecar.TaskName
@@ -224,7 +246,7 @@ try {
         Invoke-ReleaseTool $previousPython $tool 'gate' $Stage @('--previous', '--record')
         Log 'Broker flat, runner configuration recorded; requesting graceful switch.'
     } -Stop {
-        Request-GracefulStop $runtime $marker $taskName
+        Invoke-TimedReleaseStep 'graceful-stop' { Request-GracefulStop $runtime $marker $taskName }
     } -PostStop {
         Invoke-ReleaseTool $python $tool 'gate' $Stage
         Invoke-ReleaseTool $python $tool 'verify' $Stage

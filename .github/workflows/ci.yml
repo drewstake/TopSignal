@@ -483,7 +483,9 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: "sqlite+pysqlite:///:memory:"
-        run: python -m pytest -q
+        # Full offline suite, isolated by file just as in the Windows lane.
+        # PostgreSQL migration/concurrency acceptance stays in its serial job.
+        run: python -m pytest -q -n 4 --dist=loadfile --durations=20
 
   frontend_tests:
     name: Frontend tests

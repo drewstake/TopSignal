@@ -255,3 +255,21 @@ $replacement = [System.IO.File]::Open($path, 'OpenOrCreate', 'ReadWrite', 'None'
 $replacement.Dispose()
 `);
 });
+
+test("supervisor responds to STOP during the health interval without terminating the backend", (t) => {
+  windowsHarness(t, `${extractFunctions}
+Import-SelectedFunctions (Join-Path $env:TOPSIGNAL_TEST_ROOT 'scripts/run-production.ps1') @('Wait-ProductionInterval')
+$script:marker = Join-Path $env:TOPSIGNAL_TEST_RUNTIME 'STOP'
+$script:waits = 0
+$process = [pscustomobject]@{}
+$process | Add-Member ScriptMethod WaitForExit {
+  param($milliseconds)
+  if ($milliseconds -gt 250) { throw 'Uninterruptible health wait' }
+  $script:waits++
+  [IO.File]::WriteAllText($script:marker, 'operator')
+  return $false
+}
+if ((Wait-ProductionInterval $process $script:marker 10) -ne 'stop') { throw 'Missed STOP' }
+if ($script:waits -ne 1) { throw 'STOP was not checked between waits' }
+`);
+});

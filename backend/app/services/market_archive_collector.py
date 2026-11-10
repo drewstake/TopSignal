@@ -60,6 +60,8 @@ def _collect_safe(owner, account, config, contract, client, allowed):
 
 
 def collect(owner, account, config, contract, client, *, now=None, root=None, allowed=lambda: True):
+    if not allowed():
+        return 0
     now = now or datetime.now(timezone.utc)
     # Give delayed delivery two minutes; overlap discovers subsequent corrections.
     cutoff = now.replace(second=0, microsecond=0) - 2*MINUTE
@@ -110,6 +112,10 @@ def collect(owner, account, config, contract, client, *, now=None, root=None, al
                       and b['timestamp'] + MINUTE <= cutoff and not b.get('is_partial')]
         with archive.transaction() as db:
             put_bars(db, normalized, stamp(received))
+        if not allowed():
+            # The received bars are durable. Keep the old cursor so recovery
+            # retries coverage/derivation after restart without losing inputs.
+            return total
         # Verify the entire requested range, including wholly empty days.
         days = []
         day = trading_day_date(start)
@@ -122,10 +128,19 @@ def collect(owner, account, config, contract, client, *, now=None, root=None, al
         # in that same transaction; a crash before it re-fetches this window.
         try:
             with archive.reader() as snapshot:
+                snapshot.set_progress_handler(lambda: 0 if allowed() else 1, 1000)
                 snapshot.execute('BEGIN')
-                plans = [plan_day(snapshot, contract, day, cutoff) for day in days]
+                plans = []
+                for day in days:
+                    if not allowed():
+                        return total
+                    plans.append(plan_day(snapshot, contract, day, cutoff))
         except sqlite3.Error:
+            if not allowed():
+                return total
             plans = None
+        if not allowed():
+            return total
         with archive.transaction() as db:
             marker = revision_marker(db)
             if plans is not None and all(plan['marker'] == marker for plan in plans):

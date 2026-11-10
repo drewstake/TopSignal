@@ -107,13 +107,19 @@ need their own reviewed lifecycle rollout before this application release.
   release paths are distinct; existing releases are never overwritten.
 - Source, assets, private environment, certificates, and installed dependency
   inventories are checked again immediately before switching and after startup.
+  Each inventory uses up to eight I/O workers to read and hash all files afresh;
+  no timestamp, size-only shortcut or cached hash replaces content verification.
   An unchanged requirements file allows copying the previous Python environment
-  into a release-owned directory. Shared environment junctions are not created
+  into a release-owned directory with eight bounded file-copy workers. Every
+  copied file is still compared with a fresh source inventory. Copy failures or
+  nested links reject the candidate. Shared environment junctions are not created
   or recursively hardened. Changed runtime dependencies get a fresh environment.
 - Staging and candidate directories are private before copying configuration.
   The existing installer validates the limited service identity and every
   candidate ACL. Runtime ACL validation remains unchanged. The running release
   and its dependency environment are never modified by preparation.
+  ACL checks share one fresh descriptor read per item within a validation pass,
+  resolving SIDs directly. No ACL acceptance is cached across release phases.
 - Database migration readiness is checked without applying migrations. Pending
   migrations, storage cutovers, changed private configuration/certificates and
   independent recorder/tool upgrades require their existing reviewed procedures
@@ -157,6 +163,21 @@ Host receipts stay in the private staging directory: `prepared.json`,
 `broker-before.json`, `broker-latest.json`, `ci.json`, `recording-verification.json`,
 task XML and `activation.log`. Retain the previous release for rollback; cleanup
 is deliberately a separate authorized operation.
+
+`activation.log` includes durations for dependency preparation, integrity and
+broker checks, ACL hardening/validation, migrations and graceful stop. Use these
+timings to diagnose a slow release without disabling a gate. The supervisor
+checks STOP during its normal health wait; shutdown deadlines and the exclusive
+lock remain unchanged. Archive recovery can abandon read-only coverage planning
+on shutdown, retaining received bars and its old cursor for an idempotent retry.
+Both archive producers are asked to drain even if either one times out; a failed
+drain still prevents the worker from releasing its lease as a clean shutdown.
+
+Both Linux and Windows offline CI suites run all tests with four isolated
+workers. PostgreSQL safety acceptance remains in its separate serial lane.
+Manual-order tests copy a closed, empty schema into a fresh SQLite file for each
+test; real transactions, disk persistence and separate observer connections are
+preserved.
 
 ## Benchmarking
 

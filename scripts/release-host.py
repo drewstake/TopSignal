@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hashlib
 import importlib.util
@@ -23,21 +24,53 @@ def write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, indent=2, default=str) + "\n", encoding="utf-8")
 
 
-def inventory(root: Path) -> dict[str, str]:
+def inventory(root: Path, *, workers: int = 8) -> dict[str, str]:
     if not root.is_dir():
         raise ValueError(f"Release directory is missing: {root}")
-    result = {}
+    files_to_check = []
     for directory, dirs, files in os.walk(root, followlinks=False):
         dirs[:] = [d for d in dirs if d not in {".venv", "__pycache__"}]
-        for name in dirs + files:
+        for name in dirs:
             path = Path(directory) / name
             if is_link(path):
                 raise ValueError(f"Linked release content: {path}")
         for name in files:
-            path = Path(directory) / name
-            if path.suffix != ".pyc":
-                result[path.relative_to(root).as_posix()] = sha256(path)
-    return result
+            files_to_check.append(Path(directory) / name)
+
+    def inspect(path):
+        if is_link(path):
+            raise ValueError(f"Linked release content: {path}")
+        return None if path.suffix == ".pyc" else (path.relative_to(root).as_posix(), sha256(path))
+
+    # Every invocation still reads and hashes every file. Parallelize bounded
+    # filesystem I/O, never reuse mtime/size or prior acceptance as a checksum.
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return dict(row for row in pool.map(inspect, files_to_check) if row is not None)
+
+
+def copy_environment(source: Path, destination: Path) -> None:
+    """Copy independent files concurrently; never share/link a running environment."""
+    if not source.is_dir():
+        raise ValueError("Previous Python environment is missing")
+    directories, files = [], []
+    for directory, dirs, names in os.walk(source, followlinks=False):
+        # Inspect even ignored entries for nested reparse points, as before.
+        for name in dirs + names:
+            if is_link(Path(directory) / name):
+                raise ValueError("Nested links in Python environment are not supported")
+        relative = Path(directory).relative_to(source)
+        if "__pycache__" in relative.parts:
+            continue
+        directories.append(relative)
+        files.extend((Path(directory) / name, destination / relative / name)
+                     for name in names if not name.endswith(".pyc"))
+    destination.mkdir()
+    for relative in directories:
+        (destination / relative).mkdir(exist_ok=True)
+    # Bounded I/O concurrency, no cached acceptance: prepare still checks every
+    # copied file against a fresh source inventory before issuing its receipt.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda pair: shutil.copy2(*pair), files))
 
 
 def prepare(stage: Path, config: dict, candidate: Path, previous: Path) -> None:
@@ -82,12 +115,7 @@ def prepare(stage: Path, config: dict, candidate: Path, previous: Path) -> None:
     target_venv = candidate / "backend/.venv"
     if unchanged:
         source_venv = (previous / "backend/.venv").resolve()
-        for directory, dirs, files in os.walk(source_venv):
-            for name in dirs + files:
-                path = Path(directory) / name
-                if is_link(path):
-                    raise ValueError("Nested links in Python environment are not supported")
-        shutil.copytree(source_venv, target_venv, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        copy_environment(source_venv, target_venv)
     else:
         subprocess.run([sys.executable, "-m", "venv", str(target_venv)], check=True)
         subprocess.run([str(target_venv / "Scripts/python.exe"), "-m", "pip", "install", "--disable-pip-version-check",

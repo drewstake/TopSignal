@@ -42,6 +42,45 @@ class ReleaseTests(unittest.TestCase):
         (self.bundle / "manifest.json").write_text(json.dumps(manifest))
         return manifest
 
+    def test_environment_copy_is_independent_and_rejects_links_and_copy_failures(self):
+        source = self.root / "environment"
+        (source / "Lib/site-packages/__pycache__").mkdir(parents=True)
+        (source / "Lib/site-packages/package.py").write_text("original")
+        ignored = source / "Lib/site-packages/__pycache__/package.pyc"
+        ignored.write_bytes(b"ignored bytecode")
+        before = host.inventory(source)
+        destination = self.root / "copy"
+        host.copy_environment(source, destination)
+        self.assertEqual(host.inventory(destination), before)
+        self.assertFalse((destination / "Lib/site-packages/__pycache__").exists())
+        (destination / "Lib/site-packages/package.py").write_text("changed")
+        self.assertEqual(host.inventory(source), before)
+        with patch.object(host, "is_link", side_effect=lambda path: path == ignored):
+            with self.assertRaisesRegex(ValueError, "Nested links"):
+                host.copy_environment(source, self.root / "linked")
+        self.assertFalse((self.root / "linked").exists())
+        with patch.object(host.shutil, "copy2", side_effect=OSError("disk failure")):
+            with self.assertRaisesRegex(OSError, "disk failure"):
+                host.copy_environment(source, self.root / "failed")
+        self.assertEqual(host.inventory(source), before)
+
+    def test_parallel_inventory_matches_serial_and_never_accepts_links_or_read_failure(self):
+        root = self.root / "tree"
+        root.mkdir()
+        expected = {}
+        for number in range(40):
+            file = root / f"file-{number}.py"
+            file.write_bytes(bytes([number]) * 100)
+            expected[file.name] = sha256(file)
+        self.assertEqual(host.inventory(root, workers=1), expected)
+        self.assertEqual(host.inventory(root), expected)
+        with patch.object(host, "is_link", side_effect=lambda path: path.name == "file-1.py"):
+            with self.assertRaisesRegex(ValueError, "Linked release"):
+                host.inventory(root)
+        with patch.object(host, "sha256", side_effect=OSError("unreadable")):
+            with self.assertRaisesRegex(OSError, "unreadable"):
+                host.inventory(root)
+
     def test_extracts_verified_bundle_without_changing_previous_release(self):
         self.bundle_fixture()
         previous = self.root / "previous"

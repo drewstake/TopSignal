@@ -298,6 +298,16 @@ function Wait-StartupCommand([System.Diagnostics.Process]$Process, [string]$Desc
     }
 }
 
+function Wait-ProductionInterval($Process, [string]$StopPath, [int]$Seconds) {
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        if (Test-Path -LiteralPath $StopPath) { return 'stop' }
+        $remaining = [Math]::Max(1, [Math]::Ceiling($Seconds * 1000 - $watch.Elapsed.TotalMilliseconds))
+        if ($Process.WaitForExit([int][Math]::Min(250, $remaining))) { return 'exited' }
+    } while ($watch.Elapsed.TotalSeconds -lt $Seconds)
+    return 'interval'
+}
+
 function Stop-BackendGracefully([System.Diagnostics.Process]$Process) {
     if ($null -eq $Process) { return }
     try {
@@ -487,7 +497,12 @@ try {
                     $restartReason = "operator STOP latch"
                     break
                 }
-                if ($backendProcess.WaitForExit($HealthIntervalSeconds * 1000)) {
+                $waitResult = Wait-ProductionInterval $backendProcess $operatorStopPath $HealthIntervalSeconds
+                if ($waitResult -eq 'stop') {
+                    $restartReason = "operator STOP latch"
+                    break
+                }
+                if ($waitResult -eq 'exited') {
                     $restartReason = "backend exited with code $($backendProcess.ExitCode)"
                     break
                 }

@@ -929,6 +929,31 @@ def test_worker_shutdown_timeout_retains_inflight_task_and_does_not_release_leas
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("collection_ok,events_ok", [(False, True), (True, False), (True, True)])
+def test_shutdown_drains_both_archive_producers_before_releasing_lease(session_factory, monkeypatch, collection_ok, events_ok):
+    from threading import Event
+    from app.services import market_archive_collector, market_archive_events, market_archive_decisions
+    runtime = _runtime(session_factory)
+    events_started = Event()
+    released = []
+    monkeypatch.setattr(runtime, "_stop_account_streams", lambda: None)
+    monkeypatch.setattr(runtime, "_release_lease", lambda: released.append(True))
+    monkeypatch.setattr(market_archive_decisions, "drain", lambda: True)
+
+    def collection():
+        assert events_started.wait(2), "event drain must start without waiting for the collector"
+        return collection_ok
+
+    def events():
+        events_started.set()
+        return events_ok
+
+    monkeypatch.setattr(market_archive_collector, "drain", collection)
+    monkeypatch.setattr(market_archive_events, "drain", events)
+    assert asyncio.run(runtime.stop()) is (collection_ok and events_ok)
+    assert released == ([True] if collection_ok and events_ok else [])
+
+
 def test_unexpected_cycle_cancellation_revokes_routing_before_draining_thread(session_factory, monkeypatch):
     from threading import Event
 

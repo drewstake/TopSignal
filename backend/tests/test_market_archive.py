@@ -149,6 +149,46 @@ class Provider:
         return []
 
 
+@pytest.mark.parametrize("stop_at", ["provider", "planning"])
+def test_shutdown_preserves_received_bars_and_retries_unfinished_coverage(tmp_path, monkeypatch, stop_at):
+    from threading import Event
+    stopped = Event()
+    now = datetime(2026, 10, 28, 14, tzinfo=UTC)
+    archive = a.Archive(OWNER, tmp_path)
+    start = a.trading_day_bounds_utc(date(2026, 10, 28))[0]
+    with archive.transaction() as db:
+        a.set_state(db, 'cursor:'+CONTRACT, a.stamp(start))
+    original_plan = collector.plan_day
+
+    class StoppingProvider(Provider):
+        def retrieve_bars(self, **kwargs):
+            rows = super().retrieve_bars(**kwargs)
+            if stop_at == 'provider':
+                stopped.set()
+            return rows
+
+    def interrupted_plan(db, *args):
+        stopped.set()
+        # Exercise SQLite's cooperative progress handler inside a long read.
+        db.execute('WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000000) SELECT sum(x) FROM n').fetchone()
+        pytest.fail('shutdown should interrupt the read before completing it')
+
+    if stop_at == 'planning':
+        monkeypatch.setattr(collector, 'plan_day', interrupted_plan)
+    collector.collect(OWNER, 1, 32, CONTRACT, StoppingProvider(), now=now, root=tmp_path,
+                      allowed=lambda: not stopped.is_set())
+    with archive.reader() as db:
+        assert db.execute('SELECT count(*) FROM bars').fetchone()[0] > 0
+        assert a.get_state(db, 'cursor:'+CONTRACT) == a.stamp(start)
+        assert db.execute('SELECT count(*) FROM coverage').fetchone()[0] == 0
+    stopped.clear()
+    monkeypatch.setattr(collector, 'plan_day', original_plan)
+    collector.collect(OWNER, 1, 32, CONTRACT, Provider(), now=now, root=tmp_path)
+    with archive.reader() as db:
+        assert a.get_state(db, 'cursor:'+CONTRACT) > a.stamp(start)
+        assert db.execute('SELECT count(*) FROM coverage').fetchone()[0] > 0
+
+
 def test_bounded_gap_recovery_overlap_and_restart(tmp_path):
     now = datetime(2026, 10, 28, 14, tzinfo=UTC)
     archive = a.Archive(OWNER, tmp_path)

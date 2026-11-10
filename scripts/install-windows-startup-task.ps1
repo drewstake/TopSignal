@@ -74,22 +74,19 @@ function Resolve-PowerShellExecutable {
 function Get-AllowRightsBySid([string]$Path) {
     $rights = @{}
     $acl = Get-Acl -LiteralPath $Path
-    foreach ($rule in $acl.Access) {
+    # Request SIDs directly: resolving every ACE to a name and back is expensive
+    # across thousands of files and can silently omit unresolvable identities.
+    foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
         if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) {
             continue
         }
-        try {
-            $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
-        }
-        catch {
-            continue
-        }
+        $sid = $rule.IdentityReference.Value
         $existing = if ($rights.ContainsKey($sid)) { [long]$rights[$sid] } else { 0L }
         $rights[$sid] = $existing -bor [long]$rule.FileSystemRights
     }
     return [PSCustomObject]@{
         Protected = $acl.AreAccessRulesProtected
-        OwnerSid = (New-Object -TypeName System.Security.Principal.NTAccount -ArgumentList $acl.Owner).Translate([System.Security.Principal.SecurityIdentifier]).Value
+        OwnerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
         Rights = $rights
     }
 }
@@ -113,9 +110,10 @@ function Assert-RequiredRights(
     [string]$Path,
     [string]$Sid,
     [System.Security.AccessControl.FileSystemRights]$RequiredRights,
-    [switch]$ForbidWrite
+    [switch]$ForbidWrite,
+    $Access
 ) {
-    $result = Get-AllowRightsBySid $Path
+    $result = if ($null -eq $Access) { Get-AllowRightsBySid $Path } else { $Access }
     if (-not $result.Rights.ContainsKey($Sid)) {
         throw "ACL for '$Path' does not grant the service identity required access."
     }
@@ -134,8 +132,8 @@ function Assert-RequiredRights(
     }
 }
 
-function Assert-NoBroadWrite([string]$Path) {
-    $result = Get-AllowRightsBySid $Path
+function Assert-NoBroadWrite([string]$Path, $Access) {
+    $result = if ($null -eq $Access) { Get-AllowRightsBySid $Path } else { $Access }
     $writeMask = Get-WriteRightsMask
     $broadSids = @("S-1-1-0", "S-1-5-11", "S-1-5-32-545")
     foreach ($sid in $broadSids) {
@@ -145,8 +143,8 @@ function Assert-NoBroadWrite([string]$Path) {
     }
 }
 
-function Assert-PrivateDataAcl([string]$Path, [string]$ServiceSid) {
-    $result = Get-AllowRightsBySid $Path
+function Assert-PrivateDataAcl([string]$Path, [string]$ServiceSid, $Access) {
+    $result = if ($null -eq $Access) { Get-AllowRightsBySid $Path } else { $Access }
     $allowed = @($ServiceSid, "S-1-5-18", "S-1-5-32-544")
     foreach ($sid in $result.Rights.Keys) {
         if ($sid -notin $allowed -and [long]$result.Rights[$sid] -ne 0) {
@@ -191,9 +189,12 @@ function Assert-HardenedDeployment(
         else {
             [System.Security.AccessControl.FileSystemRights]::ReadAndExecute
         }
-        Assert-RequiredRights -Path $item.FullName -Sid $ServiceSid -RequiredRights $requiredRights -ForbidWrite
-        Assert-NoBroadWrite -Path $item.FullName
-        if ($privateEnvironment) { Assert-PrivateDataAcl -Path $item.FullName -ServiceSid $ServiceSid }
+        # One fresh OS read per item per validation pass, shared by all checks.
+        # Nothing is cached across preparation, activation or later invocations.
+        $access = Get-AllowRightsBySid $item.FullName
+        Assert-RequiredRights -Path $item.FullName -Sid $ServiceSid -RequiredRights $requiredRights -ForbidWrite -Access $access
+        Assert-NoBroadWrite -Path $item.FullName -Access $access
+        if ($privateEnvironment) { Assert-PrivateDataAcl -Path $item.FullName -ServiceSid $ServiceSid -Access $access }
     }
     Assert-RequiredRights -Path $EnvironmentFile -Sid $ServiceSid -RequiredRights Read -ForbidWrite
     Assert-PrivateDataAcl -Path $EnvironmentFile -ServiceSid $ServiceSid
