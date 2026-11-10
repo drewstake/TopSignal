@@ -4,10 +4,6 @@ import { AppShell } from "./AppShell";
 import { RouteErrorPage } from "./RouteErrorPage";
 import { AccountAccess } from "./AccountAccess";
 
-const LogsPage = lazy(() => import("../pages/diagnostics/LogsPage").then(module => ({ default: module.LogsPage })));
-const OrderBookHistoryPage = lazy(() => import("../pages/orderBookHistory/OrderBookHistoryPage").then(module => ({ default: module.OrderBookHistoryPage })));
-const ResearchPage = lazy(() => import("../pages/microstructure/ResearchPage").then(module => ({ default: module.ResearchPage })));
-
 const DashboardPage = lazy(() =>
   import("../pages/dashboard/DashboardPage").then((module) => ({ default: module.DashboardPage })),
 );
@@ -25,9 +21,6 @@ const BotPage = lazy(() =>
 );
 const BotForwardResultsPage = lazy(() =>
   import("../pages/bot/BotForwardResultsPage").then((module) => ({ default: module.BotForwardResultsPage })),
-);
-const SimulationPage = lazy(() =>
-  import("../pages/simulation/funded/TradingPage").then((module) => ({ default: module.TradingPage })),
 );
 const AppearancePage = lazy(() =>
   import("../pages/themes/ThemePage").then((module) => ({ default: module.AppearancePage })),
@@ -82,28 +75,18 @@ export const router = createBrowserRouter([
         errorElement: <RouteErrorPage />,
       },
       {
-        path: "simulation",
-        element: <SimulationPage />,
-        errorElement: <RouteErrorPage />,
-      },
-      {
         path: "backtesting",
         element: <BacktestingPage />,
         errorElement: <RouteErrorPage />,
       },
       {
         path: "logs",
-        element: <LogsPage />,
-        errorElement: <RouteErrorPage />,
+        loader: ({ request }) => {
+          const query = new URL(request.url).searchParams;
+          query.set("view", "logs");
+          return redirect(`/bot?${query}`);
+        },
       },
-      {
-        path: "order-book-history",
-        element: <OrderBookHistoryPage />,
-        errorElement: <RouteErrorPage />,
-      },
-      ...["microstructure", "event-study", "research-notebook"].map(path => ({
-        path, element: <ResearchPage />, errorElement: <RouteErrorPage />,
-      })),
       {
         path: "appearance",
         element: <AppearancePage />,

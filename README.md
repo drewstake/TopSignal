@@ -5,9 +5,9 @@ stop, and a 25-point trailing stop activated at +25. See the
 [strategy and operating notes](docs/topbot-contrarian.md). Retired configurations
 remain inactive; starting a practice run explicitly installs the new preset.
 
-TopSignal opens to the account dashboard. The shared navigation includes Dashboard, Accounts, Trades, Expenses, Bot, Simulation, and Appearance. The Simulation tab contains a playable, browser-local simulated futures exchange: buy and sell BX, BT, and BG against 390 finite, funded bots with a $10,000 simulated account. See [the Get-Funded implementation and validation notes](docs/get-funded-simulation.md).
+TopSignal opens to the account dashboard. The shared navigation includes Dashboard, Accounts, Trades, Expenses, Bot, Backtesting, and Appearance. Bot contains Overview and Logs views.
 
-Run `npm run dev` and open `http://localhost:5173`. This starts both the cloud app and the ProjectX-connected local workspace at `http://127.0.0.1:5174`, so Continue offline works from the sign-in page. Local live orders are disabled. Each frontend starts after its backend is ready with the matching API address. The dashboard opens at `/` and `/dashboard`, and Simulation opens at `/simulation` inside the same authenticated workspace.
+Run `npm run dev` and open `http://localhost:5173`. This starts both the cloud app and the ProjectX-connected local workspace at `http://127.0.0.1:5174`, so Continue offline works from the sign-in page. Local live orders are disabled. Each frontend starts after its backend is ready with the matching API address. The dashboard opens at `/` and `/dashboard`. TopBot diagnostics and service logs are available under Bot → Logs.
 
 The dev launcher checks `/ready/dev`. When its local worker and both live-order
 flags are explicitly disabled, this checks database/schema readiness without

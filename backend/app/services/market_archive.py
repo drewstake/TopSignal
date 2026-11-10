@@ -250,34 +250,44 @@ class Archive:
         finally:
             db.close()
 
-    def decision(self, prepared):
+    def decision(self, prepared, *, confirmed_at=None):
+        """Immutable decision copy; confirmed_at marks a committed execution record.
+
+        Both rows share one transaction, so a retry after an ambiguous failure
+        neither duplicates the decision nor loses its confirmation.
+        """
         with self.transaction() as db:
             identity = str(prepared['decision_id'])
-            if db.execute('SELECT 1 FROM decisions WHERE id=?', (identity,)).fetchone():
-                return
-            refs = []
-            receipts = []
-            for original in prepared['candles']:
-                row = dict(original)
-                received = row.pop('fetched_at')
-                receipts.append({'fetched_at': received, 'first_fetched_at': row.pop('first_fetched_at'), 'provider_revision_hash': row.pop('provider_revision_hash')})
-                refs.append(put_bar(db, row, received or prepared['at']))
-            record = {k: v for k, v in prepared.items() if k != 'candles'}
-            record.update(input_ids=refs, input_receipts=receipts, input_sha256=digest(refs), schema=VERSION)
-            model_id = prepared['forecast'].get('artifact_sha256')
-            record['artifact_status'] = 'no_model_used'
-            if model_id:
-                if not db.execute('SELECT 1 FROM artifacts WHERE id=?', (model_id,)).fetchone():
-                    from .probabilistic_observation import observation_path
-                    from .probabilistic_shadow import model_path
-                    for path in (observation_path(self.owner, prepared['contract'], False), model_path(self.owner, prepared['contract'], False)):
-                        if path.is_file():
-                            artifact = json.loads(path.read_text(encoding='utf-8'))
-                            if digest(artifact) == model_id:
-                                db.execute('INSERT OR IGNORE INTO artifacts VALUES (?,?)', (model_id, pack(artifact)))
-                                break
-                record['artifact_status'] = 'preserved' if db.execute('SELECT 1 FROM artifacts WHERE id=?', (model_id,)).fetchone() else 'unavailable_or_changed'
-            db.execute('INSERT INTO decisions VALUES (?,?,?,?)', (identity, record['at'], record['config'], pack(record)))
+            self._decision(db, identity, prepared)
+            if confirmed_at is not None:
+                db.execute('INSERT OR IGNORE INTO decision_commits VALUES (?,?)', (identity, confirmed_at))
+
+    def _decision(self, db, identity, prepared):
+        if db.execute('SELECT 1 FROM decisions WHERE id=?', (identity,)).fetchone():
+            return
+        refs = []
+        receipts = []
+        for original in prepared['candles']:
+            row = dict(original)
+            received = row.pop('fetched_at')
+            receipts.append({'fetched_at': received, 'first_fetched_at': row.pop('first_fetched_at'), 'provider_revision_hash': row.pop('provider_revision_hash')})
+            refs.append(put_bar(db, row, received or prepared['at']))
+        record = {k: v for k, v in prepared.items() if k != 'candles'}
+        record.update(input_ids=refs, input_receipts=receipts, input_sha256=digest(refs), schema=VERSION)
+        model_id = prepared['forecast'].get('artifact_sha256')
+        record['artifact_status'] = 'no_model_used'
+        if model_id:
+            if not db.execute('SELECT 1 FROM artifacts WHERE id=?', (model_id,)).fetchone():
+                from .probabilistic_observation import observation_path
+                from .probabilistic_shadow import model_path
+                for path in (observation_path(self.owner, prepared['contract'], False), model_path(self.owner, prepared['contract'], False)):
+                    if path.is_file():
+                        artifact = json.loads(path.read_text(encoding='utf-8'))
+                        if digest(artifact) == model_id:
+                            db.execute('INSERT OR IGNORE INTO artifacts VALUES (?,?)', (model_id, pack(artifact)))
+                            break
+            record['artifact_status'] = 'preserved' if db.execute('SELECT 1 FROM artifacts WHERE id=?', (model_id,)).fetchone() else 'unavailable_or_changed'
+        db.execute('INSERT INTO decisions VALUES (?,?,?,?)', (identity, record['at'], record['config'], pack(record)))
 
     def reconstruct(self, decision_id):
         with self.reader() as db:
@@ -524,18 +534,16 @@ def record_decision(prepared):
         return
     owner = prepared['owner']
     try:
-        archive = Archive(owner)
-        archive.decision(prepared)
-        with archive.transaction() as db:
-            db.execute('INSERT OR IGNORE INTO decision_commits VALUES (?,?)', (str(prepared['decision_id']), stamp(datetime.now(timezone.utc))))
+        Archive(owner).decision(prepared, confirmed_at=stamp(datetime.now(timezone.utc)))
     except Exception as exc:
         failure(owner, 'decision_write', exc)
 
 
-def recover_decision_commits(db, owner):
+def recover_decision_commits(session_factory, owner):
     """Resolve the crash window using exact committed ID AND correlation identity.
 
-    Called from a fresh worker read transaction, before evaluating new decisions.
+    Use a dedicated, short read session between filesystem operations. Never
+    hold a PostgreSQL transaction while the archive disk is reading or syncing.
     Absent rows remain unconfirmed (including rolled-back evaluations); never
     delete their evidence or infer success. No input arrays enter this session.
     """
@@ -550,12 +558,31 @@ def recover_decision_commits(db, owner):
     if not pending:
         return
     from ..models import BotDecision
-    committed = {str(row.id): row.correlation_id for row in db.query(BotDecision.id, BotDecision.correlation_id).filter(
-        BotDecision.user_id == str(owner), BotDecision.id.in_([int(i) for i, _ in pending])).all()}
+    with session_factory() as db:
+        committed = {str(row.id): row.correlation_id for row in db.query(BotDecision.id, BotDecision.correlation_id).filter(
+            BotDecision.user_id == str(owner), BotDecision.id.in_([int(i) for i, _ in pending])).all()}
     with archive.transaction() as local:
         for ident, record in pending:
             if ident in committed and committed[ident] == record['correlation_id']:
                 local.execute('INSERT OR IGNORE INTO decision_commits VALUES (?,?)', (ident, stamp(datetime.now(timezone.utc))))
+
+
+def backup_status(root=None):
+    """The off-device backup receipt published by the backup job; small file read only."""
+    receipt = (Path(root) if root else cache_root()) / 'market-archive' / 'backup-status.json'
+    if not receipt.is_file():
+        return {'status': 'never_verified', 'stale': True}
+    try:
+        backup = json.loads(receipt.read_text(encoding='utf-8-sig'))
+        result = {key: backup.get(key) for key in (
+            'status', 'last_attempt_at', 'last_verified_at', 'last_restore_at',
+            'verified_files', 'verified_bytes', 'destination', 'schedule', 'last_failure', 'publish_failure')}
+        age = (datetime.now(timezone.utc)-datetime.fromisoformat(backup['last_verified_at'])).total_seconds() if backup.get('last_verified_at') else None
+        result.update(age_seconds=age, stale=age is None or age > 36*3600,
+                      restore_verified=bool(backup.get('restore', {}).get('verified')))
+        return result
+    except Exception as exc:
+        return {'status': 'unreadable', 'error': type(exc).__name__, 'stale': True}
 
 
 def status(owner, *, root=None, days=7):
@@ -576,21 +603,11 @@ def status(owner, *, root=None, days=7):
     result.update(disk_free_bytes=usage.free, disk_total_bytes=usage.total)
     from .market_archive_scope import health as collection_health
     from .market_archive_events import health as event_health
+    from .market_archive_decisions import health as decision_health
+    result['decision_writer'] = decision_health()
     result['collector'] = collection_health(owner)
     result['critical_events'] = event_health(owner, root)
-    receipt = (Path(root) if root else cache_root()) / 'market-archive' / 'backup-status.json'
-    result['backup'] = {'status': 'never_verified', 'stale': True}
-    if receipt.is_file():
-        try:
-            backup = json.loads(receipt.read_text(encoding='utf-8-sig'))
-            result['backup'] = {key: backup.get(key) for key in (
-                'status', 'last_attempt_at', 'last_verified_at', 'last_restore_at',
-                'verified_files', 'verified_bytes', 'destination', 'schedule', 'last_failure', 'publish_failure')}
-            age = (datetime.now(timezone.utc)-datetime.fromisoformat(backup['last_verified_at'])).total_seconds() if backup.get('last_verified_at') else None
-            result['backup'].update(age_seconds=age, stale=age is None or age > 36*3600,
-                                    restore_verified=bool(backup.get('restore', {}).get('verified')))
-        except Exception as exc:
-            result['backup'] = {'status': 'unreadable', 'error': type(exc).__name__, 'stale': True}
+    result['backup'] = backup_status(root)
     if not archive.path.exists():
         return result
     result['bytes'] = sum(p.stat().st_size for p in archive.path.parent.iterdir() if p.is_file())

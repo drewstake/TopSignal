@@ -78,9 +78,9 @@ The viewing-PC connection recovered within 15 seconds after its SSH transport
 was deliberately stopped. The browser reached the hosted sign-in screen;
 authenticated browser validation requires the user's sign-in.
 
-## Logs tab
+## Bot logs
 
-The sidebar's Logs page (`/logs`) shows a bounded host event history and
+The Bot tab’s Logs view (`/bot?view=logs`) shows a bounded host event history and
 market-feed connection changes for the signed-in user. The existing bot log
 viewer below it remains scoped to the selected owned account. The endpoint
 requires the normal API authentication and sends `Cache-Control: no-store`.

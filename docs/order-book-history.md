@@ -1,21 +1,16 @@
-# Order book history
+# Recorded liquidity in Bot
 
-The [microstructure research workspace](microstructure-research.md) adds raw-event
-features, heatmap/replay, event studies, a cost-aware tester and a local experiment
-notebook. Open **Liquidity research** or **Event study** in navigation. This
-compact history view remains available for longer summary windows.
+The standalone Order book history tab was retired on November 10, 2026.
+The shared history chart remains embedded in Bot's “What TopBot sees” panel,
+alongside live depth. Its account-scoped history API and local recording tools
+remain in use. Simulation, Liquidity research, and Event study pages and their
+dedicated research job API were also removed. Stored recordings, saved research
+artifacts, and audit evidence were not deleted.
 
-Open **Order book history** in the workspace navigation, or follow the link from
-Logs. `/order-book-history?account=<owned ProjectX account>` displays recorded
-MNQ mid-price, bid/ask resting contract totals, and normalized imbalance on a
-shared timeline. It does not run a strategy or send trading commands.
-
-Select up to one hour using local-time inputs, choose all observed levels or the
-nearest 10/20/50/100 levels, and load the window. Drag across the chart to zoom;
-click a moment or use the focused chart's arrow keys to inspect a sample.
-**Inspect preceding 5 minutes** loads five minutes before and one minute after
-that sample. CSV export contains only the visible window, including scope,
-quality flags, capture ID, and generation.
+Use the session and recent-window controls to browse recordings. Drag across the
+chart to zoom; click a moment or use the focused chart's arrow keys to inspect a
+sample. **Inspect preceding 5 minutes** loads five minutes before and one minute
+after that sample. CSV export contains only the visible window.
 
 The selected-moment card compares mid-price after 5, 15, and 60 seconds using the
 first subsequent observation at or after that horizon, with at most one second

@@ -139,6 +139,7 @@ export function AccountsPage() {
   const editInputRef = useRef<HTMLInputElement | null>(null);
   const accountsVersionRef = useRef(0);
   const lastTradeRequestVersionByIdRef = useRef<Record<number, number>>({});
+  const lastTradeInFlightByIdRef = useRef<Record<number, number>>({});
   const refreshExpressRequestRef = useRef(false);
   const pendingLifecycleActiveAccountIdRef = useRef<number | null>(null);
   const beginAccountsRequest = useLatestRequestGuard();
@@ -162,6 +163,7 @@ export function AccountsPage() {
   } = {}) => {
     const isCurrent = beginAccountsRequest();
     accountsVersionRef.current += 1;
+    setLastTradeLoadingById({});
     const startedAtIso = new Date().toISOString();
     const startedAtMs = performance.now();
     logPerfInfo("[perf][accounts] load-start", {
@@ -259,11 +261,12 @@ export function AccountsPage() {
   );
 
   const resolveLastTrade = useCallback(async (accountId: number, refresh = false) => {
-    if (lastTradeLoadingById[accountId]) {
+    const accountsVersion = accountsVersionRef.current;
+    if (lastTradeInFlightByIdRef.current[accountId] === accountsVersion) {
       return;
     }
 
-    const accountsVersion = accountsVersionRef.current;
+    lastTradeInFlightByIdRef.current[accountId] = accountsVersion;
     const requestVersion = (lastTradeRequestVersionByIdRef.current[accountId] ?? 0) + 1;
     lastTradeRequestVersionByIdRef.current[accountId] = requestVersion;
     const isCurrent = () =>
@@ -282,12 +285,15 @@ export function AccountsPage() {
         setLastTradeError(err instanceof Error ? err.message : "Failed to resolve last trade timestamp");
       }
     } finally {
+      if (lastTradeInFlightByIdRef.current[accountId] === accountsVersion) {
+        delete lastTradeInFlightByIdRef.current[accountId];
+      }
       if (isCurrent()) {
         setLastTradeResolvedById((prev) => ({ ...prev, [accountId]: true }));
         setLastTradeLoadingById((prev) => ({ ...prev, [accountId]: false }));
       }
     }
-  }, [lastTradeLoadingById]);
+  }, []);
 
   const setMainAccount = useCallback(
     async (accountId: number) => {
@@ -481,6 +487,19 @@ export function AccountsPage() {
     [freshnessAwareAccounts, showArchivedAccounts, showHiddenAccounts, showMissingAccounts],
   );
   const orderedAccounts = useMemo(() => sortAccountsForSelection(visibleAccounts), [visibleAccounts]);
+  useEffect(() => {
+    if (accountsLoading || refreshingExpressAccounts || Object.values(lastTradeLoadingById).some(Boolean)) {
+      return;
+    }
+    // Resolve missing dates in the background, one at a time to avoid a burst
+    // of provider requests. Completed empty results and errors are not retried automatically.
+    const nextAccount = orderedAccounts.find(
+      (account) => !account.last_trade_at && !lastTradeResolvedById[account.id],
+    );
+    if (nextAccount) {
+      void resolveLastTrade(nextAccount.id);
+    }
+  }, [accountsLoading, refreshingExpressAccounts, orderedAccounts, lastTradeLoadingById, lastTradeResolvedById, resolveLastTrade]);
   const selectableAccounts = useMemo(
     () => orderedAccounts.filter((account) => !account.is_archived),
     [orderedAccounts],
@@ -741,9 +760,6 @@ export function AccountsPage() {
                                   disabled={account.is_archived}
                                   onSelect={() => {
                                     setActiveAccount(account.id);
-                                    if (!resolvedLastTradeAt && !resolvedLastTrade && !loadingLastTrade) {
-                                      void resolveLastTrade(account.id);
-                                    }
                                   }}
                                 />
                               </div>
@@ -769,20 +785,21 @@ export function AccountsPage() {
                           <td className="px-3 py-3 text-right text-slate-300">
                             {resolvedLastTradeAt ? (
                               formatLastTrade(resolvedLastTradeAt)
-                            ) : loadingLastTrade ? (
+                            ) : loadingLastTrade || !resolvedLastTrade ? (
                               "Checking..."
-                            ) : resolvedLastTrade ? (
+                            ) : lastTradeOverridesById[account.id] === null ? (
                               "No trades"
                             ) : (
                               <button
                                 type="button"
+                                aria-label={`Retry last trade for ${accountDisplayName}`}
                                 className="text-xs text-cyan-300 underline decoration-cyan-400/60 underline-offset-2 hover:text-cyan-200"
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   void resolveLastTrade(account.id, true);
                                 }}
                               >
-                                Lookup
+                                Unavailable · Retry
                               </button>
                             )}
                           </td>

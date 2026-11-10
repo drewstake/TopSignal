@@ -1,0 +1,29 @@
+name: Benchmark Windows tests
+
+on:
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-test.txt
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check -r backend/requirements-test.txt
+      - name: Compare identical full suites on the same runner
+        run: python scripts/benchmark-backend-tests.py --workers 2 4 --repeat 2 --output tmp/windows-benchmark
+      - name: Preserve timing, coverage and failure evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-benchmark
+          path: tmp/windows-benchmark
+          retention-days: 14

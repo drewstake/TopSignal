@@ -19,21 +19,77 @@ else:
     from depth_recording import SegmentRecorder, StorageLimit, atomic_json, inventory, utc, verify_segments
 
 
+def _wall():
+    return datetime.now(timezone.utc).timestamp()
+
+
 class CapacityMonitor:
     """One bounded inventory job; never scan the archive on the socket thread.
 
-    Charge all uncompressed bytes written since the scan START against its result.
-    This deliberately overestimates growth while a scan overlaps segment writes.
-    Failed/stalled checks stop capture, never silently waive the storage limits.
+    A full inventory walks every retained file. On the recording disk that walk
+    ran for most of every 30-second interval and, whenever one exceeded 90
+    seconds, ended the recorder until the scheduler started it again. Those
+    restarts are the gaps in recorded history.
+
+    The limits are unchanged and stay enforced between walks. Every uncompressed
+    byte written since the last walk STARTED is charged against its result (a
+    deliberate overestimate), free space is read from the volume on every check,
+    and review age is measured from the oldest file already seen. A slow or
+    failed walk is reported and retried. Capture stops only when no walk has
+    completed within the stale limit, never silently waiving the limits.
     """
-    def __init__(self, root, config):
+    STALL_SECONDS = 90
+    RESTART_ALLOWANCE = 256 * 1024**2
+
+    def __init__(self, root, config, *, cache=None, clock=None):
         self.root, self.config = root, config
+        self.clock = clock or (lambda: time.monotonic())  # resolved per call
+        self.interval = min(3600, max(30, int(config.get('capacity_scan_interval_seconds', 900))))
+        self.stale_after = min(86400, max(self.interval*2, int(config.get('capacity_scan_stale_seconds', 21600))))
+        self.cache = Path(cache) if cache else None
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='depth-capacity')
         self.pending = None
-        self.baseline = self.scan_bytes = 0
-        self.started = time.monotonic()
-        self.value = self._scan()
-        self.last_scan_seconds = time.monotonic() - self.started
+        self.baseline = self.scan_bytes = self.failures = self.allowance = 0
+        self.last_error = None
+        self.started = self.clock()
+        cached = self._cached()
+        if cached is None:
+            self.value = self._scan()
+            self.completed = self.clock()
+            self.completed_wall = _wall()
+            self.last_scan_seconds = self.completed - self.started
+            self._remember()
+            self.next = self.completed + self.interval
+        else:
+            # A recent result from the previous run avoids a blocking walk before
+            # reconnecting. Charge a fixed allowance for whatever that run wrote
+            # after its last walk, and refresh in the background immediately.
+            self.value, age = cached
+            self.completed = self.clock() - age
+            self.completed_wall = _wall() - age
+            self.last_scan_seconds = self.value.pop('scan_seconds', None)
+            self.allowance = self.RESTART_ALLOWANCE
+            self.next = self.clock()
+
+    def _cached(self):
+        try:
+            saved = json.loads(self.cache.read_text(encoding='utf-8'))
+            age = _wall() - float(saved['at'])
+            value = saved['value']
+            if not 0 <= age < self.stale_after or saved['root'] != str(self.root) or type(value['bytes']) is not int:
+                return None
+            return value, age
+        except (AttributeError, OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def _remember(self):
+        if self.cache is None:
+            return
+        try:
+            atomic_json(self.cache, dict(at=self.completed_wall, root=str(self.root),
+                                         value=dict(self.value, scan_seconds=self.last_scan_seconds)))
+        except OSError:
+            pass  # Convenience only; the next start performs a full walk.
 
     def _scan(self):
         # Sealing atomically renames .partial files while this read-only scan is
@@ -47,28 +103,37 @@ class CapacityMonitor:
                     raise
 
     def check(self, written=0, *, opening=False):
-        now = time.monotonic()
+        now = self.clock()
         if self.pending and self.pending.done():
             try:
                 self.value = self.pending.result()
             except Exception as exc:
-                raise StorageLimit('capacity_check_failed') from exc
-            self.baseline = self.scan_bytes
-            self.last_scan_seconds = now - self.started
+                self.failures += 1
+                self.last_error = type(exc).__name__
+                self.next = now + min(self.interval, 60*self.failures)
+            else:
+                self.baseline, self.allowance, self.failures, self.last_error = self.scan_bytes, 0, 0, None
+                self.completed, self.completed_wall = now, _wall()
+                self.last_scan_seconds = now - self.started
+                self.next = now + self.interval
+                self._remember()
             self.pending = None
-        if self.pending and now - self.started > 90:
-            raise StorageLimit('capacity_check_stalled')
-        if self.pending is None and now - self.started >= 30:
+        if self.pending is None and now >= self.next:
             self.scan_bytes, self.started = written, now
             self.pending = self.pool.submit(self._scan)
-        value = dict(self.value, scan_seconds=self.last_scan_seconds, scan_pending=self.pending is not None)
-        growth = max(0, written - self.baseline)
+        value = dict(self.value, scan_seconds=self.last_scan_seconds, scan_pending=self.pending is not None,
+                     scan_age_seconds=now - self.completed, scan_interval_seconds=self.interval,
+                     scan_stalled=self.pending is not None and now - self.started > self.STALL_SECONDS,
+                     scan_failures=self.failures, scan_error=self.last_error)
+        growth = max(0, written - self.baseline) + self.allowance
         value['uncompressed_growth_allowance'] = growth
-        if value['bytes'] + growth + 32*1024**2 > self.config['max_bytes']:
-            value['blocked_reason'] = 'recording_budget_reached'
-        free = shutil.disk_usage(self.root).free if opening else value['free_bytes'] - growth
-        if free < self.config['reserve_bytes'] + 32*1024**2:
-            value['blocked_reason'] = 'disk_free_reserve'
+        value['free_bytes'] = shutil.disk_usage(self.root).free
+        oldest = value.get('oldest_mtime')
+        value['blocked_reason'] = (
+            'recording_budget_reached' if value['bytes'] + growth + 32*1024**2 > self.config['max_bytes'] else
+            'disk_free_reserve' if value['free_bytes'] < self.config['reserve_bytes'] + 32*1024**2 else
+            'retention_review_due' if oldest is not None and _wall() - oldest > self.config['review_after_days']*86400 else
+            'capacity_check_stale' if now - self.completed > self.stale_after else None)
         return value
 
     def close(self):
@@ -152,7 +217,11 @@ async def record(config,client,owner,root,*,seconds=0):
                 pending_events=recording.get('received_events',0)-recording.get('durable_event_index',0),
                 rejected_events=recording.get('counts',{}).get('gap',0),dropped_measurements=None,
                 loss_accounting='Network omissions and process-crash losses are unknown; rejected envelopes are counted.',
-                reconnects=max(0,connections-1),last_error=last_error,capacity_scan_seconds=storage.get('scan_seconds')))
+                reconnects=max(0,connections-1),last_error=last_error,capacity_scan_seconds=storage.get('scan_seconds'),
+                capacity_scan_age_seconds=storage.get('scan_age_seconds'),capacity_scan_stalled=storage.get('scan_stalled'),
+                capacity_scan_failures=storage.get('scan_failures'),storage_blocked_reason=storage.get('blocked_reason'),
+                recorded_bytes=storage.get('bytes'),disk_free_bytes=storage.get('free_bytes'),
+                pid=os.getpid(),started_at=begin,connection_started_at=connection_at))
             last_status=now
     begin=utc()
     def capacity_check():
@@ -160,7 +229,7 @@ async def record(config,client,owner,root,*,seconds=0):
         storage=capacity.check(written_bytes(), opening=True)
         if storage['blocked_reason']:raise StorageLimit(storage['blocked_reason'])
     try:
-        capacity=CapacityMonitor(root,config)
+        capacity=CapacityMonitor(root,config,cache=runtime/'capacity-cache.json')
         checkpoint(True)
         if storage['blocked_reason']:raise StorageLimit(storage['blocked_reason'])
         recorder=SegmentRecorder(root,owner,segment_seconds=config['segment_seconds'],before_segment=capacity_check)

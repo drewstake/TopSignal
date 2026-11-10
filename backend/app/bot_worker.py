@@ -8,7 +8,7 @@ import os
 import socket
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 from time import monotonic
 from typing import Any, Callable
 from uuid import uuid4
@@ -183,6 +183,13 @@ class BotWorkerRuntime:
         settings: BotWorkerSettings | None = None,
     ) -> None:
         self.session_factory = session_factory
+        from .services.market_archive_recovery import DecisionCommitRecovery
+        self._archive_recovery = DecisionCommitRecovery(session_factory)
+        self._recording_checked_at = 0.0
+        self._recording_busy = False
+        self._recording_lock = Lock()
+        self._recording_state: dict[str, tuple[str, ...]] = {}
+        self._recording_logged_at: dict[str, float] = {}
         self.client_factory = client_factory
         self.settings = settings or BotWorkerSettings.from_env()
         host = socket.gethostname()[:64] or "unknown-host"
@@ -269,6 +276,9 @@ class BotWorkerRuntime:
         await asyncio.to_thread(self._stop_account_streams)
         from .services.market_archive_collector import drain as drain_archive_collection
         from .services.market_archive_events import drain as drain_archive_events
+        from .services.market_archive_decisions import drain as drain_archive_decisions
+        if not await asyncio.to_thread(drain_archive_decisions):
+            logger.error("market_archive_decisions_unwritten_at_shutdown")
         if not await asyncio.to_thread(drain_archive_collection) or not await asyncio.to_thread(drain_archive_events):
             logger.error("market_archive_shutdown_incomplete")
             return False
@@ -836,12 +846,10 @@ class BotWorkerRuntime:
                 if not lease_lost:
                     try:
                         from .services.market_archive import prepare_decision, failure
+                        # Memory only. Local archive I/O must never run while this
+                        # execution transaction is open; the copy is written by a
+                        # bounded background writer after the commit below.
                         prepared_archive = prepare_decision(result)
-                        if prepared_archive is not None:
-                            from .services.market_archive import Archive
-                            # Durable pre-commit evidence. A failed execution commit
-                            # remains explicitly unconfirmed; startup reconciles IDs.
-                            Archive(user_id).decision(prepared_archive)
                     except Exception as exc:
                         failure(user_id, "decision_prepare", exc)
                     try:
@@ -850,16 +858,23 @@ class BotWorkerRuntime:
                     except Exception:
                         logger.exception("forward_results_prepare_failed")
                 commit_started = monotonic()
-                db.commit()
+                try:
+                    db.commit()
+                except Exception:
+                    # Keep the evidence, explicitly unconfirmed; recovery confirms it
+                    # only if the exact decision later proves to be committed.
+                    from .services.market_archive_decisions import submit as submit_archive_decision
+                    submit_archive_decision(prepared_archive, committed=False)
+                    raise
                 commit_ms = round((monotonic() - commit_started) * 1000, 3)
                 if dom_run:
                     from .services.topbot_audit import record
                     record(user_id, account_id, "evaluation_committed", **committed_context)
                 if prepared_archive is not None:
                     archive_started = monotonic()
-                    from .services.market_archive import record_decision
-                    record_decision(prepared_archive)
-                    diagnostic_event(logger, "bot_evaluation_stage_timing", stage="market_archive_write",
+                    from .services.market_archive_decisions import submit as submit_archive_decision
+                    submit_archive_decision(prepared_archive, committed=True)
+                    diagnostic_event(logger, "bot_evaluation_stage_timing", stage="market_archive_enqueue",
                                      duration_ms=round((monotonic() - archive_started) * 1000, 3), **committed_context)
                 if prepared_forward is not None and isinstance(prepared_forward.get('timing'), dict):
                     prepared_forward['timing']['execution_commit_ms'] = commit_ms
@@ -1115,13 +1130,9 @@ class BotWorkerRuntime:
                 .all()
             )
             archive_contracts = {}
+            archive_owners = set()
             if archive_enabled():
-                from .services.market_archive import recover_decision_commits, failure
-                for owner in {str(run.user_id) for run, _config in rows}:
-                    try:
-                        recover_decision_commits(db, owner)
-                    except Exception as exc:
-                        failure(owner, 'decision_commit_recovery', exc)
+                archive_owners = {str(run.user_id) for run, _config in rows}
                 for scope in self._archive_scopes:
                     archive_contracts[(scope['owner'], scope['account'])] = set(scope['contracts'])
             desired = {
@@ -1130,6 +1141,9 @@ class BotWorkerRuntime:
                 if not bool(run.dry_run) and _run_disarm_reason(run, config) is None
             } | set(archive_contracts)
 
+        # Slow archive disks must neither stall trading nor outlive the database
+        # idle-transaction timeout. Recovery owns its own short read session.
+        self._archive_recovery.request(archive_owners)
         for key in tuple(self._account_streams):
             runtime = self._account_streams[key]
             expected_contracts = tuple(sorted(archive_contracts.get(key, ())))
@@ -1286,6 +1300,70 @@ class BotWorkerRuntime:
         diagnostic_event(logger, "bot_worker_state_changed" if changed else "bot_worker_heartbeat",
                          level=logging.WARNING if snapshot.last_error_code or snapshot.unresolved_live_submissions else logging.INFO,
                          worker_id=self.owner_id, **asdict(snapshot))
+        self._log_recording_health()
+
+    def _log_recording_health(self) -> None:
+        """Recording is reported apart from trading: once a minute, sooner on change.
+
+        The report reads small status files on the recording disk, so it runs on
+        its own single-flight thread and can never delay an evaluation.
+        """
+        try:
+            from .services.market_archive import enabled as archive_enabled
+            owners = sorted({str(scope['owner']) for scope in getattr(self, '_archive_scopes', ())})
+            if not owners or not archive_enabled():
+                return
+            with self._recording_lock:
+                if self._recording_busy or monotonic() - self._recording_checked_at < 15:
+                    return
+                self._recording_busy = True
+                self._recording_checked_at = monotonic()
+            try:
+                Thread(target=self._report_recording_health, args=(owners,), daemon=True,
+                                 name="recording-health").start()
+            except Exception:
+                with self._recording_lock:
+                    self._recording_busy = False
+                raise
+        except Exception as exc:
+            logger.error("recording_health_report_failed", extra={"error_type": type(exc).__name__})
+
+    def _report_recording_health(self, owners: list[str]) -> None:
+        try:
+            from .services.recording_health import report
+            for owner in owners:
+                summary = report(owner)
+                codes = tuple(sorted({problem['code'] for problem in summary['problems']}))
+                now = monotonic()
+                changed = self._recording_state.get(owner) != codes
+                if not changed and now - self._recording_logged_at.get(owner, -60.0) < 60:
+                    continue
+                self._recording_state[owner] = codes
+                self._recording_logged_at[owner] = now
+                level = logging.WARNING if codes else logging.INFO
+                decisions = summary.get('decision_archive') or {}
+                recorder = summary.get('depth_recorder') or {}
+                diagnostic_event(logger, "recording_health_changed" if changed else "recording_health",
+                                 level=level, recording_healthy=not codes, problems=list(codes),
+                                 decision_queue=decisions.get('queued'), decision_written=decisions.get('written'),
+                                 decision_failed=decisions.get('failed'),
+                                 decision_last_write_seconds=decisions.get('last_write_seconds'),
+                                 depth_recorder_state=recorder.get('state'),
+                                 depth_recorder_age_seconds=recorder.get('age_seconds'),
+                                 backup_stale=(summary.get('backup') or {}).get('stale'),
+                                 disk_free_bytes=(summary.get('disk') or {}).get('free_bytes'))
+                evidence = summary.get('worker_evidence')
+                for row in evidence if isinstance(evidence, list) else []:
+                    diagnostic_event(logger, "recording_capture_health", level=level,
+                                     **{key: row.get(key) for key in (
+                                         'contract_id', 'state', 'queued_events', 'oldest_queued_seconds',
+                                         'dropped_events', 'durable_events', 'last_durable_at', 'last_commit_seconds',
+                                         'max_commit_seconds', 'error_category', 'blocked_reason')})
+        except Exception as exc:
+            logger.error("recording_health_report_failed", extra={"error_type": type(exc).__name__})
+        finally:
+            with self._recording_lock:
+                self._recording_busy = False
 
     def _touch_runner_heartbeat(self, *, now: datetime | None = None) -> None:
         with self._state_lock:

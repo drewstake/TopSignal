@@ -3385,6 +3385,15 @@ def register_topbot_candidate(account_id: int, ratio: float = Query(), db: Sessi
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.get("/api/recording/health")
+def get_recording_health(response: Response):
+    """Recording health only. Never gates trading, readiness or evaluations."""
+    from .services.recording_health import report
+    user_id = get_authenticated_user_id()
+    response.headers["Cache-Control"] = "no-store"
+    return report(user_id)
+
+
 @app.get("/api/accounts/{account_id}/topbot/audit")
 def get_topbot_audit(account_id: int, before: int | None = Query(default=None, ge=1), db: Session = Depends(get_db)):
     import sqlite3
@@ -5858,10 +5867,3 @@ def _to_gemini_http_exception(exc: GeminiClientError) -> HTTPException:
     if exc.status_code in {429, 503}:
         return HTTPException(status_code=503, detail=message or "Gemini is temporarily unavailable.")
     return HTTPException(status_code=502, detail=message or "Gemini recap generation failed.")
-
-
-from .microstructure_api import install as _install_microstructure_api
-
-_install_microstructure_api(app, get_db=get_db,
-    authenticated_user=lambda: get_authenticated_user_id(),
-    require_account=lambda *args, **kwargs: _require_owned_projectx_account(*args, **kwargs))

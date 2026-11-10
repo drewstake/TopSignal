@@ -1,3 +1,5 @@
 -r requirements.txt
 # Starlette's HTTP test client; not installed on the trading worker.
 httpx2==2.0.0
+# Parallel offline suite; never required by the trading runtime.
+pytest-xdist==3.8.0

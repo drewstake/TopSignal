@@ -52,7 +52,10 @@ def test_slow_capacity_scan_never_waits_in_feed_loop_and_growth_is_charged(tmp_p
     assert time.monotonic()-began < .1
     assert monitor.check(64*1024**2)['blocked_reason']=='recording_budget_reached'
     pending.set_exception(OSError('no private error text in health'))
-    with pytest.raises(StorageLimit,match='capacity_check_failed'):monitor.check()
+    # A failed walk is reported and retried; it no longer ends the recorder.
+    value=monitor.check()
+    assert value['scan_failures']==1 and value['scan_error']=='OSError' and value['blocked_reason'] is None
+    assert 'private' not in json.dumps(value)
     monitor.close()
 
 

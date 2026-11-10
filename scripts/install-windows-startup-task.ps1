@@ -10,7 +10,9 @@ param(
     [int]$WorkerHealthStartupGraceSeconds = 120,
     [int]$WorkerHealthRestartAfterSeconds = 300,
     [switch]$StartNow,
-    [switch]$Force
+    [switch]$Force,
+    # Reuse the same ACL/identity validators in the release command and tests.
+    [switch]$FunctionsOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -198,6 +200,8 @@ function Assert-HardenedDeployment(
         Assert-PrivateDataAcl -Path $item.FullName -ServiceSid $ServiceSid
     }
 }
+
+if ($FunctionsOnly) { return }
 
 if ($Port -lt 1 -or $Port -gt 65535 -or $FrontendPort -lt 1 -or $FrontendPort -gt 65535) {
     throw "Backend and frontend ports must be between 1 and 65535."

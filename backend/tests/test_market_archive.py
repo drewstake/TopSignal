@@ -233,7 +233,29 @@ def test_commit_recovery_only_confirms_matching_committed_identity(tmp_path, mon
             db.add(BotDecision(id=ident, user_id=OWNER, bot_config_id=32, account_id=1, contract_id=CONTRACT,
                                decision_type='signal', action='HOLD', reason='test', correlation_id=correlation))
         db.commit()
-        a.recover_decision_commits(db, OWNER)
+    from contextlib import contextmanager
+    sessions = []
+
+    @contextmanager
+    def session_factory():
+        with Session(engine) as session:
+            sessions.append(session)
+            yield session
+
+    original_reader, original_transaction = a.Archive.reader, a.Archive.transaction
+
+    def checked_io(method):
+        @contextmanager
+        def call(self):
+            assert not any(session.in_transaction() for session in sessions)
+            with method(self) as local:
+                yield local
+            assert not any(session.in_transaction() for session in sessions)
+        return call
+
+    monkeypatch.setattr(a.Archive, 'reader', checked_io(original_reader))
+    monkeypatch.setattr(a.Archive, 'transaction', checked_io(original_transaction))
+    a.recover_decision_commits(session_factory, OWNER)
     assert archive.reconstruct(1)['execution_commit_confirmed_at']
     assert archive.reconstruct(2)['execution_commit_confirmed_at'] is None
     assert archive.reconstruct(3)['execution_commit_confirmed_at'] is None

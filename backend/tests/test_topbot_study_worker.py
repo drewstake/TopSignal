@@ -67,7 +67,7 @@ def test_reader_restart_restores_filled_retention_without_reenrollment(db_sessio
     def sessions(): yield db_session
     calls = []
     monkeypatch.setattr(feed, "retain", lambda *args: calls.append(args))
-    def forbidden(owner): raise AssertionError("No broker call is needed")
+    def forbidden(db, *, user_id): raise AssertionError("No broker call is needed")
     StudyRecorder(sessions, forbidden).cycle()
     assert not calls  # An order attempt without a verified fill is not an observation.
     request = deepcopy(row.raw_request)
@@ -120,7 +120,7 @@ def test_overdue_replay_is_reported_once_deferred_and_cleared_by_success(db_sess
         def wait(self, timeout=None): return self.code
         def kill(self): self.code = 1
     monkeypatch.setattr(subprocess, "Popen", Child)
-    def forbidden(owner): raise AssertionError("No broker call is needed")
+    def forbidden(db, *, user_id): raise AssertionError("No broker call is needed")
     recorder = worker.StudyRecorder(sessions, forbidden)
     recorder.cycle()
     assert len(children) == 1 and recorder.job["entry_id"] == row.id
@@ -149,3 +149,36 @@ def test_overdue_replay_is_reported_once_deferred_and_cleared_by_success(db_sess
     recorder.cycle()
     assert recorder.failures == {} and recorder.job is None and len(children) == 3
     assert store.completed_ids(str(row.user_id), int(row.account_id)) == {row.id}
+
+
+def test_retention_resolves_a_client_through_the_application_factory(db_session, dom_entry, tmp_path, monkeypatch):
+    """After a stop or restart no stream exists, so retention must be able to open one."""
+    from contextlib import contextmanager
+    from copy import deepcopy
+    from app.services import topbot_depth, topbot_study_store as store
+    from app.services.topbot_study_worker import StudyRecorder
+    monkeypatch.setattr(store, "default_cache_root", lambda: tmp_path)
+    result, _, _ = dom_entry
+    row = result.order_attempt
+    request = deepcopy(row.raw_request)
+    now = datetime.now(timezone.utc)
+    request["strategySnapshot"]["research_cutoff"] = (now+timedelta(minutes=1)).isoformat()
+    request["timeExit"]["runner"].update(entry_at=now.isoformat(), entry_price=20000, stats_status="open")
+    row.raw_request = request
+    db_session.commit()
+
+    @contextmanager
+    def sessions():
+        yield db_session
+
+    fresh = topbot_depth.DepthFeed()
+    monkeypatch.setattr("app.services.topbot_study_worker.feed", fresh)
+    opened, resolved = [], []
+    monkeypatch.setattr(fresh, "ensure", lambda owner, contract, client, *args: opened.append(client))
+
+    def factory(db, *, user_id):  # the production signature
+        resolved.append(user_id)
+        return "client"
+
+    StudyRecorder(sessions, factory).cycle()
+    assert resolved == [str(row.user_id)] and opened == ["client"]

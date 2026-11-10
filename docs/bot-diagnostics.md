@@ -51,6 +51,9 @@ monitoring procedure in the operations guide.
 
 ## Reading and summarizing
 
+Open **Bot → Logs** to inspect account diagnostics and host/market-feed events.
+Old `/logs` links redirect here and preserve the selected account.
+
 New forward records include **Evaluation stage timings** in their decision
 details. Stage totals include nested stages; `self_ms` excludes them. Do not add
 inclusive totals together. SQL execution and connection establishment are

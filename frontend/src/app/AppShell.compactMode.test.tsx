@@ -67,6 +67,17 @@ function renderAppShell(initialEntry: string) {
 }
 
 describe("AppShell compact mode", () => {
+  it("keeps only the supported workspace tabs in navigation", async () => {
+    renderAppShell("/?account=10");
+    await screen.findByRole("link", { name: "Bot" });
+    for (const name of ["Dashboard", "Accounts", "Trades", "Expenses", "Bot", "Backtesting", "Appearance"]) {
+      expect(screen.getByRole("link", { name })).toBeTruthy();
+    }
+    for (const name of ["Simulation", "Logs", "Order book history", "Liquidity research", "Event study"]) {
+      expect(screen.queryByRole("link", { name })).toBeNull();
+    }
+  });
+
   it("places a persisted live-updating dashboard switch immediately after Demo Mode", async () => {
     renderAppShell("/?account=10");
     const demoSwitch = await screen.findByRole("switch", { name: "Demo mode" });

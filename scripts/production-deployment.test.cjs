@@ -107,6 +107,8 @@ test("PowerShell 5.1 and 7 parsers accept production scripts when available", (t
     "scripts/install-windows-startup-task.ps1",
     "scripts/build-production-frontend.ps1",
     "scripts/stop-production.ps1",
+    "scripts/release-host.ps1",
+    "scripts/test-release-switch.ps1",
   ];
   const parserCommand = [
     "$errors = $null",

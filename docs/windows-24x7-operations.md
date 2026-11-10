@@ -1,5 +1,9 @@
 # TopSignal on a personal Windows laptop
 
+For routine updates to an existing deployment, use the checked-in
+[release command](releasing.md). This guide remains the setup, storage-change
+and migration-specific procedure; its safety requirements still apply.
+
 This is the deployment procedure for TopSignal. Passing local tests does not
 certify unattended trading: complete the staged evidence gates below first.
 It uses one

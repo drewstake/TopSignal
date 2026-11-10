@@ -70,7 +70,7 @@ afterEach(() => {
 });
 
 describe("AccountsPage local-first management", () => {
-  it("loads one archived-inclusive local snapshot and never requests ProjectX on mount", async () => {
+  it("loads one archived-inclusive local snapshot without extra requests when dates are already present", async () => {
     const live = account({ id: 88001, name: "Live Funded", source: "csv_import", main: true });
     const express = account({ id: 7101, name: "Express Cached", source: "projectx" });
     const getAccounts = vi.spyOn(accountsApi, "getAccounts").mockResolvedValue([live, express]);
@@ -92,6 +92,75 @@ describe("AccountsPage local-first management", () => {
     });
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(screen.getByText("Aged cache")).not.toBeNull();
+  });
+
+  it("automatically fills missing dates for active and locked accounts without selecting them", async () => {
+    const saved = account({ id: 88001, name: "Live Funded", source: "csv_import", main: true });
+    const active = { ...account({ id: 7101, name: "Express Active", source: "projectx" }), last_trade_at: null };
+    const locked = { ...active, id: 7102, name: "Express Locked", account_state: "LOCKED_OUT" as const };
+    vi.spyOn(accountsApi, "getAccounts").mockResolvedValue([saved, active, locked]);
+    const pending = deferred<Awaited<ReturnType<typeof accountsApi.getLastTrade>>>();
+    const lookup = vi.spyOn(accountsApi, "getLastTrade").mockReturnValueOnce(pending.promise).mockResolvedValue({
+      account_id: locked.id,
+      last_trade_at: "2026-11-10T16:39:00Z",
+      source: "provider",
+    });
+    const router = renderAccountsPage("/accounts?account=88001");
+
+    await waitFor(() => expect(lookup).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("button", { name: "Lookup" })).toBeNull();
+    expect(screen.getAllByText("Checking...")).toHaveLength(2);
+    await act(async () => {
+      pending.resolve({ account_id: active.id, last_trade_at: "2026-11-10T17:47:00Z", source: "provider" });
+      await pending.promise;
+    });
+
+    expect(await screen.findByText("Nov 10, 2026, 17:47 UTC")).not.toBeNull();
+    expect(await screen.findByText("Nov 10, 2026, 16:39 UTC")).not.toBeNull();
+    expect(lookup.mock.calls).toEqual([[active.id, false], [locked.id, false]]);
+    expect(router.state.location.search).toBe("?account=88001");
+  });
+
+  it("settles empty results and permits retrying failures without an automatic retry loop", async () => {
+    const empty = { ...account({ id: 7101, name: "Empty", source: "projectx", main: true }), last_trade_at: null };
+    const failed = { ...empty, id: 7102, name: "Failed", is_main: false };
+    vi.spyOn(accountsApi, "getAccounts").mockResolvedValue([empty, failed]);
+    const lookup = vi.spyOn(accountsApi, "getLastTrade")
+      .mockResolvedValueOnce({ account_id: empty.id, last_trade_at: null, source: "none" })
+      .mockRejectedValueOnce(new Error("Provider unavailable"))
+      .mockResolvedValueOnce({ account_id: failed.id, last_trade_at: "2026-11-10T16:39:00Z", source: "provider" });
+    renderAccountsPage();
+
+    const retry = await screen.findByRole("button", { name: "Retry last trade for Failed" });
+    expect(screen.getAllByText("No trades")).toHaveLength(1);
+    expect(screen.getByText("Provider unavailable")).not.toBeNull();
+    expect(lookup).toHaveBeenCalledTimes(2);
+    await userEvent.setup().click(retry);
+
+    expect(await screen.findByText("Nov 10, 2026, 16:39 UTC")).not.toBeNull();
+    expect(lookup).toHaveBeenCalledTimes(3);
+    expect(lookup).toHaveBeenLastCalledWith(failed.id, true);
+  });
+
+  it("ignores a pending lookup when a refreshed account list supplies a newer date", async () => {
+    const express = { ...account({ id: 7101, name: "Express", source: "projectx", main: true }), last_trade_at: null };
+    vi.spyOn(accountsApi, "getAccounts")
+      .mockResolvedValueOnce([express])
+      .mockResolvedValueOnce([{ ...express, last_trade_at: "2026-11-10T17:47:00Z" }]);
+    const pending = deferred<Awaited<ReturnType<typeof accountsApi.getLastTrade>>>();
+    const lookup = vi.spyOn(accountsApi, "getLastTrade").mockReturnValue(pending.promise);
+    renderAccountsPage();
+    await waitFor(() => expect(lookup).toHaveBeenCalledTimes(1));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Refresh Express Accounts" }));
+    expect(await screen.findByText("Nov 10, 2026, 17:47 UTC")).not.toBeNull();
+
+    await act(async () => {
+      pending.resolve({ account_id: express.id, last_trade_at: "2026-11-10T16:39:00Z", source: "provider" });
+      await pending.promise;
+    });
+    expect(screen.queryByText("Nov 10, 2026, 16:39 UTC")).toBeNull();
+    expect(screen.getByText("Nov 10, 2026, 17:47 UTC")).not.toBeNull();
+    expect(lookup).toHaveBeenCalledTimes(1);
   });
 
   it("coalesces repeated explicit Express refresh clicks into one provider request", async () => {

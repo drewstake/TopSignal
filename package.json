@@ -6,6 +6,7 @@
     "concurrently": "^9.2.5"
   },
   "scripts": {
+    "release": "node scripts/release.cjs",
     "db:init": "node scripts/db-init.cjs",
     "db:adopt-current": "node scripts/db-migrate.cjs --adopt-current --acknowledge-populated-database",
     "db:baseline": "node scripts/db-migrate.cjs --baseline",

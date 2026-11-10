@@ -52,6 +52,13 @@ class StudyRecorder:
         HEALTH["deferred_replays"] = len(self.failures)
         logger.warning("exit_study_replay_deferred entry_id=%s failures=%s retry_seconds=%s", entry_id, count, delay)
 
+    def client(self, owner):
+        # The application factory takes (session, user_id=...). Calling it with the
+        # owner alone raised TypeError, so observation was never retained after a
+        # stop or restart unless the trading worker happened to keep the stream.
+        with self.sessions() as db:
+            return self.clients(db, user_id=owner)
+
     def deferred(self, entry_id):
         from time import monotonic
         return entry_id in self.failures and monotonic() < self.failures[entry_id][1]
@@ -123,7 +130,7 @@ class StudyRecorder:
             if now < cutoff:
                 # Continues after actual exit and entry pauses. Existing streams
                 # keep their current signal parameters; no new evaluation/order.
-                feed.retain(owner, contract, lambda: self.clients(owner), cutoff,
+                feed.retain(owner, contract, lambda: self.client(owner), cutoff,
                             snapshot["rules"]["entry"])
                 continue
             if not current:

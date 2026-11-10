@@ -29,6 +29,10 @@ active_runs evaluated_runs retrying_runs unresolved_live_submissions last_error_
 last_cycle_completed_at last_success_at last_provider_success_at last_provider_check_at
 retry_delay_seconds failure_count poll_seconds lease_ttl_seconds
 stage self_ms calls failures db_queries db_query_ms db_connects db_connect_ms
+error_category blocked_reason dropped_events recording_healthy problems queued_events
+oldest_queued_seconds durable_events last_durable_at last_commit_seconds max_commit_seconds
+decision_queue decision_written decision_failed decision_last_write_seconds
+depth_recorder_state depth_recorder_age_seconds backup_stale disk_free_bytes
 """.split())
 
 

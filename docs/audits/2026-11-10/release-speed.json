@@ -1,0 +1,79 @@
+{
+  "source_sha256": "ae862b35fa426e7bf78f5ea1ddb86fda8bb570c22dd3c0bf5c760effd1ad39c7",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]",
+  "cpu_count": 16,
+  "runs": [
+    {
+      "workers": 0,
+      "round": 1,
+      "seconds": 110.562,
+      "exit_code": 0,
+      "outcomes": {
+        "passed": 3216,
+        "skipped": 20
+      }
+    },
+    {
+      "workers": 2,
+      "round": 1,
+      "seconds": 62.644,
+      "exit_code": 0,
+      "outcomes": {
+        "passed": 3216,
+        "skipped": 20
+      }
+    },
+    {
+      "workers": 4,
+      "round": 1,
+      "seconds": 38.176,
+      "exit_code": 0,
+      "outcomes": {
+        "passed": 3216,
+        "skipped": 20
+      }
+    },
+    {
+      "workers": 4,
+      "round": 2,
+      "seconds": 39.678,
+      "exit_code": 0,
+      "outcomes": {
+        "passed": 3216,
+        "skipped": 20
+      }
+    },
+    {
+      "workers": 2,
+      "round": 2,
+      "seconds": 65.81,
+      "exit_code": 0,
+      "outcomes": {
+        "passed": 3216,
+        "skipped": 20
+      }
+    },
+    {
+      "workers": 0,
+      "round": 2,
+      "seconds": 120.004,
+      "exit_code": 0,
+      "outcomes": {
+        "passed": 3216,
+        "skipped": 20
+      }
+    }
+  ],
+  "verified": true,
+  "median_seconds": {
+    "0": 115.283,
+    "2": 64.227,
+    "4": 38.927
+  },
+  "speedup": {
+    "0": 1.0,
+    "2": 1.795,
+    "4": 2.962
+  }
+}

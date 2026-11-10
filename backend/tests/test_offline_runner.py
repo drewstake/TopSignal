@@ -63,7 +63,7 @@ def test_isolation():
         capture_output=True, text=True, timeout=15,
     )
     # Even a caught attempted connection makes the overall audit fail.
-    assert result.returncode == 1
+    assert result.returncode == 1, result.stdout + result.stderr
     assert "1 passed" in result.stdout
     assert "external connections blocked=1" in result.stdout
     assert "fixture-secret" not in result.stdout + result.stderr

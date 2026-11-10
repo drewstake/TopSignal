@@ -569,7 +569,17 @@ jobs:
       - name: Run backend tests with standard Windows paths
         working-directory: backend
         timeout-minutes: 10
-        run: python -m pytest -q -x -o faulthandler_timeout=60
+        # Keep every test and standard Windows paths; isolate files across four
+        # processes. PostgreSQL safety tests retain their separate serial lane.
+        run: python -m pytest -q -x -n 4 --dist=loadfile -o faulthandler_timeout=60 --durations=30 --junitxml=windows-tests.xml
+
+      - name: Preserve Windows test evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-results
+          path: backend/windows-tests.xml
+          retention-days: 14
 
       - uses: actions/setup-node@v4
         with:

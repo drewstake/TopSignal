@@ -1,9 +1,8 @@
 # Continuous TopBot depth recording
 
-The [research workspace](microstructure-research.md) can derive v2 features and
-observed replay from these immutable raw segments. Its read-only host helper and
-bounded backfill preserve this running recorder. The optional scheduled derived
-feature worker is separate; see that document for installation status and limits.
+The standalone research workspace was retired on November 10, 2026. Shared
+read-only depth helpers, derived-feature tools, and the recorder remain in use
+by Bot. Retiring the pages does not remove recorded segments or change host tasks.
 
 Deployed on peteamdpc (`DESKTOP-6EUPDU1`) on October 30, 2026. The independent
 `TopSignal Depth Recorder` Windows scheduled task records the active MNQ delivery

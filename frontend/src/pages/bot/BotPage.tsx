@@ -1,8 +1,10 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
-import { useOutletContext } from "react-router-dom";
+import { useOutletContext, useSearchParams } from "react-router-dom";
 import type { AppShellOutletContext } from "../../app/AppShell";
 import { useDemoMode } from "../../lib/demoMode";
 import { getBotProviderAccountId } from "./botAccountIsolation";
+import { Button } from "../../components/ui/Button";
+import { BotLogsPanel } from "./BotLogsPanel";
 import { BotSignalChart } from "./BotSignalChart";
 import { ProjectXSignalChart } from "./ProjectXSignalChart";
 import { OrderBookPanel } from "./OrderBookPanel";
@@ -14,7 +16,7 @@ import { TopBotActivity, TopBotEvaluation, TopBotThinking } from "./TopBotEvalua
 import { TopBotPosition } from "./TopBotPosition";
 import { TopBotStrategyPanel } from "./TopBotStrategyPanel";
 import { TopBotLiveImbalance } from "./TopBotLiveImbalance";
-import { HistoryView } from "../orderBookHistory/OrderBookHistoryPage";
+import { HistoryView } from "./history/BotLiquidityHistory";
 import { useTopBotMonitor } from "./useTopBotMonitor";
 import { usePageVisibility } from "./usePageVisibility";
 import { timeLabel } from "./topBotPresentation";
@@ -31,8 +33,25 @@ export function BotPage() {
   const { accounts, accountsLoading, accountsError, selectedAccountId } = useOutletContext<AppShellOutletContext>();
   const { enabled: demoMode } = useDemoMode();
   const accountId = getBotProviderAccountId(accounts.find(account => account.id === selectedAccountId) ?? null);
-  return <TopBotDashboard key={`${accountId}:${demoMode}:${accountsLoading}:${Boolean(accountsError)}`}
-    accountId={accountId} pending={accountsLoading} unavailable={Boolean(accountsError)} demoMode={demoMode} />;
+  const [searchParams, setSearchParams] = useSearchParams();
+  const logsSelected = searchParams.get("view") === "logs";
+  return <div className="space-y-4">
+    <nav aria-label="Bot views" className="flex gap-2">
+      {(["overview", "logs"] as const).map(view => <Button key={view}
+        variant={logsSelected === (view === "logs") ? "secondary" : "ghost"}
+        aria-current={logsSelected === (view === "logs") ? "page" : undefined}
+        onClick={() => {
+          const next = new URLSearchParams(searchParams);
+          if (view === "logs") next.set("view", "logs");
+          else next.delete("view");
+          setSearchParams(next);
+        }}>{view === "logs" ? "Logs" : "Overview"}</Button>)}
+    </nav>
+    {logsSelected
+      ? <BotLogsPanel accountId={accountsLoading || accountsError ? null : accountId} demoMode={demoMode} />
+      : <TopBotDashboard key={`${accountId}:${demoMode}:${accountsLoading}:${Boolean(accountsError)}`}
+          accountId={accountId} pending={accountsLoading} unavailable={Boolean(accountsError)} demoMode={demoMode} />}
+  </div>;
 }
 
 function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
