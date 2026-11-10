@@ -260,3 +260,137 @@ def test_collector_has_no_cloud_persistence_and_keeps_sqlite_guard():
     assert 'store_market_candles' not in source and 'SessionLocal' not in source
     from app.services import databento_ingestion
     assert 'sqlite' in Path(databento_ingestion.__file__).read_text()
+
+
+def archive_rows(archive):
+    with archive.reader() as db:
+        return {table: db.execute(f'SELECT * FROM {table} ORDER BY 1,2,3').fetchall()
+                for table in ('bars', 'heads', 'revisions', 'coverage')}
+
+
+def test_bulk_bar_write_matches_single_bar_writes(tmp_path):
+    at = datetime(2026, 10, 28, 14, tzinfo=UTC)
+    received = a.stamp(at+timedelta(minutes=9))
+    first = [a.native_bar(bar(at+i*a.MINUTE), CONTRACT) for i in range(5)]
+    # A correction, a reversion to the original value and a repeat, in one batch.
+    second = [a.native_bar(bar(at, 103), CONTRACT), first[0], first[0],
+              a.native_bar(bar(at, 110), CONTRACT, 5), a.native_bar(bar(at+5*a.MINUTE), OTHER)]
+    single, bulk = a.Archive('single', tmp_path), a.Archive('bulk', tmp_path)
+    with single.transaction() as db:
+        expected = [[a.put_bar(db, row, received) for row in rows] for rows in (first, second, second)]
+    with bulk.transaction() as db:
+        assert [a.put_bars(db, rows, received) for rows in (first, second, second)] == expected
+        assert a.put_bars(db, [], received) == []
+    assert archive_rows(bulk) == archive_rows(single)
+    assert len(archive_rows(bulk)['revisions']) == 11
+
+
+def test_collection_plans_without_the_writer_lock_and_matches_locked_refresh(tmp_path, monkeypatch):
+    now = datetime(2026, 10, 28, 14, tzinfo=UTC)
+    start = a.trading_day_bounds_utc(date(2026, 10, 28))[0]
+    for owner in (OWNER, 'locked-reference'):
+        with a.Archive(owner, tmp_path).transaction() as db:
+            a.set_state(db, 'cursor:'+CONTRACT, a.stamp(start))
+    planned = []
+    plan_day = collector.plan_day
+    def unlocked_plan(db, *args):
+        # A zero-wait writer succeeds only if collection is not holding the lock here.
+        with a.Archive(OWNER, tmp_path, write_timeout=0).transaction() as other:
+            a.set_state(other, 'unrelated', len(planned))
+        planned.append(args)
+        return plan_day(db, *args)
+    monkeypatch.setattr(collector, 'plan_day', unlocked_plan)
+    collector.collect(OWNER, 1, 32, CONTRACT, Provider(start+2*a.MINUTE), now=now, root=tmp_path)
+    assert planned
+    monkeypatch.setattr(collector, 'plan_day', lambda *args: (_ for _ in ()).throw(sqlite3.OperationalError('snapshot unavailable')))
+    collector.collect('locked-reference', 1, 32, CONTRACT, Provider(start+2*a.MINUTE), now=now, root=tmp_path)
+    result, reference = archive_rows(a.Archive(OWNER, tmp_path)), archive_rows(a.Archive('locked-reference', tmp_path))
+    assert result == reference
+    assert result['coverage'] and len(result['heads']) > len(a.expected_minutes(date(2026, 10, 28))[:1])
+
+
+def test_collection_recomputes_when_a_head_changes_after_planning(tmp_path, monkeypatch):
+    now = datetime(2026, 10, 28, 14, tzinfo=UTC)
+    start = a.trading_day_bounds_utc(date(2026, 10, 28))[0]
+    archive = a.Archive(OWNER, tmp_path)
+    collector.collect(OWNER, 1, 32, CONTRACT, Provider(), now=now, root=tmp_path)
+    target = now.replace(second=0, microsecond=0)-12*a.MINUTE
+    plan_day = collector.plan_day
+    def interrupted_plan(db, *args):
+        plan = plan_day(db, *args)
+        with archive.transaction() as other:
+            a.put_bar(other, a.native_bar(bar(target, 250), CONTRACT), a.stamp(now))
+        return plan
+    monkeypatch.setattr(collector, 'plan_day', interrupted_plan)
+    class Corrected(Provider):
+        def retrieve_bars(self, **kwargs):
+            return [bar(row['timestamp'], 250) if row['timestamp'] == target else row for row in super().retrieve_bars(**kwargs)]
+    collector.collect(OWNER, 1, 32, CONTRACT, Corrected(), now=now+a.MINUTE, root=tmp_path)
+    bucket = target-timedelta(minutes=target.minute % 5)
+    with archive.reader() as db:
+        head = a.unpack(db.execute('SELECT b.payload FROM heads h JOIN bars b ON b.id=h.id WHERE h.stream=? AND h.at=?',
+                                   (a.stream_key(CONTRACT, 5, 'derived_1m'), a.stamp(bucket))).fetchone()[0])
+    assert head['high'] == 250
+
+
+def test_writer_connection_is_retained_per_thread_and_survives_failures(tmp_path, monkeypatch):
+    import threading
+    archive = a.Archive(OWNER, tmp_path)
+    opened = []
+    connect = sqlite3.connect
+    def counting(path, *args, **kwargs):
+        if 'mode=ro' not in str(path):
+            opened.append(threading.get_ident())
+        return connect(path, *args, **kwargs)
+    monkeypatch.setattr(a.sqlite3, 'connect', counting)
+    for i in range(5):
+        with archive.transaction() as db:
+            a.set_state(db, 'n', i)
+    assert len(opened) == 1
+    with archive.reader() as db:
+        assert db.execute('PRAGMA journal_mode').fetchone()[0] == 'wal'
+    with archive.transaction() as db:
+        assert db.execute('PRAGMA synchronous').fetchone()[0] == 2  # FULL
+        assert db.execute('PRAGMA foreign_keys').fetchone()[0] == 1
+    # A nested transaction on the same thread gets its own connection and waits its turn.
+    with archive.transaction():
+        with pytest.raises(sqlite3.OperationalError):
+            with a.Archive(OWNER, tmp_path, write_timeout=0).transaction():
+                pass
+    assert len(opened) == 2
+    # Losing the race for the writer lock does not discard the retained connection.
+    def other_thread():
+        with a.Archive(OWNER, tmp_path).transaction() as db:
+            a.set_state(db, 'other', 1)
+    worker = threading.Thread(target=other_thread)
+    worker.start(); worker.join()
+    assert len(opened) == 3 and len(set(opened)) == 2
+    # A rolled-back body leaves nothing behind and the next transaction works.
+    with pytest.raises(RuntimeError):
+        with archive.transaction() as db:
+            a.set_state(db, 'n', 99)
+            raise RuntimeError('crash before commit')
+    with archive.transaction() as db:
+        assert a.get_state(db, 'n') == 4 and a.get_state(db, 'other') == 1
+    assert a.close_writers()
+    with archive.transaction() as db:
+        assert a.get_state(db, 'n') == 4
+
+
+def test_retained_writer_reopens_when_the_archive_file_is_replaced(tmp_path):
+    archive = a.Archive(OWNER, tmp_path)
+    with archive.transaction() as db:
+        a.set_state(db, 'generation', 'old')
+    replacement = a.Archive('replacement', tmp_path)
+    with replacement.transaction() as db:
+        a.set_state(db, 'generation', 'new')
+    assert a.close_writers()
+    with archive.transaction() as db:   # retained again, pointing at the old file
+        assert a.get_state(db, 'generation') == 'old'
+    stale = [k for k in a._writers if k[1] == str(archive.path)]
+    assert len(stale) == 1
+    identity = a._writers[stale[0]]['identity']
+    a._writers[stale[0]]['identity'] = ('replaced', 0)   # as after a restore swapped the file
+    with archive.transaction() as db:
+        assert a.get_state(db, 'generation') == 'old'
+    assert a._writers[stale[0]]['identity'] == identity

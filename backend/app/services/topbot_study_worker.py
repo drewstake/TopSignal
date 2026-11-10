@@ -10,6 +10,11 @@ from . import topbot_study_store as store
 
 logger = logging.getLogger(__name__)
 HEALTH = {"state": "not_started", "last_cycle_at": None, "last_error_type": None}
+DEADLINE_SECONDS = 300
+# A replay that fails or overruns is retried later instead of immediately, so one
+# entry cannot keep a child process running continuously or starve later entries.
+RETRY_SECONDS = 900
+MAX_RETRY_SECONDS = 6*3600
 
 
 class StudyRecorder:
@@ -19,6 +24,7 @@ class StudyRecorder:
         self.thread = None
         self.after = 0
         self.job = None
+        self.failures = {}  # entry id -> (consecutive failures, monotonic time of next attempt)
 
     def start(self):
         import os
@@ -36,6 +42,19 @@ class StudyRecorder:
             self.job["output"].close()
             self.job = None
         return not self.thread or not self.thread.is_alive()
+
+    def defer(self, entry_id):
+        from time import monotonic
+        count = self.failures.get(entry_id, (0, 0))[0]+1
+        delay = min(MAX_RETRY_SECONDS, RETRY_SECONDS*2**min(count-1, 16))
+        if len(self.failures) >= 1024: self.failures.clear()  # Bounded; worst case is an earlier retry.
+        self.failures[entry_id] = (count, monotonic()+delay)
+        HEALTH["deferred_replays"] = len(self.failures)
+        logger.warning("exit_study_replay_deferred entry_id=%s failures=%s retry_seconds=%s", entry_id, count, delay)
+
+    def deferred(self, entry_id):
+        from time import monotonic
+        return entry_id in self.failures and monotonic() < self.failures[entry_id][1]
 
     def run(self):
         while not self.halt.is_set():
@@ -55,18 +74,29 @@ class StudyRecorder:
             from time import monotonic
             job = self.job
             code = job["process"].poll()
-            if code is None and monotonic()-job["started"] > 300:
-                job["process"].terminate()
-                raise TimeoutError("research_replay_deadline")
-            if code is not None:
+            overdue = code is None and monotonic()-job["started"] > DEADLINE_SECONDS
+            if overdue or code is not None:
+                # Finished either way: one failure is reported once, and the
+                # next cycle is free to replay a different entry.
                 self.job = None
                 try:
+                    if overdue:
+                        import subprocess
+                        job["process"].terminate()
+                        try: job["process"].wait(timeout=2)
+                        except subprocess.TimeoutExpired: job["process"].kill()
+                        raise TimeoutError("research_replay_deadline")
                     if code != 0: raise RuntimeError("research_child_failed")
                     import json
                     job["output"].seek(0)
                     result = json.load(job["output"])
                     result.update(job["enrollment"])
                     store.save(job["owner"], job["account"], result)
+                    self.failures.pop(job["entry_id"], None)
+                    HEALTH["deferred_replays"] = len(self.failures)
+                except Exception:
+                    self.defer(job["entry_id"])
+                    raise
                 finally: job["output"].close()
         with self.sessions() as db:
             registered = db.query(BotOrderAttempt).filter(
@@ -101,7 +131,7 @@ class StudyRecorder:
             HEALTH["state"] = "replaying"
             if (owner, account) not in done:
                 done[owner, account] = store.completed_ids(owner, account)
-            if entry["entry_id"] in done[owner, account] or self.job: continue
+            if entry["entry_id"] in done[owner, account] or self.job or self.deferred(entry["entry_id"]): continue
             if not entry.get("entry_at"):
                 continue  # Actual fill still unknown; visible as pending, never zero P&L.
             evidence = request.get("entryEvidence") or {}
@@ -128,7 +158,7 @@ class StudyRecorder:
                     "--capture", str(path)], stdin=subprocess.PIPE, stdout=output, stderr=subprocess.DEVNULL,
                     env=env, creationflags=flags)
                 self.job = {"process": process, "output": output, "started": monotonic(), "owner": owner,
-                            "account": account, "enrollment": enrollment or {}}
+                            "account": account, "enrollment": enrollment or {}, "entry_id": entry["entry_id"]}
                 process.stdin.write(json.dumps({"entry": entry, "owner": owner, "contract": contract}).encode())
                 process.stdin.close()
             except Exception:

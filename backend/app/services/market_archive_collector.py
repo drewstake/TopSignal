@@ -9,10 +9,16 @@ import json
 import threading
 from time import monotonic
 
-from .market_archive import (Archive, MINUTE, canonical, enabled, failure, get_state,
-                             native_bar, put_bar, refresh_day, set_state, stamp, stream_key)
+import sqlite3
+
+from .market_archive import (Archive, MINUTE, apply_day, canonical, enabled, failure, get_state,
+                             native_bar, plan_day, put_bars, refresh_day, revision_marker,
+                             set_state, stamp, stream_key)
 from .trading_day import trading_day_bounds_utc, trading_day_date
 
+# This background thread is not an execution caller: like the quote consumer it
+# may wait for the writer, so a brief overlap is not recorded as a lost collection.
+WRITE_TIMEOUT = 2.
 _pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='market-archive-fetch')
 _lock = threading.Lock()
 _pending = None
@@ -46,7 +52,7 @@ def _collect_safe(owner, account, config, contract, client, allowed):
     except Exception as exc:
         failure(owner, 'collection', exc)
         try:
-            with Archive(owner).transaction() as db:
+            with Archive(owner, write_timeout=WRITE_TIMEOUT).transaction() as db:
                 previous = get_state(db, 'collection:'+contract, {})
                 set_state(db, 'collection:'+contract, {**previous, 'error_type': type(exc).__name__, 'failed_at': stamp(datetime.now(timezone.utc))})
         except Exception:
@@ -57,7 +63,7 @@ def collect(owner, account, config, contract, client, *, now=None, root=None, al
     now = now or datetime.now(timezone.utc)
     # Give delayed delivery two minutes; overlap discovers subsequent corrections.
     cutoff = now.replace(second=0, microsecond=0) - 2*MINUTE
-    archive = Archive(owner, root)
+    archive = Archive(owner, root, write_timeout=WRITE_TIMEOUT)
     stream = stream_key(contract)
     with archive.transaction() as db:
         prior_contract = get_state(db, 'config-contract:'+str(config))
@@ -103,14 +109,32 @@ def collect(owner, account, config, contract, client, *, now=None, root=None, al
         normalized = [native_bar(b, contract) for b in bars if start <= b['timestamp'] < end
                       and b['timestamp'] + MINUTE <= cutoff and not b.get('is_partial')]
         with archive.transaction() as db:
-            for bar in normalized:
-                put_bar(db, bar, stamp(received))
-            # Verify the entire requested range, including wholly empty days.
-            day = trading_day_date(start)
-            last = trading_day_date(end-timedelta(microseconds=1))
-            while day <= last:
-                refresh_day(db, contract, day, cutoff, stamp(received))
-                day += timedelta(days=1)
+            put_bars(db, normalized, stamp(received))
+        # Verify the entire requested range, including wholly empty days.
+        days = []
+        day = trading_day_date(start)
+        last = trading_day_date(end-timedelta(microseconds=1))
+        while day <= last:
+            days.append(day)
+            day += timedelta(days=1)
+        # Coverage and derived bars are computed from a read snapshot so the
+        # writer lock is held only for the short apply below. The cursor moves
+        # in that same transaction; a crash before it re-fetches this window.
+        try:
+            with archive.reader() as snapshot:
+                snapshot.execute('BEGIN')
+                plans = [plan_day(snapshot, contract, day, cutoff) for day in days]
+        except sqlite3.Error:
+            plans = None
+        with archive.transaction() as db:
+            marker = revision_marker(db)
+            if plans is not None and all(plan['marker'] == marker for plan in plans):
+                for plan in plans:
+                    apply_day(db, plan, stamp(received))
+            else:
+                # Another writer changed a head after the snapshot: recompute under the lock.
+                for day in days:
+                    refresh_day(db, contract, day, cutoff, stamp(received))
             if mode == 'catchup' or (mode == 'recent' and cursor >= cutoff-20*MINUTE):
                 set_state(db, 'cursor:'+contract, stamp(end))
             set_state(db, 'collection:'+contract, dict(last_success=stamp(received), requested_start=stamp(start),

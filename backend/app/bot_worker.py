@@ -272,6 +272,8 @@ class BotWorkerRuntime:
         if not await asyncio.to_thread(drain_archive_collection) or not await asyncio.to_thread(drain_archive_events):
             logger.error("market_archive_shutdown_incomplete")
             return False
+        from .services.market_archive import close_writers as close_archive_writers
+        await asyncio.to_thread(close_archive_writers)
         if self._account_streams:
             self._replace_snapshot(last_error_code="streaming_shutdown_incomplete")
             logger.critical("bot_worker_streaming_shutdown_incomplete")

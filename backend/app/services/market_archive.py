@@ -29,6 +29,12 @@ CALENDAR = 'topsignal-cme-equity-' + hashlib.sha256(Path(__file__).with_name('tr
 logger = logging.getLogger(__name__)
 _health = {}
 _lock = threading.Lock()
+# One retained writer connection per (thread, archive file). Opening and closing
+# a connection for every transaction costs a WAL checkpoint and extra syncs on
+# each close; on the production data disk that was most of each transaction and
+# kept the single writer lock held long enough to fail other writers.
+_writers = {}
+_writers_lock = threading.Lock()
 
 
 def enabled():
@@ -103,6 +109,60 @@ CREATE TABLE IF NOT EXISTS coverage(stream TEXT NOT NULL, day TEXT NOT NULL, pay
 """
 
 
+def _file_identity(path):
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return info.st_dev, info.st_ino
+
+
+def _open_writer(path, timeout):
+    # Used by one thread at a time, guarded by its entry lock; close_writers may
+    # close it from another thread once that lock is free.
+    db = sqlite3.connect(path, timeout=timeout, check_same_thread=False)
+    try:
+        db.execute('PRAGMA foreign_keys=ON')
+        db.execute('PRAGMA journal_mode=WAL')
+        db.execute('PRAGMA synchronous=FULL')
+    except BaseException:
+        db.close()
+        raise
+    return db
+
+
+def _close_quietly(db):
+    try:
+        db.close()
+    except sqlite3.Error:
+        pass
+
+
+def close_writers(timeout=1.):
+    """Close retained writer connections; False if one was still inside a transaction.
+
+    Commits are already durable (WAL, synchronous=FULL), so this is tidiness for
+    shutdown and tests, not a durability step.
+    """
+    with _writers_lock:
+        entries = list(_writers.items())
+    complete = True
+    for key, entry in entries:
+        if not entry['lock'].acquire(timeout=max(0., timeout)):
+            complete = False
+            continue
+        try:
+            if entry['db'] is not None:
+                _close_quietly(entry['db'])
+                entry['db'] = None
+            with _writers_lock:
+                if _writers.get(key) is entry:
+                    del _writers[key]
+        finally:
+            entry['lock'].release()
+    return complete
+
+
 class Archive:
     def __init__(self, owner, root=None, *, write_timeout=.25):
         self.owner = str(owner)
@@ -110,15 +170,62 @@ class Archive:
         self.write_timeout = min(2., max(0., write_timeout))
 
     @contextmanager
+    def _writer(self):
+        """This thread's retained connection, or a temporary one if it is already in use."""
+        key = (threading.get_ident(), str(self.path))
+        with _writers_lock:
+            if len(_writers) > 64:
+                # Bounded bookkeeping: forget idle connections of threads that have ended.
+                alive = {thread.ident for thread in threading.enumerate()}
+                for stale in [k for k, e in _writers.items() if k[0] not in alive and not e['lock'].locked()]:
+                    if _writers[stale]['db'] is not None:
+                        _close_quietly(_writers[stale]['db'])
+                    del _writers[stale]
+            entry = _writers.setdefault(key, {'lock': threading.Lock(), 'db': None, 'identity': None})
+        if not entry['lock'].acquire(blocking=False):
+            # A nested transaction on this thread: behave as before with its own connection.
+            db = _open_writer(self.path, self.write_timeout)
+            try:
+                yield db
+            finally:
+                _close_quietly(db)
+            return
+        keep = False
+        try:
+            # A replaced or restored file must not keep receiving writes through an old handle.
+            if entry['db'] is not None and entry['identity'] != _file_identity(self.path):
+                _close_quietly(entry['db'])
+                entry['db'] = None
+            if entry['db'] is None:
+                entry['db'] = _open_writer(self.path, self.write_timeout)
+                entry['identity'] = _file_identity(self.path)
+            db = entry['db']
+            if db.in_transaction:
+                db.rollback()
+            try:
+                yield db
+                keep = True
+            except sqlite3.Error as exc:
+                # Waiting out another writer leaves the connection healthy; anything else is discarded.
+                keep = (getattr(exc, 'sqlite_errorcode', 0) or 0) & 255 in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+                raise
+        finally:
+            if not keep and entry['db'] is not None:
+                _close_quietly(entry['db'])
+                entry['db'] = None
+            entry['lock'].release()
+
+    @contextmanager
     def transaction(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if shutil.disk_usage(self.path.parent).free < 512 * 1024 * 1024:
             raise OSError('archive_free_space_floor')
-        db = sqlite3.connect(self.path, timeout=self.write_timeout)
+        with self._writer() as db:
+            yield from self._transaction(db)
+
+    def _transaction(self, db):
         try:
-            db.execute('PRAGMA foreign_keys=ON')
-            db.execute('PRAGMA journal_mode=WAL')
-            db.execute('PRAGMA synchronous=FULL')
+            db.execute(f'PRAGMA busy_timeout={int(self.write_timeout*1000)}')
             version = db.execute('PRAGMA user_version').fetchone()[0]
             if version not in (0, VERSION):
                 raise ValueError('Unsupported archive schema')
@@ -134,8 +241,6 @@ class Archive:
         except BaseException:
             db.rollback()
             raise
-        finally:
-            db.close()
 
     @contextmanager
     def reader(self):
@@ -234,6 +339,44 @@ def put_bar(db, row, received):
     return ident
 
 
+def put_bars(db, rows, received):
+    """put_bar for many rows in a constant number of SQLite calls.
+
+    Each SQLite call releases the interpreter lock; when other worker threads
+    are busy, reacquiring it per row stretches a sub-second transaction into
+    many seconds while it holds the archive's only writer lock. Bars, revisions
+    and heads are identical to calling put_bar once per row, in order.
+    """
+    items = [(digest(row), stream_key(row['contract'], row['timeframe_minutes'], row['origin'], row['live_requested']),
+              row['timestamp'], row) for row in rows]
+    spans = {}
+    for _, stream, at, _ in items:
+        low, high = spans.get(stream, (at, at))
+        spans[stream] = (min(low, at), max(high, at))
+    heads = {}
+    for stream, (low, high) in spans.items():
+        for at, ident in db.execute('SELECT at,id FROM heads WHERE stream=? AND at>=? AND at<=?', (stream, low, high)):
+            heads[stream, at] = ident
+    changed = []
+    for ident, stream, at, row in items:
+        if heads.get((stream, at)) != ident:
+            heads[stream, at] = ident
+            changed.append((ident, stream, at, row))
+    if changed:
+        db.executemany('INSERT OR IGNORE INTO bars VALUES (?,?,?,?,?)',
+                       [(ident, stream, at, received, pack(row)) for ident, stream, at, row in changed])
+        db.executemany('INSERT INTO revisions(stream,at,id,received) VALUES (?,?,?,?)',
+                       [(stream, at, ident, received) for ident, stream, at, _ in changed])
+        db.executemany('INSERT INTO heads VALUES (?,?,?) ON CONFLICT(stream,at) DO UPDATE SET id=excluded.id',
+                       [(stream, at, ident) for ident, stream, at, _ in changed])
+    return [ident for ident, _, _, _ in items]
+
+
+def revision_marker(db):
+    """Changes whenever any head changes; lets a plan made off-lock be verified."""
+    return db.execute('SELECT coalesce(max(seq),0) FROM revisions').fetchone()[0]
+
+
 def native_bar(bar, contract, timeframe=1, live=False):
     at = stamp(bar['timestamp'])
     when = datetime.fromisoformat(at)
@@ -256,8 +399,14 @@ def expected_minutes(day):
             if futures_session_is_open(start + i * MINUTE, symbol='MNQ')]
 
 
-def refresh_day(db, contract, day, now, received):
-    """At most 1,440 rows; no synthetic minutes, cross-delivery or partial buckets."""
+def plan_day(db, contract, day, now):
+    """Read and compute one day's coverage and derived bars; writes nothing.
+
+    At most 1,440 rows; no synthetic minutes, cross-delivery or partial buckets.
+    Safe on a read-only connection, so the collector can do this work without
+    holding the writer lock. apply_day writes the result.
+    """
+    marker = revision_marker(db)
     stream = stream_key(contract)
     start, end = trading_day_bounds_utc(day)
     rows = {at: (ident, unpack(payload)) for at, ident, payload in db.execute(
@@ -273,17 +422,14 @@ def refresh_day(db, contract, day, now, received):
             ranges[-1]['minutes'] += 1
         else:
             ranges.append({'start': value, 'end': stamp(datetime.fromisoformat(value) + MINUTE), 'minutes': 1})
-    previous = db.execute('SELECT payload FROM coverage WHERE stream=? AND day=?', (stream, day.isoformat())).fetchone()
-    old = json.loads(previous[0]) if previous else {}
     coverage = dict(day=day.isoformat(), contract=contract, calendar=CALENDAR,
                     expected=len(complete), observed=sum(stamp(t) in rows for t in complete),
                     missing=len(missing), gaps=ranges, checked_through=stamp(min(now, end)),
                     scheduled_closed_minutes=int((end + timedelta(microseconds=1)-start)/MINUTE)-len(expected),
                     unexpected_minutes=len(set(rows) - {stamp(t) for t in expected}),
                     status='gaps_unresolved' if missing else 'matches_calendar_to_cutoff',
-                    calendar_confidence='repository_calendar; future holiday exceptions require review',
-                    attempts=old.get('attempts', 0), retry_at=old.get('retry_at'))
-    db.execute('INSERT INTO coverage VALUES (?,?,?) ON CONFLICT(stream,day) DO UPDATE SET payload=excluded.payload', (stream, day.isoformat(), canonical(coverage)))
+                    calendar_confidence='repository_calendar; future holiday exceptions require review')
+    derived_rows = []
     for frame in (5, 15, 60, 240, 1440):
         buckets = {}
         for t in expected:
@@ -300,8 +446,32 @@ def refresh_day(db, contract, day, now, received):
                            calendar=CALENDAR, expected_minutes=len(times), input_ids=[i for i, _ in inputs],
                            open=values[0]['open'], high=max(r['high'] for r in values),
                            low=min(r['low'] for r in values), close=values[-1]['close'], volume=sum(r['volume'] for r in values))
-            put_bar(db, derived, received)
+            derived_rows.append(derived)
+    # Nearly every derived bar is already the head; leave only real changes for the writer.
+    current = {}
+    for frame in (5, 15, 60, 240, 1440):
+        key = stream_key(contract, frame, 'derived_1m', False)
+        for at, ident in db.execute('SELECT at,id FROM heads WHERE stream=? AND at>=? AND at<=?', (key, stamp(start), stamp(end))):
+            current[frame, at] = ident
+    derived_rows = [row for row in derived_rows if current.get((row['timeframe_minutes'], row['timestamp'])) != digest(row)]
+    return dict(stream=stream, day=day.isoformat(), coverage=coverage, derived=derived_rows, marker=marker)
+
+
+def apply_day(db, plan, received):
+    """Write a plan_day result inside the caller's write transaction."""
+    previous = db.execute('SELECT payload FROM coverage WHERE stream=? AND day=?', (plan['stream'], plan['day'])).fetchone()
+    old = json.loads(previous[0]) if previous else {}
+    # Recovery attempts are counted in their own transaction; never overwrite them from a plan.
+    coverage = dict(plan['coverage'], attempts=old.get('attempts', 0), retry_at=old.get('retry_at'))
+    db.execute('INSERT INTO coverage VALUES (?,?,?) ON CONFLICT(stream,day) DO UPDATE SET payload=excluded.payload',
+               (plan['stream'], plan['day'], canonical(coverage)))
+    put_bars(db, plan['derived'], received)
     return coverage
+
+
+def refresh_day(db, contract, day, now, received):
+    """plan_day and apply_day on one connection, for callers already inside a transaction."""
+    return apply_day(db, plan_day(db, contract, day, now), received)
 
 
 def prepare_decision(result):

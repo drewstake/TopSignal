@@ -87,3 +87,65 @@ def test_reader_restart_restores_filled_retention_without_reenrollment(db_sessio
     assert len(calls) == 3  # A model deployment must not cancel outstanding path retention.
     with store.connection(str(row.user_id)) as db:
         assert db.execute("select count(*) from enrollments").fetchone()[0] == 1
+
+
+def test_overdue_replay_is_reported_once_deferred_and_cleared_by_success(db_session, dom_entry, tmp_path, monkeypatch):
+    import io
+    import pytest
+    from contextlib import contextmanager
+    from copy import deepcopy
+    from app.services import topbot_study_store as store
+    from app.services import topbot_study_worker as worker
+    monkeypatch.setattr(store, "default_cache_root", lambda: tmp_path)
+    result, _, _ = dom_entry
+    row = result.order_attempt
+    request = deepcopy(row.raw_request)
+    now = datetime.now(timezone.utc)
+    request["strategySnapshot"]["research_cutoff"] = (now-timedelta(minutes=1)).isoformat()
+    request["timeExit"]["runner"].update(entry_at=(now-timedelta(minutes=30)).isoformat(), entry_price=20000, stats_status="open")
+    request["entryEvidence"] = {"pre_submit": {"evidence": {"capture_id": "ab"*16}}}
+    row.raw_request = request
+    db_session.commit()
+    @contextmanager
+    def sessions(): yield db_session
+    children = []
+    class Input(io.BytesIO):
+        def close(self): self.sent = self.getvalue(); super().close()
+    class Child:
+        def __init__(self, *args, **kwargs):
+            self.stdin, self.code, self.terminated = Input(), None, False
+            children.append(self)
+        def poll(self): return self.code
+        def terminate(self): self.terminated, self.code = True, 1
+        def wait(self, timeout=None): return self.code
+        def kill(self): self.code = 1
+    monkeypatch.setattr(subprocess, "Popen", Child)
+    def forbidden(owner): raise AssertionError("No broker call is needed")
+    recorder = worker.StudyRecorder(sessions, forbidden)
+    recorder.cycle()
+    assert len(children) == 1 and recorder.job["entry_id"] == row.id
+    recorder.job["started"] -= worker.DEADLINE_SECONDS+1
+    with pytest.raises(TimeoutError):
+        recorder.cycle()
+    assert children[0].terminated and recorder.job is None
+    assert recorder.failures[row.id][0] == 1 and worker.HEALTH["deferred_replays"] == 1
+    # The terminated child is not reported a second time and is not restarted at once.
+    recorder.cycle()
+    recorder.cycle()
+    assert len(children) == 1
+    recorder.failures[row.id] = (1, 0)  # Retry time reached.
+    recorder.cycle()
+    assert len(children) == 2
+    children[1].code = 3
+    with pytest.raises(RuntimeError):
+        recorder.cycle()
+    assert recorder.failures[row.id][0] == 2 and recorder.job is None
+    recorder.failures[row.id] = (2, 0)
+    recorder.cycle()
+    assert len(children) == 3
+    entry = json.loads(children[2].stdin.sent)["entry"]
+    recorder.job["output"].write(json.dumps(simulate(entry, [], gap_reason="test_gap")).encode())
+    children[2].code = 0
+    recorder.cycle()
+    assert recorder.failures == {} and recorder.job is None and len(children) == 3
+    assert store.completed_ids(str(row.user_id), int(row.account_id)) == {row.id}
