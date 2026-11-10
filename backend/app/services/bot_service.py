@@ -1439,6 +1439,20 @@ def _evaluate_bot_config_impl(
             if run_snapshot is None or _bot_run_execution_snapshot(run) != run_snapshot:
                 raise ValueError("bot_run_changed_during_market_fetch")
 
+        from .topbot_instrument_pause import entry_pause_reason, snapshot as instrument_pause_snapshot
+        if (not resolved_dry_run and str(config.strategy_type) == "topbot_adaptive"
+                and dom_selected(config.strategy_params)):
+            pause_reason = entry_pause_reason(
+                instrument_pause_snapshot(run), contract_id=execution_contract_id, now=datetime.now(timezone.utc),
+                observation=(signal.raw_payload or {}).get("depth_entry", {}),
+            )
+            if pause_reason:
+                signal = SignalResult(
+                    "HOLD", "Instrument temporarily unavailable; waiting to recheck a fresh setup.",
+                    None, None, {**(signal.raw_payload or {}), "hold_reason": pause_reason,
+                                 "live_routing_allowed": False, "instrument_pause": instrument_pause_snapshot(run)},
+                )
+
         if contract_rolled:
             config.enabled = False
             if run is not None:
@@ -1899,10 +1913,21 @@ def _evaluate_bot_config_impl(
                                 _submit_order_attempt(client=client, order_attempt=order_attempt, decision=decision)
                             if order_attempt.status == "submitted":
                                 evaluation_status = "submitted"
+                                from .topbot_instrument_pause import clear_pause
+                                clear_pause(run)
                             else:
                                 evaluation_status = "error"
-                                config.enabled = False
-                                if run is not None and run.status == "running":
+                                from .topbot_instrument_pause import pause_after_rejection
+                                paused = bool(
+                                    run is not None and run.status == "running" and config.enabled
+                                    and worker_lease_token is not None and not resolved_dry_run
+                                    and str(config.strategy_type) == "topbot_adaptive"
+                                    and dom_selected(config.strategy_params)
+                                    and pause_after_rejection(run, order_attempt, now=datetime.now(timezone.utc))
+                                )
+                                if not paused:
+                                    config.enabled = False
+                                if run is not None and run.status == "running" and not paused:
                                     stop_reason = (
                                         "provider_order_submission_unknown"
                                         if order_attempt.status == "submission_unknown"
@@ -1920,7 +1945,7 @@ def _evaluate_bot_config_impl(
         if run is not None and run.status == "running":
             touch_bot_run(run, candle_timestamp=actionable_candle_timestamp)
             state = dict(run.raw_state) if isinstance(run.raw_state, dict) else {}
-            state["phase"] = "idle"
+            state["phase"] = "instrument_wait" if state.get("instrument_pause") else "idle"
             state["last_evaluation_status"] = evaluation_status
             run.raw_state = state
         db.flush()
@@ -13110,6 +13135,8 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
             else safe_error
         )
         order_attempt.raw_response = {"error": safe_error, "error_type": type(exc).__name__}
+        if isinstance(exc, ProjectXClientError) and not submission_outcome_unknown:
+            order_attempt.raw_response["reason_code"] = exc.reason_code
     finally:
         if isinstance(request_payload.get("timeExit", {}).get("runner"), dict) and getattr(client, "last_call", None):
             order_attempt.raw_request = {**(order_attempt.raw_request or {}), "submissionTiming": dict(client.last_call)}

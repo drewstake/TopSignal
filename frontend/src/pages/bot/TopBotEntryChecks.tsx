@@ -36,6 +36,7 @@ export function TopBotEntryChecks({ monitor, contractId, fresh, ready, qualified
   const activity = monitor?.activity?.config.contract_id === contractId ? monitor.activity : null;
   const { run, decision, payload, plan, snapshot } = evidence(activity, contractId);
   const monitoring = Boolean(activity && monitor && !monitor.error && recent(monitor.updatedAt, now));
+  const pause = object(run?.raw_state?.instrument_pause);
   const sameEpisode = Boolean(episodeAt && snapshot.episode_at === episodeAt);
   const current = monitoring && fresh && sameEpisode && recent(snapshot.checked_at, now);
   const guard = activity?.profit_guard;
@@ -79,6 +80,14 @@ export function TopBotEntryChecks({ monitor, contractId, fresh, ready, qualified
   const checks = [...local, ...groups.map(([id, label]) => (id === "profit" ? profitCheck : null) ?? saved.find(row => row.id === id)
     ?? { id, label, status: "unknown" as const, detail: "Awaiting a recorded broker entry check." }),
   ...saved.filter(row => !groups.some(([id]) => id === row.id))];
+  if (pause.contract_id === contractId) checks.unshift({
+    id: "instrument", label: "Instrument recovery",
+    status: !monitoring ? "stale" : !activity?.config.enabled || run?.status !== "running"
+      || typeof pause.retry_at === "string" && Date.parse(pause.retry_at) > now ? "blocked" : "unknown",
+    detail: !activity?.config.enabled || run?.status !== "running" ? "Automatic recovery is stopped. The bot must be explicitly started again."
+      : `ProjectX temporarily rejected entries. Automatic recovery is armed; a fresh setup and all entry checks are required.${
+      typeof pause.retry_at === "string" ? ` Next eligible recheck: ${timeLabel(pause.retry_at)}.` : ""}`,
+  });
   // Older servers and checks performed after the risk pass still expose explicit
   // rejection evidence. Never infer passing checks from the absence of an error.
   if (Array.isArray(payload.risk_blocks)) payload.risk_blocks.forEach((value, index) => {

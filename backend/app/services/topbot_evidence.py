@@ -37,7 +37,8 @@ def implementation():
     base = Path(__file__).parent
     names = ("topbot_strategy.py", "topbot_depth.py", "topbot_evidence.py", "topbot_runner.py",
              "topbot_audit.py", "topbot_execution_trace.py", "topbot_time_exit.py", "topbot_session.py", "bot_service.py",
-             "projectx_order_book.py", "projectx_client.py", "topstep_fees.py", "topbot_profit_guard.py", "topbot_entry_checks.py", "../bot_worker.py")
+             "projectx_order_book.py", "projectx_client.py", "topstep_fees.py", "topbot_profit_guard.py", "topbot_entry_checks.py",
+             "topbot_instrument_pause.py", "../bot_worker.py")
     names += ("topbot_study.py", "topbot_study_store.py", "topbot_study_worker.py")
     try:
         files = {name: sha256((base / name).read_text(encoding="utf-8").encode()).hexdigest()

@@ -660,7 +660,7 @@ class BotWorkerRuntime:
                     now=now,
                     stale_after_seconds=self.settings.lease_ttl_seconds,
                 )
-            state["phase"] = "idle"
+            state["phase"] = "instrument_wait" if state.get("instrument_pause") else "idle"
             run.raw_state = state
             run.last_heartbeat_at = now
             user_id = str(run.user_id)
@@ -748,6 +748,10 @@ class BotWorkerRuntime:
                 # run armed and leave qualifying episodes unconsumed. Position
                 # reconciliation and profit protection still run independently.
                 return {"evaluated": False, "provider_ok": provider_ok}
+            from .services.topbot_instrument_pause import entry_pause_reason
+            if entry_pause_reason(state.get("instrument_pause"), contract_id=archive_contract,
+                                  now=datetime.now(timezone.utc)):
+                return {"evaluated": False, "provider_ok": provider_ok}
             # The cycle timestamp predates database/provider I/O. New ticks can
             # arrive during that work; compare their age with the clock read
             # under the feed lock, not with the earlier scheduling timestamp.
@@ -816,7 +820,7 @@ class BotWorkerRuntime:
                         state["phase"] = "retry_wait"
                     else:
                         state["worker_last_scheduled_close_at"] = scheduled_close.isoformat()
-                        state["phase"] = "idle"
+                        state["phase"] = "instrument_wait" if state.get("instrument_pause") else "idle"
                         if dom_run and depth.get("episode_at") and depth.get("persistence_seconds", 0) >= dom_params.get("persistence_seconds", 30):
                             state["dom_episode_evaluated"] = depth["episode_at"]
                     result.run.raw_state = state

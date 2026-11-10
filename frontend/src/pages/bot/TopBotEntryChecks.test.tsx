@@ -25,6 +25,23 @@ function monitor(): EntryMonitor {
 }
 const row = (label: string) => within(screen.getByText(label).closest("li")!);
 
+it("shows instrument recovery without claiming the instrument is tradable after the timer", () => {
+  const state = monitor();
+  state.activity!.runs[0].raw_state = { instrument_pause: { contract_id: contractId,
+    retry_at: new Date(now + 60_000).toISOString() } };
+  const view = render(<TopBotEntryChecks {...props} monitor={state} />);
+  expect(row("Instrument recovery").getByText("Blocking")).toBeTruthy();
+  expect(screen.getByText(/Automatic recovery is armed/)).toBeTruthy();
+  state.updatedAt = new Date(now + 61_000).toISOString();
+  view.rerender(<TopBotEntryChecks {...props} monitor={state} now={now + 61_000} />);
+  expect(row("Instrument recovery").getByText("Not checked")).toBeTruthy();
+  view.rerender(<TopBotEntryChecks {...props} monitor={{ ...state, error: "offline" }} />);
+  expect(row("Instrument recovery").getByText("Stale")).toBeTruthy();
+  state.activity!.config.enabled = false;
+  view.rerender(<TopBotEntryChecks {...props} monitor={state} now={now + 61_000} />);
+  expect(screen.getByText(/Automatic recovery is stopped/)).toBeTruthy();
+});
+
 it("shows live passes and explicit broker blockers directly in the entry list", () => {
   render(<TopBotEntryChecks {...props} monitor={monitor()} />);
   expect(row("Imbalance and duration").getByText("Passing")).toBeTruthy();

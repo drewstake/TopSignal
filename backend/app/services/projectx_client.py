@@ -47,11 +47,13 @@ PROJECTX_ERROR_AUTH_FAILED = "projectx_auth_failed"
 PROJECTX_ERROR_CONFIGURATION = "projectx_configuration_error"
 PROJECTX_ERROR_NETWORK = "projectx_network_error"
 PROJECTX_ERROR_PROVIDER_RESPONSE = "projectx_provider_error"
+PROJECTX_ERROR_INSTRUMENT_NOT_TRADABLE = "projectx_instrument_not_tradable"
 _PROJECTX_ERROR_REASON_CODES = {
     PROJECTX_ERROR_AUTH_FAILED,
     PROJECTX_ERROR_CONFIGURATION,
     PROJECTX_ERROR_NETWORK,
     PROJECTX_ERROR_PROVIDER_RESPONSE,
+    PROJECTX_ERROR_INSTRUMENT_NOT_TRADABLE,
 }
 
 
@@ -899,10 +901,21 @@ class ProjectXClient:
             raise _request_timeout(outcome_unknown=_is_broker_mutation_path(path))
 
         if isinstance(parsed, dict) and parsed.get("success") is False:
+            # Only a decoded, explicit Order/place rejection may authorize a
+            # temporary entry pause. HTTP/network errors remain ambiguous.
+            # ContractNotActive (9) concerns delivery selection, not a halt.
+            instrument_unavailable = path == "/api/Order/place" and (
+                type(parsed.get("errorCode")) is int and (
+                    parsed["errorCode"] == 5
+                    or (parsed["errorCode"] == 2 and parsed.get("errorMessage") ==
+                        "Trading is currently unavailable. The instrument is not in an active trading status.")
+                )
+            )
             raise ProjectXClientError(
                 _format_provider_error(path=path, payload=parsed),
                 status_code=502,
                 reason_code=(
+                    PROJECTX_ERROR_INSTRUMENT_NOT_TRADABLE if instrument_unavailable else
                     PROJECTX_ERROR_AUTH_FAILED
                     if _is_authentication_path(path)
                     else PROJECTX_ERROR_PROVIDER_RESPONSE

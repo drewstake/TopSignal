@@ -21,6 +21,7 @@ const sample = (): SessionOrderFlow => ({ schema: "session-provider-flow-v1", co
 const props = { accountId: 1, contractId: "CON.F.US.MNQ.Z26", enabled: true, scope: "user-a" };
 
 it("shows qualified reported pressure, price divergence and partial coverage", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date("2026-11-04T00:01:00Z"));
   vi.spyOn(api, "getSessionOrderFlow").mockResolvedValue(sample());
   render(<SessionOrderFlowPanel {...props} />);
   await act(async () => {});

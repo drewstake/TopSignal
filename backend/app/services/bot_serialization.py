@@ -70,6 +70,13 @@ def serialize_supported_bot_configs(rows: list[BotConfig]) -> tuple[list[dict[st
 
 
 def serialize_bot_run(row: BotRun) -> dict[str, Any]:
+    state = row.raw_state if isinstance(row.raw_state, dict) else {}
+    public_state = {"dom_episode_evaluated": state.get("dom_episode_evaluated")}
+    pause = state.get("instrument_pause")
+    if isinstance(pause, dict):
+        public_state["instrument_pause"] = {key: pause.get(key) for key in (
+            "contract_id", "reason_code", "rejected_at", "retry_at", "rejections", "order_attempt_id",
+        )}
     return {
         "id": int(row.id),
         "bot_config_id": int(row.bot_config_id),
@@ -82,9 +89,8 @@ def serialize_bot_run(row: BotRun) -> dict[str, Any]:
         "last_heartbeat_at": _as_utc(row.last_heartbeat_at) if row.last_heartbeat_at is not None else None,
         "last_error": row.last_error,
         "last_evaluated_at": _as_utc(row.last_evaluated_at) if row.last_evaluated_at is not None else None,
-        # Expose only the entry episode marker, not the worker's internal state.
-        "raw_state": {"dom_episode_evaluated": row.raw_state.get("dom_episode_evaluated")}
-        if isinstance(row.raw_state, dict) else {},
+        # Only bounded entry/recovery evidence, never internal authorization.
+        "raw_state": public_state,
     }
 
 
