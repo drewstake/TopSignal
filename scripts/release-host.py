@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
@@ -248,6 +249,7 @@ def gate(stage: Path, config: dict, root: Path, record: bool, require_flat: bool
     if record:
         if baseline_path.exists():
             raise ValueError("Broker baseline already exists; cannot overwrite activation evidence")
+        write_json(stage / "recorder-before.json", independent_recording(config))
         write_json(baseline_path, observed)
     write_json(stage / "broker-latest.json", observed)
     return observed
@@ -299,15 +301,50 @@ def check_recording(before: dict, after: dict) -> None:
             raise ValueError("Recording durability regressed")
 
 
+def independent_recording(config: dict) -> dict:
+    path = Path(config["runtime_root"]) / "depth-recorder/status.json"
+    status = json.loads(path.read_text(encoding="utf-8"))
+    age = (datetime.now(timezone.utc) - datetime.fromisoformat(status["at"])).total_seconds()
+    detail = status.get("recording") or {}
+    sample = {"state": status.get("state"), "pid": status.get("pid"),
+              "capture_id": detail.get("run_id"), "durable_events": detail.get("durable_event_index"),
+              "rejected_events": (detail.get("counts") or {}).get("gap", 0),
+              "errors": status.get("errors"), "at": status["at"]}
+    if (not -30 <= age <= 60 or sample["state"] != "recording" or not sample["pid"]
+            or not sample["capture_id"] or (status.get("storage") or {}).get("blocked_reason")
+            or not isinstance(sample["durable_events"], int)
+            or not isinstance(sample["errors"], int)):
+        raise ValueError("Independent recording is stale, blocked or unavailable")
+    return sample
+
+
+def check_independent_recording(before: dict, after: dict) -> None:
+    if any(before[k] != after[k] for k in ("pid", "capture_id", "rejected_events", "errors")):
+        raise ValueError("Independent recorder restarted or reported new errors/loss")
+    if after["durable_events"] < before["durable_events"]:
+        raise ValueError("Independent recording durability regressed")
+
+
 def monitor_recording(stage: Path) -> None:
-    baseline = json.loads((stage / "broker-before.json").read_text(encoding="utf-8"))
-    accounts = [a["account_id"] for a in baseline["accounts"]]
-    samples = [recording(accounts)]
+    config = json.loads((stage / "host.json").read_text(encoding="utf-8"))
+    latest = json.loads((stage / "broker-latest.json").read_text(encoding="utf-8"))
+    # A deliberately disarmed bot has no application capture. The independent
+    # recorder remains mandatory even when every trading run is stopped.
+    accounts = sorted({int(row["account_id"]) for key, row in latest["configs"].items()
+                       if row["enabled"] == "True" and (latest["runs"].get(key) or {}).get("status") == "running"})
+    baseline = json.loads((stage / "recorder-before.json").read_text(encoding="utf-8"))
+    independent = [independent_recording(config)]
+    check_independent_recording(baseline, independent[0])
+    samples = [recording(accounts)] if accounts else []
     for _ in range(2):
         time.sleep(10)
-        samples.append(recording(accounts))
-        check_recording(samples[0], samples[-1])
-    write_json(stage / "recording-verification.json", {"samples": samples, "verified": True})
+        independent.append(independent_recording(config))
+        check_independent_recording(baseline, independent[-1])
+        if accounts:
+            samples.append(recording(accounts))
+            check_recording(samples[0], samples[-1])
+    write_json(stage / "recording-verification.json", {"samples": samples, "active_accounts": accounts,
+               "independent_samples": independent, "verified": True})
 
 
 def migration_check(root: Path) -> None:

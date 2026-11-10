@@ -139,6 +139,38 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             host.check_gate_snapshot(after, before, True, allow_restart_disarm=True)
 
+    def test_independent_recording_rejects_restart_loss_stale_status_and_regression(self):
+        before = {"pid": 123, "capture_id": "capture", "rejected_events": 0, "errors": 0, "durable_events": 100}
+        host.check_independent_recording(before, dict(before, durable_events=101))
+        for key, value in (("pid", 124), ("capture_id", "new"), ("rejected_events", 1),
+                           ("errors", 1), ("durable_events", 99)):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                host.check_independent_recording(before, dict(before, **{key: value}))
+        path = self.root / "depth-recorder/status.json"
+        path.parent.mkdir()
+        status = {"at": host.datetime.now(host.timezone.utc).isoformat(), "state": "recording", "pid": 123,
+                  "recording": {"run_id": "capture", "durable_event_index": 100}, "errors": 0, "storage": {}}
+        path.write_text(json.dumps(status))
+        self.assertEqual(host.independent_recording({"runtime_root": str(self.root)})["pid"], 123)
+        status["at"] = "2000-01-01T00:00:00+00:00"
+        path.write_text(json.dumps(status))
+        with self.assertRaisesRegex(ValueError, "stale"):
+            host.independent_recording({"runtime_root": str(self.root)})
+
+    def test_stopped_bots_still_require_independent_recording(self):
+        self.bundle.mkdir(exist_ok=True)
+        (self.bundle / "host.json").write_text(json.dumps({"runtime_root": str(self.root)}))
+        (self.bundle / "broker-latest.json").write_text(json.dumps({"configs": {"1": {
+            "account_id": "100", "enabled": "False"}}, "runs": {"1": {"status": "stopped"}}}))
+        sample = {"pid": 123, "capture_id": "capture", "rejected_events": 0, "errors": 0, "durable_events": 100}
+        (self.bundle / "recorder-before.json").write_text(json.dumps(sample))
+        with patch.object(host, "independent_recording", return_value=sample) as independent, \
+                patch.object(host, "recording") as application, patch.object(host.time, "sleep"):
+            host.monitor_recording(self.bundle)
+            self.assertEqual(independent.call_count, 3)
+            application.assert_not_called()
+        self.assertTrue(json.loads((self.bundle / "recording-verification.json").read_text())["verified"])
+
     def test_ci_requires_all_jobs_and_exact_commit_and_latest_success(self):
         jobs = [{"name": name, "conclusion": "success"} for name in
                 ("Database migrations", "Backend tests", "Frontend tests", "Frontend quality", "Windows compatibility", "verify")]

@@ -141,6 +141,10 @@ need their own reviewed lifecycle rollout before this application release.
   and three recording observations over 20 seconds. Missing recording, new
   drops, capture restarts or durability regression fail verification. The API's
   local-device authentication is required for the recording check.
+  The independent recorder's fresh status, PID, capture, error counts and durable
+  event index are checked from before the switch through final verification.
+  Application captures are additionally required for enabled, running bots;
+  deliberately disarmed bots do not create application captures.
 - If candidate startup/verification fails, restore the previous task action and
   verify it. Recheck broker exposure and release integrity before stopping a
   partially started candidate. If exposure is active or the rollback gate cannot
