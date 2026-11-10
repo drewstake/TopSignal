@@ -3,9 +3,11 @@ param(
     [ValidateSet('Prepare', 'Activate', 'Verify')][string]$Phase = 'Prepare',
     [string]$Stage,
     [string]$CIReceiptHash,
+    [string]$BundleHash,
     [switch]$FunctionsOnly
 )
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version Latest
 
 function Assert-ChildPath([string]$Root, [string]$Child) {
@@ -66,7 +68,7 @@ function Set-ReleaseAcl([string]$Release, [string]$ServiceSid) {
         $inheritance = if ($item.PSIsContainer) { [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' } else { [Security.AccessControl.InheritanceFlags]::None }
         foreach ($sid in @('S-1-5-18', 'S-1-5-32-544', $ServiceSid)) {
             $rights = if ($sid -eq $ServiceSid) {
-                if ($item.Name -like '.env*') { [Security.AccessControl.FileSystemRights]::Read }
+                if (Test-PrivateEnvironmentFile $item.Name) { [Security.AccessControl.FileSystemRights]::Read }
                 else { [Security.AccessControl.FileSystemRights]::ReadAndExecute }
             } else { [Security.AccessControl.FileSystemRights]::FullControl }
             $rule = New-Object Security.AccessControl.FileSystemAccessRule(
@@ -159,6 +161,8 @@ if ($Phase -eq 'Prepare') {
     # --check never applies a database migration. Existing checked startup is
     # preserved; pending migrations require the migration-specific runbook.
     Invoke-ReleaseTool $python $tool 'migration-check' $Stage
+    @{manifest_sha256=$config.manifest_sha256;config_sha256=(Get-FileHash -LiteralPath (Join-Path $Stage 'host.json')).Hash.ToLowerInvariant()} |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Stage 'ready.json')
     Log 'Candidate prepared, ACL-checked and checksum-verified.'
     return
 }
@@ -169,6 +173,11 @@ if ($Phase -eq 'Verify') {
 }
 if ($task.State -ne 'Running' -or (Test-Path -LiteralPath (Join-Path $runtime 'STOP'))) {
     throw 'Runtime not running or operator STOP exists; activation blocked'
+}
+if ($BundleHash -ne $config.manifest_sha256) { throw 'Requested bundle does not match the staged candidate' }
+$ready = Get-Content -LiteralPath (Join-Path $Stage 'ready.json') -Raw | ConvertFrom-Json
+if ($ready.manifest_sha256 -ne $BundleHash -or $ready.config_sha256 -ne (Get-FileHash -LiteralPath (Join-Path $Stage 'host.json')).Hash.ToLowerInvariant()) {
+    throw 'Candidate has not completed preparation for this configuration'
 }
 if (-not $CIReceiptHash -or (Get-FileHash -LiteralPath (Join-Path $Stage 'ci.json')).Hash.ToLowerInvariant() -ne $CIReceiptHash) {
     throw 'Exact-commit CI receipt required for activation'

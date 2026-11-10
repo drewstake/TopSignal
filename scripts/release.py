@@ -169,7 +169,7 @@ def check_ci(commit: str, repository: str) -> dict:
     return {"commit": commit, "run_id": runs[0]["databaseId"], "url": run["url"], "verified_at": time.time()}
 
 
-def remote(bundle: Path, config_path: Path, activate: bool) -> None:
+def remote(bundle: Path, config_path: Path, activate: bool, *, prepared: bool = False) -> None:
     manifest = verify_bundle(bundle)
     config = json.loads(config_path.read_text(encoding="utf-8"))
     required = {"host", "key", "staging_root", "releases_root", "previous_release", "runtime_root", "release_id", "repository", "credential_script", "bot_config_ids", "companion_files"}
@@ -185,8 +185,24 @@ def remote(bundle: Path, config_path: Path, activate: bool) -> None:
            "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", config["host"]]
 
     def invoke(body: str) -> None:
-        encoded = base64.b64encode(("$ErrorActionPreference='Stop'; " + body).encode("utf-16le")).decode()
+        encoded = base64.b64encode(("$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; " + body).encode("utf-16le")).decode()
         subprocess.run([*ssh, "powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], check=True)
+
+    def activate_candidate() -> None:
+        ci = check_ci(manifest["git_commit"], config["repository"])
+        print(f"Exact commit CI passed: {ci['url']}", flush=True)
+        receipt_dir = bundle / "bootstrap"
+        receipt_dir.mkdir(exist_ok=True)
+        ci_path = receipt_dir / "ci.json"
+        ci_path.write_text(json.dumps(ci), encoding="utf-8")
+        subprocess.run(["scp", *ssh[1:-1], str(ci_path), config["host"] + ":" + stage + "/"], check=True)
+        invoke(f"& {ps_quote(stage + '/release-host.ps1')} -Phase Activate -Stage {ps_quote(stage)} -CIReceiptHash {ps_quote(sha256(ci_path))} -BundleHash {ps_quote(sha256(bundle / 'manifest.json'))}; if (-not $?) {{ exit 1 }}")
+
+    if prepared:
+        # The host requires a completed preparation receipt and repeats integrity,
+        # ACL and broker checks. Do not copy/harden an already prepared tree twice.
+        activate_candidate()
+        return
 
     invoke(f"""
 $path = {ps_quote(stage)}
@@ -222,17 +238,12 @@ Set-Acl -LiteralPath $path -AclObject $acl
                     config["host"] + ":" + stage + "/"], check=True)
     invoke(f"& {ps_quote(stage + '/release-host.ps1')} -Phase Prepare -Stage {ps_quote(stage)}; if (-not $?) {{ exit 1 }}")
     if activate:
-        ci = check_ci(manifest["git_commit"], config["repository"])
-        print(f"Exact commit CI passed: {ci['url']}", flush=True)
-        ci_path = bootstrap / "ci.json"
-        ci_path.write_text(json.dumps(ci), encoding="utf-8")
-        subprocess.run(["scp", *ssh[1:-1], str(ci_path), config["host"] + ":" + stage + "/"], check=True)
-        invoke(f"& {ps_quote(stage + '/release-host.ps1')} -Phase Activate -Stage {ps_quote(stage)} -CIReceiptHash {ps_quote(sha256(ci_path))}; if (-not $?) {{ exit 1 }}")
+        activate_candidate()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["validate", "package", "verify", "stage", "deploy"])
+    parser.add_argument("command", choices=["validate", "package", "verify", "stage", "deploy", "activate"])
     parser.add_argument("--output", type=Path)
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--bundle", type=Path)
@@ -256,7 +267,7 @@ def main() -> None:
         else:
             if not args.host_config:
                 parser.error("--host-config is required")
-            remote(args.bundle.resolve(), args.host_config, args.command == "deploy")
+            remote(args.bundle.resolve(), args.host_config, args.command in ("deploy", "activate"), prepared=args.command == "activate")
 
 
 if __name__ == "__main__":

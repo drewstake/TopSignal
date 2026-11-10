@@ -1,9 +1,14 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'release-host.ps1') -FunctionsOnly
+. (Join-Path $PSScriptRoot 'install-windows-startup-task.ps1') -FunctionsOnly
 
 function Assert-Equal($Actual, $Expected) {
     if ($Actual -ne $Expected) { throw "Expected '$Expected', got '$Actual'" }
 }
+Assert-Equal (Test-PrivateEnvironmentFile '.env.example') $false
+Assert-Equal (Test-PrivateEnvironmentFile '.env') $true
+Assert-Equal (Test-PrivateEnvironmentFile '.env.production.local') $true
+Assert-Equal (Test-PrivateEnvironmentFile 'main.py') $false
 function Run-Case([string]$Failure, [string]$Expected, [bool]$ShouldThrow) {
     $script:events = New-Object 'System.Collections.Generic.List[string]'
     function Step([string]$Name) {

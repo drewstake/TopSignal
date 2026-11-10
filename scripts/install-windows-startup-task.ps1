@@ -155,6 +155,10 @@ function Assert-PrivateDataAcl([string]$Path, [string]$ServiceSid) {
     }
 }
 
+function Test-PrivateEnvironmentFile([string]$Name) {
+    return $Name -like '.env*' -and $Name -ne '.env.example'
+}
+
 function Assert-HardenedDeployment(
     [string]$ReleasePath,
     [string]$WritableRuntimePath,
@@ -180,7 +184,8 @@ function Assert-HardenedDeployment(
         if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "Release item '$($item.FullName)' is a reparse point. Replace it with release-owned content."
         }
-        $requiredRights = if ($item.FullName -ieq $EnvironmentFile) {
+        $privateEnvironment = $item.FullName -ieq $EnvironmentFile -or (Test-PrivateEnvironmentFile $item.Name)
+        $requiredRights = if ($privateEnvironment) {
             [System.Security.AccessControl.FileSystemRights]::Read
         }
         else {
@@ -188,6 +193,7 @@ function Assert-HardenedDeployment(
         }
         Assert-RequiredRights -Path $item.FullName -Sid $ServiceSid -RequiredRights $requiredRights -ForbidWrite
         Assert-NoBroadWrite -Path $item.FullName
+        if ($privateEnvironment) { Assert-PrivateDataAcl -Path $item.FullName -ServiceSid $ServiceSid }
     }
     Assert-RequiredRights -Path $EnvironmentFile -Sid $ServiceSid -RequiredRights Read -ForbidWrite
     Assert-PrivateDataAcl -Path $EnvironmentFile -ServiceSid $ServiceSid

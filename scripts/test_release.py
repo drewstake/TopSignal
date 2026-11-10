@@ -247,6 +247,13 @@ class ReleaseTests(unittest.TestCase):
         last = base64.b64decode(commands[-1][-1]).decode("utf-16le")
         self.assertIn("-Phase Activate", last)
         self.assertIn(sha256(self.bundle / "bootstrap/ci.json"), last)
+        commands.clear()
+        with patch.object(release.subprocess, "run", side_effect=run), patch.object(release, "check_ci", return_value=ci):
+            release.remote(self.bundle, config_path, True, prepared=True)
+        self.assertEqual(len(commands), 2)  # CI receipt transfer, then guarded activation only.
+        last = base64.b64decode(commands[-1][-1]).decode("utf-16le")
+        self.assertIn("-BundleHash", last)
+        self.assertNotIn("-Phase Prepare", last)
 
 
 if __name__ == "__main__":

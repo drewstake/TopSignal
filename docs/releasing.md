@@ -49,14 +49,18 @@ service identity.
 4. Once CI succeeds, activate the same bundle:
 
    ```powershell
-   npm run release -- deploy --bundle tmp/releases/candidate-001 --host-config tmp/release-host.json
+   npm run release -- activate --bundle tmp/releases/candidate-001 --host-config tmp/release-host.json
    ```
 
-   `deploy` revalidates preparation, checks the newest `ci.yml` run for the exact
+   `activate` requires a completed preparation receipt, revalidates the candidate,
+   and checks the newest `ci.yml` run for the exact
    commit, and requires all six existing CI job names, including `verify`, to
    succeed. If CI is unfinished or failed, preparation is retained and the
    running release is unchanged. Run the same command after CI passes. The host
    also requires the fresh checksum-bound CI receipt passed by this command.
+
+   `deploy` combines staging and activation when a candidate has not already
+   been staged. Use `activate` after `stage` to avoid duplicating preparation.
 
 `npm run release -- verify --bundle ...` verifies a local package without
 connecting to production. Never overwrite a failed candidate: preserve its logs,
