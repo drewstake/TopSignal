@@ -83,8 +83,12 @@ describes client protocol keepalives and server idle timeouts. A bounded live
 comparison kept both a pinging and a non-pinging diagnostic connection open for
 110 seconds, so it did not establish the cause of the observed production
 failure. Four concurrent connections with a fresh token also succeeded.
-All 132 focused hub/progress/route/order-book tests passed; follow-up release
-validation and activation remain pending.
+All 132 focused hub/progress/route/order-book tests and the full local release
+checks passed for the first hardening candidate. Review also found that the
+shared runner lacked the depth stream's existing bounded token refresh after
+repeated unsuccessful reconnects. The follow-up now includes that recovery,
+without resetting backoff or evicting a newer cached token. Final validation
+and activation remain pending.
 
 The deployed companion `backup_market_cache.py` has SHA-256
 `92d8681b0a53b2335ccc8edf374f8e6534e04c9ee21d771858134d11cad59a56`.

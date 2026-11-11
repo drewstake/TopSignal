@@ -92,6 +92,42 @@ def test_flapping_hub_uses_exponential_backoff_after_successful_handshake(monkey
     assert delays == [1, 2, 4]
 
 
+def test_rejected_reconnects_refresh_cached_token_once_without_resetting_backoff(monkeypatch):
+    class Client:
+        token = "old-fixture-token"
+
+        def get_access_token(self):
+            return self.token
+
+        def invalidate_access_token(self, rejected):
+            invalidated.append(rejected)
+            if self.token == rejected:
+                self.token = "new-fixture-token"
+
+    client = Client()
+    invalidated, attempts, delays = [], [], []
+
+    def reject(url, **_kwargs):
+        attempts.append(url)
+        raise projectx_hubs_module.SignalRProtocolError("handshake_rejected", "Fixture rejection")
+
+    async def backoff(delay):
+        delays.append(delay)
+        if len(delays) == 7:
+            raise asyncio.CancelledError()
+
+    runner = ProjectXHubRunner(tracker=StreamingPnlTracker(), client_factory=lambda: client,
+                              market_hub_url="wss://example.test/hub", user_hub_url="")
+    monkeypatch.setattr(projectx_hubs_module, "_open_hub", reject)
+    monkeypatch.setattr(projectx_hubs_module.asyncio, "sleep", backoff)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(runner._consume_hub("market", "wss://example.test/hub"))
+    assert invalidated == ["old-fixture-token"]
+    assert all("old-fixture-token" in url for url in attempts[:3])
+    assert all("new-fixture-token" in url for url in attempts[3:])
+    assert delays == [1, 2, 4, 8, 16, 30, 30]
+
+
 def test_cancelling_hub_reaps_receiver_refresh_and_keepalive_tasks(monkeypatch):
     class Client:
         def get_access_token(self):

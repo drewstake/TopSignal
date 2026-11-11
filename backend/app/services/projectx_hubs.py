@@ -204,6 +204,9 @@ class ProjectXHubRunner:
     def _access_token(self) -> str:
         return self._client_factory().get_access_token()
 
+    def _invalidate_access_token(self, rejected_token: str) -> None:
+        self._client_factory().invalidate_access_token(rejected_token)
+
     async def probe_user_account_once(
         self,
         *,
@@ -273,10 +276,12 @@ class ProjectXHubRunner:
 
     async def _consume_hub(self, stream_kind: str, hub_url: str) -> None:
         backoff_seconds = self._reconnect_base_seconds
+        failures_without_stable_connection = 0
         subscribe_env = _MARKET_SUBSCRIBE_ENV if stream_kind == "market" else _USER_SUBSCRIBE_ENV
 
         while True:
             connected_at: float | None = None
+            token: str | None = None
             try:
                 token = await asyncio.to_thread(self._access_token)
                 url_with_token = _append_query(hub_url, {"access_token": token})
@@ -353,6 +358,17 @@ class ProjectXHubRunner:
                     self._notify_user_disconnect()
                 if connected_at is not None and time.monotonic() - connected_at >= 60.0:
                     backoff_seconds = self._reconnect_base_seconds
+                    failures_without_stable_connection = 0
+                else:
+                    failures_without_stable_connection += 1
+                # Match the depth stream's bounded auth recovery. A cached
+                # token must not trap a recorder in rejected reconnects all day.
+                # The client's compare-and-clear preserves any newer login.
+                if failures_without_stable_connection == 3 and token is not None:
+                    try:
+                        await asyncio.to_thread(self._invalidate_access_token, token)
+                    except Exception as refresh_error:
+                        logger.warning("[hubs] token refresh unavailable error_type=%s", type(refresh_error).__name__)
                 logger.warning(
                     "[hubs] disconnected kind=%s retry_in=%.1fs error_type=%s reason=%s",
                     stream_kind,

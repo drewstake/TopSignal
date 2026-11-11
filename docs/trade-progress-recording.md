@@ -23,6 +23,9 @@ one-second sample interval. Ping-send failures and server Close frames end
 coverage and reconnect with backoff; all connection tasks are reaped on stop.
 Fixed local reason codes distinguish handshake failures from server closure
 without logging provider messages or bearer tokens.
+After three failures without a stable connection, it invalidates only the token
+that failed once per failure streak, retaining reconnect backoff. This matches
+the existing depth stream's bounded authentication recovery.
 
 Each position receives observations approximately every second, plus entry,
 scale-in, basis change, partial exit, reversal and exit observations. Each sample
