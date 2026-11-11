@@ -32,6 +32,15 @@ def test_hub_connector_disables_redirects(monkeypatch):
     assert result.process_redirect(redirect_failure) is redirect_failure
 
 
+def test_signalr_close_frame_interrupts_coverage_without_exposing_provider_message():
+    runner = ProjectXHubRunner(tracker=StreamingPnlTracker(), client_factory=_unused_client_factory,
+                              market_hub_url="wss://example.test/hub", user_hub_url="")
+    with pytest.raises(projectx_hubs_module.SignalRProtocolError) as caught:
+        runner._dispatch_frame("market", {"type": 7, "error": "secret-fixture-provider-detail"})
+    assert caught.value.reason_code == "server_close"
+    assert "secret-fixture-provider-detail" not in str(caught.value)
+
+
 @pytest.mark.parametrize("account_id", [101.5, True, float("inf"), float("nan")])
 def test_account_classification_never_coerces_fractional_or_invalid_account_id(account_id):
     observed = []
@@ -77,12 +86,13 @@ def test_flapping_hub_uses_exponential_backoff_after_successful_handshake(monkey
     monkeypatch.setattr(projectx_hubs_module, "_open_hub", lambda *_args, **_kwargs: Connection())
     monkeypatch.setattr(projectx_hubs_module.asyncio, "sleep", backoff)
     monkeypatch.setattr(runner, "_receive_messages", disconnected)
+    monkeypatch.setattr(runner, "_send_keepalives", lambda *_args: asyncio.Event().wait())
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(runner._consume_hub("market", "wss://example.test/hub"))
     assert delays == [1, 2, 4]
 
 
-def test_cancelling_hub_reaps_receiver_and_refresh_tasks(monkeypatch):
+def test_cancelling_hub_reaps_receiver_refresh_and_keepalive_tasks(monkeypatch):
     class Client:
         def get_access_token(self):
             return "fixture-token"
@@ -109,7 +119,7 @@ def test_cancelling_hub_reaps_receiver_and_refresh_tasks(monkeypatch):
     )
 
     async def exercise():
-        entered = [asyncio.Event(), asyncio.Event()]
+        entered = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
         exited = []
 
         async def child(index):
@@ -121,11 +131,83 @@ def test_cancelling_hub_reaps_receiver_and_refresh_tasks(monkeypatch):
 
         monkeypatch.setattr(runner, "_receive_messages", lambda *_args: child(0))
         monkeypatch.setattr(runner, "_refresh_user_account_loop", lambda *_args: child(1))
+        monkeypatch.setattr(runner, "_send_keepalives", lambda *_args: child(2))
         parent = asyncio.create_task(runner._consume_hub("user", "wss://example.test/hub"))
         await asyncio.wait_for(asyncio.gather(*(event.wait() for event in entered)), timeout=2)
         parent.cancel()
         await asyncio.gather(parent, return_exceptions=True)
-        assert sorted(exited) == [0, 1]
+        assert sorted(exited) == [0, 1, 2]
+        assert asyncio.all_tasks() == {asyncio.current_task()}
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("stream_kind", ["user", "market"])
+@pytest.mark.parametrize("send_failure", [False, True])
+def test_idle_hub_sends_signalr_pings_and_reconnects_on_ping_failure(monkeypatch, stream_kind, send_failure):
+    """Quiet positions still need protocol pings; failed sends must end coverage."""
+    class Client:
+        def get_access_token(self):
+            return "fixture-token"
+
+    async def exercise():
+        sent = []
+        pings = asyncio.Queue()
+        observed = asyncio.Event()
+        receiver_exited = asyncio.Event()
+        changes = []
+
+        class Websocket:
+            async def send(self, message):
+                sent.append(message)
+                if message == '{"type":6}\x1e':
+                    if send_failure:
+                        raise ConnectionError("fixture failed keepalive")
+                    pings.put_nowait(True)
+
+            async def recv(self):
+                return "{}\x1e"
+
+            async def __aiter__(self):
+                try:
+                    # Model an idle provider that expires clients without pings.
+                    for _ in range(3):
+                        await asyncio.wait_for(pings.get(), timeout=1)
+                    observed.set()
+                    await asyncio.Event().wait()
+                    yield ""  # Make this an async iterator without market data.
+                finally:
+                    receiver_exited.set()
+
+        class Connection:
+            async def __aenter__(self):
+                return Websocket()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        def connection(kind, reason):
+            changes.append((kind, reason))
+            if reason == "disconnected_ConnectionError":
+                observed.set()
+
+        runner = ProjectXHubRunner(
+            tracker=StreamingPnlTracker(), client_factory=Client,
+            user_id="fixture", account_id=101, keepalive_seconds=0.01,
+            market_hub_url="wss://example.test/market", on_connection=connection,
+        )
+        monkeypatch.setattr(projectx_hubs_module, "_open_hub", lambda *_args, **_kwargs: Connection())
+        parent = asyncio.create_task(runner._consume_hub(stream_kind, "wss://example.test/hub"))
+        try:
+            await asyncio.wait_for(observed.wait(), timeout=2)
+            assert '"protocol": "json"' in sent[0]
+            assert sent.count('{"type":6}\x1e') >= (1 if send_failure else 3)
+            assert (stream_kind, "connected_subscriptions_sent") in changes
+            assert runner.stream_states[stream_kind] == ("disconnected" if send_failure else "connected")
+        finally:
+            parent.cancel()
+            await asyncio.gather(parent, return_exceptions=True)
+        assert receiver_exited.is_set()
         assert asyncio.all_tasks() == {asyncio.current_task()}
 
     asyncio.run(exercise())

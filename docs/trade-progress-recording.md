@@ -1,8 +1,12 @@
 # Trade progress recording
 
-Implemented in the working tree November 11, 2026. **Not deployed or activated.**
-No trades, strategy settings, risk settings or production services were changed.
-This implements [the recording proposal](trade-progress-recording-idea.md).
+Deployed on peteamdpc November 11, 2026 as `20261111-trade-progress-75`
+(`732baca`). One-second recording is enabled for practice account `29593203`;
+its heartbeat and both live connections passed initial post-restart verification.
+A subsequent disconnect prompted connection-lifecycle hardening; final rollout
+verification is pending. The bot remains stopped. See the [deployment record](audits/2026-11-11/trade-progress-deployment.md)
+for activation, validation and backup evidence. This implements
+[the recording proposal](trade-progress-recording-idea.md).
 
 ## What is recorded
 
@@ -12,6 +16,13 @@ The API lifespan owns the manager; an OS file lock permits one manager across
 API processes. Recording continues with the browser closed and the bot disarmed,
 and includes manual positions. CSV accounts cannot enroll. Existing excursion
 enrollment does not implicitly enroll accounts in this feature.
+
+The shared hub runner sends a SignalR protocol ping every 10 seconds on both
+connections, independently of quotes or positions. This is separate from the
+one-second sample interval. Ping-send failures and server Close frames end
+coverage and reconnect with backoff; all connection tasks are reaped on stop.
+Fixed local reason codes distinguish handshake failures from server closure
+without logging provider messages or bearer tokens.
 
 Each position receives observations approximately every second, plus entry,
 scale-in, basis change, partial exit, reversal and exit observations. Each sample
@@ -177,15 +188,18 @@ A read-only SSH check around **00:04 ET November 11** confirmed:
 | New progress database | Not present |
 | Legacy excursion store at this cache root | Not present |
 
-That is a capacity observation, not activation, a reservation of space, or proof
-of any existing trade's recording coverage. Repeat it at activation. The backup
-source path was inspected; verify the deployed API's effective cache environment
-matches it before registering the destination.
+Those values describe the pre-deployment inspection. Activation subsequently
+verified the deployed API's cache root and service permissions on that same D:
+volume. Post-restart free space was **1,094,975,991,808 bytes** at 06:21:55 UTC;
+the new database was 69,632 bytes with no position samples while the account was
+flat. Available space changes with other recorders and backups.
 
 ## Activation on peteamdpc
 
-1. Review and separately authorize deployment of the tested release. This task
-   did not deploy it. Preserve production strategy/risk configuration. The API
+The current enrollment is complete; these steps also describe future activation
+or recovery on a verified destination.
+
+1. Deploy an authorized, tested release. Preserve production strategy/risk configuration. The API
    will create no recorder subscriptions until an account is explicitly enrolled.
 2. Ensure the API's existing deployment environment sets
    `TOPSIGNAL_DATABENTO_CACHE_DIR=D:/TopSignal/data/databento`, with persistent
@@ -248,6 +262,16 @@ remain visible. Restoring does not recover observations that were never recorded
 
 ## Validation
 
+- Deployed release `732baca`: all 3,274 offline backend tests passed (20 skipped,
+  plus 8 subtests), all 1,288 frontend tests passed, and lint, 47 deployment script
+  tests, dependency audits and the production build passed. All six exact-commit
+  CI jobs succeeded; the deployment record describes the initial CI retries.
+- Production verification passed frontend/API/worker readiness, flat broker
+  checks, immutable release checks and existing recorder continuity. Three
+  healthy progress status observations over 83 seconds confirmed enrollment,
+  advancing heartbeats, no recorder error and a one-second interval. A consistent
+  snapshot was copied off-device and opened read-only after checksum and SQLite
+  integrity verification. No live trade was opened for testing.
 - November 11 one-second update: 34 focused backend tests and 7 frontend chart
   tests passed; frontend build and lint passed. Cadence checks cover one sample
   per second, duplicate worker wakeups, subsecond extrema, stopping at exit,
@@ -266,5 +290,6 @@ remain visible. Restoring does not recover observations that were never recorded
   used synthetic fixtures at desktop and 390 px width, including missing-data
   and expanded position-event states. The narrow layout was corrected to preserve
   readable axes. Temporary preview files/server/tab were removed afterward.
-- No production deployment, account enrollment, broker mutation, strategy change,
-  risk change, retention deletion or historical reconstruction was performed.
+- No broker orders, strategy/risk parameters, retention or historical paths were
+  changed by this deployment. Bot run 17 was stopped normally while flat and
+  remains disarmed; progress recording operates independently of it.

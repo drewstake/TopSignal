@@ -23,6 +23,13 @@ _DEFAULT_USER_HUB_URL = "https://rtc.topstepx.com/hubs/user"
 _HANDSHAKE_TIMEOUT_SECONDS = 10.0
 
 
+class SignalRProtocolError(ConnectionError):
+    """A fixed local reason, never a provider message or credential-bearing URL."""
+    def __init__(self, reason_code: str, message: str):
+        super().__init__(message)
+        self.reason_code = reason_code
+
+
 def _open_hub(url: str, **kwargs):
     connection = websockets.connect(url, **kwargs)
     # websockets 16 exposes this policy hook; an authenticated connection must
@@ -132,6 +139,7 @@ class ProjectXHubRunner:
         dispatch_failure_threshold: int = 5,
         dispatch_recovery_seconds: float = 30.0,
         user_account_refresh_seconds: float = 240.0,
+        keepalive_seconds: float = 10.0,
         on_user_account: Callable[[Mapping[str, Any]], None] | None = None,
         on_user_disconnect: Callable[[], None] | None = None,
         archive_contracts: tuple[str, ...] = (),
@@ -165,6 +173,7 @@ class ProjectXHubRunner:
         self._user_account_refresh_seconds = min(
             240.0, max(30.0, float(user_account_refresh_seconds))
         )
+        self._keepalive_seconds = max(0.01, float(keepalive_seconds))
         self._on_user_account = on_user_account
         self._on_user_disconnect = on_user_disconnect
         self._archive_contracts = archive_contracts
@@ -310,7 +319,8 @@ class ProjectXHubRunner:
                         if stream_kind == "user" and self._on_user_account is not None
                         else None
                     )
-                    tasks = {receiver, *([refresh] if refresh is not None else [])}
+                    keepalive = asyncio.create_task(self._send_keepalives(websocket))
+                    tasks = {receiver, keepalive, *([refresh] if refresh is not None else [])}
                     if stream_kind == "market" and self._track_positions:
                         tasks.add(asyncio.create_task(self._track_position_contracts(websocket)))
                     try:
@@ -321,8 +331,8 @@ class ProjectXHubRunner:
                         for task in done:
                             await task
                     finally:
-                        # Cancellation while waiting must reap BOTH children;
-                        # otherwise each reconnect leaks a refresh coroutine.
+                        # Reap every child on disconnect/stop so a reconnect
+                        # cannot retain an old receiver, refresh or ping loop.
                         for task in tasks:
                             task.cancel()
                         await asyncio.gather(*tasks, return_exceptions=True)
@@ -344,19 +354,27 @@ class ProjectXHubRunner:
                 if connected_at is not None and time.monotonic() - connected_at >= 60.0:
                     backoff_seconds = self._reconnect_base_seconds
                 logger.warning(
-                    "[hubs] disconnected kind=%s retry_in=%.1fs error_type=%s",
+                    "[hubs] disconnected kind=%s retry_in=%.1fs error_type=%s reason=%s",
                     stream_kind,
                     backoff_seconds,
                     type(exc).__name__,
+                    exc.reason_code if isinstance(exc, SignalRProtocolError) else "transport_or_dispatch",
                 )
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds = min(self._reconnect_max_seconds, backoff_seconds * 2.0)
+
+    async def _send_keepalives(self, websocket: Any) -> None:
+        while True:
+            await asyncio.sleep(self._keepalive_seconds)
+            # SignalR's client timeout requires protocol messages. WebSocket
+            # control pings alone don't keep an idle hub session alive.
+            await websocket.send('{"type":6}' + _SIGNALR_RECORD_SEPARATOR)
 
     async def _receive_messages(self, stream_kind: str, websocket: Any) -> None:
         async for raw_message in websocket:
             for frame in _decode_signalr_frames(raw_message):
                 self._dispatch_frame(stream_kind, frame)
-        raise ConnectionError(f"ProjectX {stream_kind} hub closed the connection")
+        raise SignalRProtocolError("stream_closed", f"ProjectX {stream_kind} hub closed the connection")
 
     async def _track_position_contracts(self, websocket: Any) -> None:
         subscribed = set(self._archive_contracts)
@@ -387,6 +405,8 @@ class ProjectXHubRunner:
 
     def _dispatch_frame(self, stream_kind: str, frame: Mapping[str, Any]) -> None:
         frame_type = frame.get("type")
+        if frame_type == 7:
+            raise SignalRProtocolError("server_close", "ProjectX closed the SignalR session")
         if frame_type == 1 and isinstance(frame.get("arguments"), list):
             self._dispatch_signalr_invocation(stream_kind, frame)
             return
@@ -560,31 +580,31 @@ async def _signalr_handshake(
             timeout=max(0.1, float(timeout_seconds)),
         )
     except asyncio.TimeoutError as exc:
-        raise ConnectionError("ProjectX SignalR handshake timed out") from exc
+        raise SignalRProtocolError("handshake_timeout", "ProjectX SignalR handshake timed out") from exc
 
     if isinstance(raw_response, bytes):
         response_text = raw_response.decode("utf-8", errors="strict")
     elif isinstance(raw_response, str):
         response_text = raw_response
     else:
-        raise ConnectionError("ProjectX SignalR handshake returned an invalid frame type")
+        raise SignalRProtocolError("handshake_frame_type", "ProjectX SignalR handshake returned an invalid frame type")
     chunks = [
         chunk
         for chunk in response_text.split(_SIGNALR_RECORD_SEPARATOR)
         if chunk.strip()
     ]
     if not chunks:
-        raise ConnectionError("ProjectX SignalR handshake returned an empty response")
+        raise SignalRProtocolError("handshake_empty", "ProjectX SignalR handshake returned an empty response")
     try:
         response = json.loads(chunks[0])
     except json.JSONDecodeError as exc:
-        raise ConnectionError("ProjectX SignalR handshake returned malformed JSON") from exc
+        raise SignalRProtocolError("handshake_json", "ProjectX SignalR handshake returned malformed JSON") from exc
     if not isinstance(response, Mapping):
-        raise ConnectionError("ProjectX SignalR handshake returned an invalid response")
+        raise SignalRProtocolError("handshake_response_type", "ProjectX SignalR handshake returned an invalid response")
     if response.get("error"):
-        raise ConnectionError("ProjectX SignalR handshake was rejected")
+        raise SignalRProtocolError("handshake_rejected", "ProjectX SignalR handshake was rejected")
     if response:
-        raise ConnectionError("ProjectX SignalR handshake response was not an acknowledgement")
+        raise SignalRProtocolError("handshake_not_ack", "ProjectX SignalR handshake response was not an acknowledgement")
 
     remaining = _SIGNALR_RECORD_SEPARATOR.join(chunks[1:])
     return _decode_signalr_frames(remaining) if remaining else []
