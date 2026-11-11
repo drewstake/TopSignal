@@ -24,7 +24,7 @@ def _require_provisioning_transaction(connection):
 
 
 def eligible(name):
-    return name not in EXCLUDED_TABLES and not name.startswith(('databento_', 'topsignal_local_'))
+    return name not in EXCLUDED_TABLES and not name.startswith(('databento_', 'topsignal_local_', 'trade_progress_'))
 
 
 def table_keys(connection):

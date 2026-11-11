@@ -24,6 +24,7 @@ import { buildTradeSymbolSearchText, getDisplayTradeSymbol } from "../../lib/tra
 import type { AccountInfo, AccountSummary, AccountTrade } from "../../lib/types";
 import { formatCurrency, formatInteger, formatNumber, formatPercent, formatPnl } from "../../utils/formatters";
 import { runAccountScopedTradeSync } from "./tradesAccountRequests";
+import { ProgressRecorderStatus, TradeProgressReview } from "./TradeProgress";
 
 const PAGE_SIZE = 20;
 const DEFAULT_LIMIT = 200;
@@ -348,6 +349,7 @@ export function TradesPage() {
   const [settledDataScope, setSettledDataScope] = useState<AccountRequestToken | null>(null);
 
   const [trades, setTrades] = useState<AccountTrade[]>([]);
+  const [reviewTrade, setReviewTrade] = useState<AccountTrade | null>(null);
   const [tradesLoading, setTradesLoading] = useState(false);
   const [tradesError, setTradesError] = useState<string | null>(null);
 
@@ -631,6 +633,8 @@ export function TradesPage() {
 
   return (
     <div className="flex flex-col gap-4 pb-8 lg:min-h-0 lg:flex-1 lg:gap-3 lg:overflow-hidden lg:pb-0">
+      {reviewTrade && reviewTrade.account_id === selectedAccountId && <TradeProgressReview key={`${selectedAccountId}:${reviewTrade.id}`} trade={reviewTrade} onClose={() => setReviewTrade(null)} />}
+      <ProgressRecorderStatus key={selectedAccountId} account={selectedAccountId} disabled={demoModeEnabled || selectedAccountIsCsvImport} />
       <DemoModeNotice compact>
         <p>
           Filters, paging, and refresh explore the fixed sample timeline. Provider sync is disabled so this page never contacts or changes a connected account.
@@ -990,7 +994,7 @@ export function TradesPage() {
             <>
               <div className="grid gap-2.5 lg:hidden">
                 {pagedTrades.map((trade) => (
-                  <TradeFeedCard key={trade.id} trade={trade} />
+                  <TradeFeedCard key={trade.id} trade={trade} onReview={demoModeEnabled ? undefined : () => setReviewTrade(trade)} />
                 ))}
               </div>
 
@@ -1030,6 +1034,7 @@ export function TradesPage() {
                               <td className="px-3 py-2 text-right text-slate-300">{formatDurationCompact(trade.duration_minutes)}</td>
                               <td className="px-3 py-2 text-left font-semibold text-slate-100">
                                 {getDisplayTradeSymbol(trade.symbol, trade.contract_id)}
+                                {!demoModeEnabled && <button className="mt-1 block text-[10px] font-normal text-cyan-300 hover:underline" onClick={() => setReviewTrade(trade)}>Review path</button>}
                               </td>
                               <td className="px-3 py-2 text-center">
                                 <Badge variant={tradeDirectionBadgeVariant(trade.side)}>{direction}</Badge>
@@ -1176,9 +1181,10 @@ function OutcomeRow({ label, count, percentage, barClassName, countClassName }: 
 
 interface TradeFeedCardProps {
   trade: AccountTrade;
+  onReview?: () => void;
 }
 
-function TradeFeedCard({ trade }: TradeFeedCardProps) {
+function TradeFeedCard({ trade, onReview }: TradeFeedCardProps) {
   const pnlValue = getTradeNetPnl(trade) ?? 0;
   const direction = formatTradeDirection(trade.side);
   const entryTime = trade.entry_time;
@@ -1188,6 +1194,7 @@ function TradeFeedCard({ trade }: TradeFeedCardProps) {
 
   return (
     <article className="rounded-[18px] border border-slate-800/80 bg-slate-950/45 p-2.5">
+      {onReview && <button className="mb-2 text-xs text-cyan-300 hover:underline" onClick={onReview}>Review points over time</button>}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">

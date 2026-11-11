@@ -137,6 +137,7 @@ class ProjectXHubRunner:
         archive_contracts: tuple[str, ...] = (),
         on_archive_event: Callable[[str, Mapping[str, Any]], None] | None = None,
         track_positions: bool = False,
+        on_connection: Callable[[str, str], None] | None = None,
     ):
         self._tracker = tracker
         self._client_factory = client_factory
@@ -169,6 +170,7 @@ class ProjectXHubRunner:
         self._archive_contracts = archive_contracts
         self._on_archive_event = on_archive_event
         self._track_positions = track_positions
+        self._on_connection = on_connection
         self.stream_states: dict[str, str] = {}
         self._dispatch_circuits: dict[str, _DispatchCircuit] = {}
 
@@ -494,6 +496,11 @@ class ProjectXHubRunner:
         callback({"id": account_id, "simulated": simulated})
 
     def _archive_connection_event(self, stream: str, reason: str) -> None:
+        if self._on_connection is not None:
+            try:
+                self._on_connection(stream, reason)
+            except Exception as exc:
+                logger.error('hub_connection_callback_failed', extra={'error_type': type(exc).__name__})
         if self._on_archive_event is not None:
             for contract in self._archive_contracts:
                 try:

@@ -252,9 +252,9 @@ def attach_cached(owner, account, trades, *, lifecycles, imported_ids=()):
 
 
 @contextmanager
-def recorder_lock():
+def recorder_lock(path=None):
     """One recorder across API processes; OS releases this lock after a crash."""
-    path = location().with_suffix(".lock")
+    path = path or location().with_suffix(".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as handle:
         if os.fstat(handle.fileno()).st_size == 0:

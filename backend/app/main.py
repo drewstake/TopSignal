@@ -448,6 +448,9 @@ async def app_lifespan(_: FastAPI):
     from .services.historical_trade_excursions import ExcursionRecorder
     excursion_recorder = ExcursionRecorder(SessionLocal, _projectx_client_for_user_without_open_transaction)
     excursion_recorder.start()
+    from .services.trade_progress_recorder import TradeProgressRecorder
+    progress_recorder = TradeProgressRecorder(SessionLocal, _projectx_client_for_user_without_open_transaction)
+    progress_recorder.start()
     from .services.topbot_study_worker import StudyRecorder
     study_recorder = StudyRecorder(SessionLocal, _projectx_client_for_user_without_open_transaction)
     study_recorder.start()
@@ -460,6 +463,8 @@ async def app_lifespan(_: FastAPI):
         await _bot_worker_runtime.start()
         yield
     finally:
+        if not await asyncio.to_thread(progress_recorder.stop):
+            logger.error("trade_progress_recorder_shutdown_incomplete")
         study_stopped = await asyncio.to_thread(study_recorder.stop)
         recorder_stopped = await asyncio.to_thread(excursion_recorder.stop)
         if not recorder_stopped:
@@ -4602,6 +4607,70 @@ def list_projectx_account_trades(
             return serialized
     except ProjectXClientError as exc:
         raise _to_http_exception(exc) from exc
+
+
+@app.get("/api/accounts/{account_id}/trade-progress/status")
+def get_trade_progress_status(account_id: int, db: Session = Depends(get_db)):
+    owner = get_authenticated_user_id()
+    _require_owned_projectx_account(db, user_id=owner, account_id=account_id)
+    from .services import trade_progress_store as progress
+    try:
+        return progress.status(owner, account_id)
+    except (OSError, sqlite3.Error):
+        raise HTTPException(status_code=503, detail="Local trade progress storage is unavailable.")
+
+
+@app.put("/api/accounts/{account_id}/trade-progress/enrollment")
+def set_trade_progress_enrollment(account_id: int, enabled: bool, db: Session = Depends(get_db)):
+    owner = get_authenticated_user_id()
+    account = _require_owned_projectx_account(db, user_id=owner, account_id=account_id)
+    if account.trade_data_source != "projectx":
+        raise HTTPException(status_code=409, detail="Recording requires a connected ProjectX account.")
+    from .services import trade_progress_store as progress
+    try:
+        progress.enroll(owner, account_id, enabled)
+        return progress.status(owner, account_id)
+    except ValueError:
+        raise HTTPException(status_code=409, detail="Verify the recorder host and local drive before enabling recording.")
+    except (OSError, sqlite3.Error):
+        raise HTTPException(status_code=503, detail="Local storage unavailable or below the 10 GB free-space floor.")
+
+
+@app.get("/api/accounts/{account_id}/trades/{trade_id}/progress")
+def get_trade_progress(account_id: int, trade_id: int, db: Session = Depends(get_db)):
+    owner = get_authenticated_user_id()
+    _require_owned_projectx_account(db, user_id=owner, account_id=account_id)
+    row = db.query(ProjectXTradeEvent).filter(ProjectXTradeEvent.id==trade_id,
+        ProjectXTradeEvent.user_id==owner, ProjectXTradeEvent.account_id==account_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Trade not found.")
+    from .services import trade_progress_store as progress
+    from .services.trade_progress import timestamp
+    try:
+        end = timestamp(row.trade_timestamp)
+        matches = progress.candidates(owner, account_id, row.contract_id, end, end)
+        # This is a position review, not an allocation of a whole path to a
+        # partial fill. Never choose a nearest or ambiguous lifecycle silently.
+        return dict(matches=[dict(id=s["id"], opened=s["opened"], ended=s["ended"],
+                    direction="long" if s["quantity"]>0 else "short", reasons=s["reasons"]) for s in matches],
+                    status=progress.status(owner, account_id), scope="position", matching="contract_and_time_candidate")
+    except (OSError, sqlite3.Error):
+        raise HTTPException(status_code=503, detail="Local trade progress storage is unavailable.")
+
+
+@app.get("/api/accounts/{account_id}/trade-progress/positions/{position_id}")
+def get_trade_progress_timeline(account_id: int, position_id: str, after: int = Query(default=0, ge=0),
+                               db: Session = Depends(get_db)):
+    owner = get_authenticated_user_id()
+    _require_owned_projectx_account(db, user_id=owner, account_id=account_id)
+    from .services import trade_progress_store as progress
+    try:
+        result = progress.timeline(owner, account_id, position_id, after=after)
+    except (OSError, sqlite3.Error):
+        raise HTTPException(status_code=503, detail="Local trade progress storage is unavailable.")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Recording not found.")
+    return result
 
 
 @app.get("/api/accounts/{account_id}/summary", response_model=ProjectXTradeSummaryOut)

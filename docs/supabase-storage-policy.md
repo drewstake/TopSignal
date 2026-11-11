@@ -14,6 +14,7 @@ the development default is `backend/storage/databento`.
 | Accounts, executed trades, journals, expenses, credentials, bot configuration | Application database with existing tenant protections |
 | Saved backtest results | Application database, with bounded detail; do not embed the complete input candle history |
 | Raw observations, ProjectX candle caches, detailed research snapshots | Local SQLite under `TOPSIGNAL_DATABENTO_CACHE_DIR`; cloud definitions remain fenced |
+| Trade progress samples, lifecycle timelines, fill revisions, enrollment and recorder metadata | Local `trade-progress-v1/progress.sqlite3` under `TOPSIGNAL_DATABENTO_CACHE_DIR`; never Supabase or the cloud mirror; no automatic retention deletion |
 
 The legacy `backend/tools/import_databento.py` and its service entry points now
 reject non-SQLite database imports before archive inspection or connection.
