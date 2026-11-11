@@ -259,6 +259,7 @@ def test_destination_gate_checks_identity_and_actual_free_space(local,monkeypatc
 
 def test_no_cloud_route_and_sqlite_backup_includes_live_wal(local,tmp_path):
     from app.local_sync import eligible
+    from app.services.historical_trade_excursions import recorder_lock
     from tools.backup_market_cache import backup,verify
     engine=ready(); engine.position(pos(),T); engine.quote(quote(103,T+1),T+1); engine.tick(T+10); result=saved(engine)
     with store.connect() as db:
@@ -268,12 +269,16 @@ def test_no_cloud_route_and_sqlite_backup_includes_live_wal(local,tmp_path):
     from app.db import Base
     assert not any(name.startswith("trade_progress_") for name in Base.metadata.tables)
     output=tmp_path.parent/(tmp_path.name+"-backup")
-    with store.connect(write=True) as held:
+    with store.connect(write=True) as held, recorder_lock(store.location().with_suffix(".lock")) as acquired:
+        assert acquired
+        with recorder_lock(store.location().with_suffix(".lock")) as second:
+            assert not second
         held.execute("INSERT OR REPLACE INTO trade_progress_meta VALUES('backup-test','committed-in-wal')")
         held.commit()
         assert store.location().with_name("progress.sqlite3-wal").exists()
         backup(local,output)
     manifest=verify(output)
+    assert 'trade-progress-v1/progress.lock' not in manifest['files']
     name="trade-progress-v1/progress.sqlite3"
     assert manifest["files"][name]["sqlite"]
     with sqlite3.connect(output/name) as db:

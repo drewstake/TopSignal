@@ -309,6 +309,10 @@ def backup(source, output, *, previous=None, deep_verify=True):
             raise ValueError('Reparse/symlink source requires explicit handling')
         if not path.is_file():
             continue
+        if path.name == 'progress.lock' and path.parent.name == 'trade-progress-v1':
+            # Runtime coordination only, not recording data. Windows blocks
+            # reads while the manager holds this lock; restore creates a new one.
+            continue
         if path.is_relative_to(depth_root) and path.resolve() not in depth_files:
             continue  # Preserve all originals on host; do not copy unfinished segments.
         if path.name.endswith(('-wal', '-shm')) and path.with_name(path.name.rsplit('-', 1)[0]).is_file():

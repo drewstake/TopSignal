@@ -227,7 +227,12 @@ matches it before registering the destination.
 
 `backup_market_cache.py` recursively includes this database as an SQLite member.
 Its existing online backup API takes a consistent snapshot including committed
-WAL pages; raw `-wal`/`-shm` files are excluded from copying. The existing
+WAL pages; raw `-wal`/`-shm` files are excluded from copying. The ephemeral
+`trade-progress-v1/progress.lock` is also excluded: Windows prevents reads while
+the manager holds it, and it contains no recording data. A restored recorder
+creates its own OS lock. Deploy the matching `backup_market_cache.py` helper
+before enrollment so scheduled backups retain all recordings without trying to
+copy the active lock. The existing
 `run_market_archive_backup.py` schedule pulls the cache to the development PC and
 verifies hashes and database integrity. No new schedule or destination is needed.
 The development PC and private SSH connection must be available. Production
