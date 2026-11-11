@@ -1,10 +1,10 @@
 # Trade progress recording
 
-Deployed on peteamdpc November 11, 2026 as `20261111-trade-progress-75`
-(`732baca`). One-second recording is enabled for practice account `29593203`;
-its heartbeat and both live connections passed initial post-restart verification.
-A subsequent disconnect prompted connection-lifecycle hardening; final rollout
-verification is pending. The bot remains stopped. See the [deployment record](audits/2026-11-11/trade-progress-deployment.md)
+Deployed on peteamdpc November 11, 2026 as `20261111-trade-progress-77`
+(`46afcd9`). One-second recording is enabled for practice account `29593203`;
+25 consecutive checks over two minutes confirmed healthy connections and
+advancing heartbeats after activation. The bot remains stopped.
+See the [deployment record](audits/2026-11-11/trade-progress-deployment.md)
 for activation, validation and backup evidence. This implements
 [the recording proposal](trade-progress-recording-idea.md).
 
@@ -193,7 +193,7 @@ A read-only SSH check around **00:04 ET November 11** confirmed:
 
 Those values describe the pre-deployment inspection. Activation subsequently
 verified the deployed API's cache root and service permissions on that same D:
-volume. Post-restart free space was **1,094,975,991,808 bytes** at 06:21:55 UTC;
+volume. Post-deployment free space was **1,094,932,373,504 bytes** at 06:42:52 UTC;
 the new database was 69,632 bytes with no position samples while the account was
 flat. Available space changes with other recorders and backups.
 
@@ -265,16 +265,18 @@ remain visible. Restoring does not recover observations that were never recorded
 
 ## Validation
 
-- Deployed release `732baca`: all 3,274 offline backend tests passed (20 skipped,
+- Deployed release `46afcd9`: all 3,280 offline backend tests passed (20 skipped,
   plus 8 subtests), all 1,288 frontend tests passed, and lint, 47 deployment script
   tests, dependency audits and the production build passed. All six exact-commit
   CI jobs succeeded; the deployment record describes the initial CI retries.
 - Production verification passed frontend/API/worker readiness, flat broker
-  checks, immutable release checks and existing recorder continuity. Three
-  healthy progress status observations over 83 seconds confirmed enrollment,
+  checks, immutable release checks and existing recorder continuity. Twenty-five
+  healthy progress status observations over 121 seconds confirmed enrollment,
   advancing heartbeats, no recorder error and a one-second interval. A consistent
   snapshot was copied off-device and opened read-only after checksum and SQLite
   integrity verification. No live trade was opened for testing.
+- Final connection hardening passed 241 focused hub/progress/route/order-book/client
+  checks, including protocol pings, failed sends, cancellation and bounded token recovery.
 - November 11 one-second update: 34 focused backend tests and 7 frontend chart
   tests passed; frontend build and lint passed. Cadence checks cover one sample
   per second, duplicate worker wakeups, subsecond extrema, stopping at exit,
