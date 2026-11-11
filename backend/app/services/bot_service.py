@@ -88,6 +88,7 @@ _ACCOUNT_AUTOMATION_CLASSIFICATION_MAX_AGE = timedelta(minutes=5)
 _ACCOUNT_EMERGENCY_ACTION_LEASE_DURATION = timedelta(minutes=5)
 _TRANSIENT_LIVE_RISK_CODES = {
     "daily_profit_target_reached",
+    "daily_loss_limit_reached",
     "daily_profit_breakeven_stop",
     "daily_profit_guard_unavailable",
     "dom_signal_expired",

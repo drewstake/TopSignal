@@ -37,6 +37,14 @@ def test_zero_retains_existing_block_all_entries_meaning():
     assert 'max_trades_per_day' in {b.code for b in evaluate_risk(_context(max_trades_per_day=0))}
 
 
+@pytest.mark.parametrize('pnl,blocked', [(-499.99, False), (-500, True), (-501, True)])
+def test_uncapped_500_dollar_daily_loss_budget(pnl, blocked):
+    codes = {b.code for b in evaluate_risk(_context(daily_entry_limit_enabled=False,
+        max_daily_loss=500, daily_pnl=pnl, trades_today=100))}
+    assert ('max_daily_loss' in codes) is blocked
+    assert 'max_trades_per_day' not in codes
+
+
 @pytest.mark.parametrize('value', [None, 0, 1, 'false', 'true'])
 def test_preference_requires_boolean(value):
     with pytest.raises(ValueError, match='daily_entry_limit_enabled'):
@@ -60,7 +68,7 @@ def test_uncapped_survives_new_run_and_contract_roll_without_changing_other_acco
     db.commit()
     config = prepare_topbot(db, user_id=USER, account_id=101, dry_run=True, contract_id='CON.F.US.MNQ.Z26')
     assert not topbot_strategy.daily_entry_limit_enabled(config)
-    assert config.max_daily_loss == 250 and config.max_contracts == config.max_open_position == 1
+    assert config.max_daily_loss == 500 and config.max_contracts == config.max_open_position == 1
     assert config.cooldown_seconds == 60
     other = prepare_topbot(db, user_id=USER, account_id=102, dry_run=True, contract_id='CON.F.US.MNQ.Z26')
     assert topbot_strategy.daily_entry_limit_enabled(other)

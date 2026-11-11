@@ -5,7 +5,7 @@ def snapshot(blocks, *, checked_at, episode_at, authoritative):
     groups = (
         ("account", "Practice account eligible", ("account_not_active", "account_cannot_trade", "account_automation_", "account_type_", "live_funded_", "shared_broker_account_")),
         ("position", "Position and working orders", ("dom_entry_requires_flat", "mathematical_exit_pending", "working_order", "max_contracts", "max_open_position", "max_account_gross_position", "invalid_account_exposure", "invalid_position_limit", "unresolved_order_submission", "order_reconciliation_", "recent_live_submission_", "account_position_", "account_working_order_")),
-        ("loss", "Daily loss budget and stop risk", ("max_daily_loss", "invalid_daily_pnl", "proposed_stop_risk", "account_unrealized_pnl")),
+        ("loss", "Daily loss budget and stop risk", ("max_daily_loss", "daily_loss_limit_reached", "invalid_daily_pnl", "proposed_stop_risk", "account_unrealized_pnl")),
         ("profit", "Daily profit protection", ("daily_profit_",)),
         ("count", "Daily entry limit", ("max_trades_per_day", "invalid_daily_trade_count")),
         ("cooldown", "Entry cooldown", ("cooldown_",)),

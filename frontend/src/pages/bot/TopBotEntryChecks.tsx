@@ -46,9 +46,10 @@ export function TopBotEntryChecks({ monitor, contractId, fresh, ready, qualified
   const profitCheck: Check | null = guard ? {
     id: "profit", label: "Daily profit protection",
     status: !monitoring ? "unknown" : guard.trigger || !guard.available || guard.error ? "blocked" : guardChecked ? "passed" : "unknown",
-    detail: guard.trigger === "daily_profit_target_reached" ? "+$400 target reached. Closing the TopBot position; entries paused until the next session."
+    detail: guard.trigger === "daily_profit_target_reached" ? "+$500 target reached. Closing the TopBot position; entries paused until the next session."
+      : guard.trigger === "daily_loss_limit_reached" ? "−$500 loss limit reached. Closing the TopBot position; entries paused until the next session."
       : guard.trigger === "daily_profit_breakeven_stop" ? "Returned to $0 after reaching +$200. Closing the TopBot position; entries paused until the next session."
-      : guard.error || guard.message || "Break-even profit stop disabled. Daily target +$400.",
+      : guard.error || guard.message || "Daily profit target +$500 and loss stop −$500. Resets at 18:00 New York.",
   } : null;
   const local: Check[] = [
     { id: "depth", label: "Fresh two-sided depth", status: !fresh ? "unknown" : ready ? "passed" : "blocked",

@@ -19,7 +19,8 @@ it.each([true, false])("shows the session exit policy (active=%s)", async active
     activity={{ runs: [], profit_guard: { available: true, trading_day: active ? "2026-11-04" : "2026-11-05" } } as unknown as BotActivity}
     demoMode={false} onChanged={() => {}} />);
   expect(screen.getByText(active ? /Fixed stop 25 pts · Take-profit 25 pts · No trailing/ : /Trail 25 pts after \+25/)).toBeTruthy();
-  expect(screen.getByText(/Break-even profit stop disabled/)).toBeTruthy();
+  expect(screen.getByText(/Daily profit target \+\$500 · Daily loss stop −\$500/)).toBeTruthy();
+  expect(screen.getByText(/Daily loss limit \$500/)).toBeTruthy();
   if (active) expect(screen.getByText(/Trailing exits resume for new entries next session/)).toBeTruthy();
   await waitFor(() => expect(screen.getByText("$23.56")).toBeTruthy());
 });

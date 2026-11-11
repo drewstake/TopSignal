@@ -59,13 +59,17 @@ this account's preference. Other accounts default to requiring rearming.
 Durable open-position obligations continue to be managed by the worker.
 Refreshing or closing the dashboard does not stop a run.
 
-Daily profit protection uses account-wide realized net P&L on the existing daily
-loss-check fee basis plus current unrealized P&L. At **+$400**, close TopBot's
-owned position and pause new entries. Reaching **+$200** permanently arms a
-**$0** floor for that trading session; returning to or below $0 closes the owned
-position and pauses entries. A jump past either threshold also triggers it. The
-existing $250 daily loss entry gate is unchanged. Profit stops do not open an
-offsetting position or flatten unrelated contracts.
+Daily P&L protection uses account-wide realized net P&L on the existing daily
+loss-check fee basis plus current unrealized P&L. At **+$500** or **−$500**, close
+TopBot's owned position and pause new entries until the next trading session.
+The break-even profit floor is disabled. A jump past either threshold also
+triggers the stop. The daily loss entry budget is **$500**; the existing proposed
+stop-risk check can reject an entry before the remaining budget is exhausted.
+Daily stops do not open an offsetting position or flatten unrelated contracts.
+
+The account preference `daily_entry_limit_enabled=false` removes only the daily
+entry-count cap and survives Stop/Start and contract rolls. Signal qualification,
+position limits, cooldown, session cutoffs and protective-stop checks still apply.
 
 The worker observes P&L on its normal polling cycle, including while a runner
 is open or entries are manually stopped. A flat, active run is checked even
@@ -73,11 +77,11 @@ without a qualifying DOM signal. Broker unrealized P&L is preferred; when absent
 an MNQ position can be valued using fresh executable bid/ask quotes. Incomplete,
 stale, or failed P&L checks block new entries while existing stop/session
 management continues. Polling can miss brief threshold touches; fill slippage,
-fees, data gaps, and broker latency mean $400 and $0 are trigger levels, not
+fees, data gaps, and broker latency mean +$500 and −$500 are trigger levels, not
 guaranteed exit proceeds. Monitoring starts with available observations and
 does not reconstruct unobserved earlier peaks.
 
-The armed flag and triggered stop survive Stop/Start, configuration changes,
+The triggered stop survives Stop/Start, configuration changes,
 SQL rollbacks, and worker restarts. They reset at the existing **18:00 New York**
 trading-day rollover, after which an enabled run may trade again. An unfinished
 close retains its exit intent across that rollover and is reconciled/retried
@@ -85,7 +89,7 @@ before new entries. Stopping a run manually still requires starting it again.
 
 State is one bounded row per owner/account in the worker's existing local
 `topbot-audit/.../actions.sqlite3` journal under `TOPSIGNAL_DATABENTO_CACHE_DIR`
-(or its existing audit-directory override). Arming and triggering append audit
+(or its existing audit-directory override). Trigger transitions append audit
 events atomically with the state update. Preserve this directory during releases
 and worker moves; the existing SQLite backup captures both state and events.
 No cloud migration, bulk write, historical cache, or per-tick series is added.

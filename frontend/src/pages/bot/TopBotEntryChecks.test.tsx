@@ -113,22 +113,31 @@ it("reads nested rejection evidence without inventing a broker pass", () => {
   expect(screen.getByText("Protective stop is missing.")).toBeTruthy();
 });
 
-it("shows the disabled break-even stop and the measured account P&L", () => {
+it("shows the daily thresholds and the measured account P&L", () => {
   const state = monitor();
   state.activity!.profit_guard = { available: true, armed: false, arm_at: null, floor: null, trigger: null, observed_at: at, pnl: 150, peak_pnl: 220 };
   render(<TopBotEntryChecks {...props} monitor={state} />);
   expect(row("Daily profit protection").getByText("Passing")).toBeTruthy();
-  expect(screen.getByText(/Break-even profit stop disabled. Daily target \+\$400/)).toBeTruthy();
+  expect(screen.getByText(/Daily profit target \+\$500/)).toBeTruthy();
   expect(screen.getByText(/Daily account P&L: \+\$150.00 · Highest observed: \+\$220.00/)).toBeTruthy();
+});
+
+it("shows a latched daily loss stop as blocking new entries", () => {
+  const state = monitor();
+  state.activity!.profit_guard = { available: true, trigger: "daily_loss_limit_reached",
+    observed_at: at, pnl: -500, peak_pnl: 0 };
+  render(<TopBotEntryChecks {...props} monitor={state} />);
+  expect(row("Daily profit protection").getByText("Blocking")).toBeTruthy();
+  expect(screen.getByText(/−\$500 loss limit reached/)).toBeTruthy();
 });
 
 it("keeps a triggered daily stop blocking even after price observations go stale", () => {
   const state = monitor();
   state.activity!.profit_guard = { available: true, armed: true, trigger: "daily_profit_target_reached",
-    observed_at: new Date(now - 120_000).toISOString(), pnl: 400, peak_pnl: 400 };
+    observed_at: new Date(now - 120_000).toISOString(), pnl: 500, peak_pnl: 500 };
   render(<TopBotEntryChecks {...props} monitor={state} fresh={false} />);
   expect(row("Daily profit protection").getByText("Blocking")).toBeTruthy();
-  expect(screen.getByText(/\+\$400 target reached/)).toBeTruthy();
+  expect(screen.getByText(/\+\$500 target reached/)).toBeTruthy();
 });
 
 it("shows an unavailable profit monitor as an entry blocker", () => {

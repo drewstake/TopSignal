@@ -9,7 +9,7 @@ from app.services import topbot_profit_guard as guard, topbot_strategy, topbot_d
 from test_bot_worker import session_factory, _runtime, _seed_run
 
 
-@pytest.mark.parametrize("result", ["latched", "unavailable"])
+@pytest.mark.parametrize("result", ["daily_profit_target_reached", "daily_loss_limit_reached", "unavailable"])
 def test_worker_checks_profit_protection_without_waiting_for_entry_signal(session_factory, monkeypatch, result):
     _seed_run(session_factory, dry_run=False)
     with session_factory() as db:
@@ -27,7 +27,7 @@ def test_worker_checks_profit_protection_without_waiting_for_entry_signal(sessio
     def poll(*args, **kwargs):
         calls.append(args[:2])
         if result == "unavailable": raise ValueError("No account P&L")
-        return {"trigger": "daily_profit_target_reached"}
+        return {"trigger": result}
     monkeypatch.setattr(guard, "poll", poll)
     monkeypatch.setattr(worker, "evaluate_bot_config", lambda *a, **kw: pytest.fail("Must not evaluate entries"))
     runtime._process_run(run_id=1, now=datetime(2026, 11, 3, 15, tzinfo=timezone.utc), startup_recovery=False,

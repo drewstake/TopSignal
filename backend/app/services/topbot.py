@@ -32,7 +32,7 @@ TOPBOT_SETTINGS = {
     "slow_period": 21,
     "order_size": 1,
     "max_contracts": 1,
-    "max_daily_loss": 250,
+    "max_daily_loss": 500,
     "max_open_position": 1,
     "max_trades_per_day": 4,
     "allowed_contracts": ["MNQ", "F.US.MNQ"],

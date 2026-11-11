@@ -12,9 +12,11 @@ from time import monotonic
 from .topbot_audit import connection
 from .trading_day import as_utc, trading_day_key
 
-TARGET = 400.0
+TARGET = 500.0
+LOSS_LIMIT = 500.0
 MESSAGES = {
-    "daily_profit_target_reached": "Daily P&L reached +$400. Close the TopBot position and pause entries until the next trading session.",
+    "daily_profit_target_reached": "Daily P&L reached +$500. Close the TopBot position and pause entries until the next trading session.",
+    "daily_loss_limit_reached": "Daily P&L reached -$500. Close the TopBot position and pause entries until the next trading session.",
 }
 
 
@@ -23,13 +25,13 @@ def _table(db):
 
 
 def _empty(now):
-    return dict(trading_day=trading_day_key(now), target=TARGET, arm_at=None, floor=None,
+    return dict(trading_day=trading_day_key(now), target=TARGET, loss_limit=LOSS_LIMIT, arm_at=None, floor=None,
                 armed=False, trigger=None, triggered_at=None, observed_at=None, pnl=None, peak_pnl=None, error=None)
 
 
 def _current_policy(state):
     """Retire saved break-even latches without deleting historical audit events."""
-    state.update(armed=False, arm_at=None, floor=None)
+    state.update(target=TARGET, loss_limit=LOSS_LIMIT, armed=False, arm_at=None, floor=None)
     if state.get("trigger") == "daily_profit_breakeven_stop":
         state.update(trigger=None, triggered_at=None)
     return state
@@ -67,6 +69,8 @@ def observe(owner, account_id, pnl, *, now=None):
         if not state["trigger"]:
             if pnl >= TARGET:
                 state["trigger"] = "daily_profit_target_reached"
+            elif pnl <= -LOSS_LIMIT:
+                state["trigger"] = "daily_loss_limit_reached"
             if state["trigger"]:
                 state["triggered_at"] = now.isoformat()
         db.execute("INSERT INTO daily_profit_guard(account,state) VALUES(?,?) ON CONFLICT(account) DO UPDATE SET state=excluded.state",
