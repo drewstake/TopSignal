@@ -1,6 +1,7 @@
 """Real loopback transport regressions; never load credentials or call a broker."""
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import json
@@ -202,6 +203,21 @@ def test_concurrent_requests_on_one_client_have_independent_deadlines():
             thread.join(timeout=2)
         assert not thread.is_alive()
         assert results == [504]
+
+
+def test_read_interrupted_by_deadline_is_a_timeout_even_on_a_coarse_clock(monkeypatch):
+    # Windows' monotonic clock advances in 15.6 ms ticks, so the deadline timer
+    # can close the socket while monotonic() still reads just before expiry.
+    monkeypatch.setattr(transport, "monotonic", lambda: 100.0)
+    def interrupted(_req, *, timeout, deadline):
+        deadline._interrupt()  # Exactly what the deadline timer does when it fires.
+        raise HTTPException("connection closed mid-body")
+    monkeypatch.setattr(client_module, "_open_projectx_request", interrupted)
+    with pytest.raises(ProjectXClientError) as caught:
+        client_at("http://127.0.0.1:9")._request("POST", "/api/Order/place", payload={}, with_auth=False)
+    assert caught.value.status_code == 504
+    assert caught.value.reason_code == PROJECTX_ERROR_NETWORK
+    assert caught.value.submission_outcome_unknown is True
 
 
 def test_actual_deadline_leaves_submission_unknown_for_reconciliation():

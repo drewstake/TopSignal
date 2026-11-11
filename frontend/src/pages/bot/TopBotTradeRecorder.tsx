@@ -1,9 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "../../components/ui/Button";
 import { accountsApi } from "../../lib/api";
 import type { AccountTrade } from "../../lib/types";
 import { ProgressRecorderStatus, TradeProgressReview } from "../trades/TradeProgress";
+import { usePageVisibility } from "./usePageVisibility";
+
+const POLL_MS = 30_000;
 
 export function TopBotTradeRecorder({ accountId }: { accountId: number }) {
   return <AccountRecorder key={accountId} accountId={accountId} />;
@@ -15,14 +18,32 @@ function AccountRecorder({ accountId }: { accountId: number }) {
   const [error, setError] = useState(false);
   const [revision, setRevision] = useState(0);
   const [reviewTrade, setReviewTrade] = useState<AccountTrade | null>(null);
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const generation = useRef(0);
+  const visible = usePageVisibility();
   useEffect(() => {
-    if (!expanded) return;
-    let active = true;
-    accountsApi.getTrades(accountId, { limit: 20 }, { bypassCache: true })
-      .then(result => { if (active) setTrades(result.filter(trade => trade.account_id === accountId)); })
-      .catch(() => { if (active) setError(true); });
-    return () => { active = false; };
-  }, [accountId, expanded, revision]);
+    // Bounded refresh while the list is open and visible. The shared trade cache
+    // cannot abort an in-flight read, so superseded responses are discarded.
+    if (!expanded || !visible) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const current = ++generation.current;
+    const load = async () => {
+      try {
+        const result = await accountsApi.getTrades(accountId, { limit: 20 }, { bypassCache: true });
+        if (stopped || current !== generation.current) return;
+        setTrades(result.filter(trade => trade.account_id === accountId));
+        setError(false);
+        setUpdatedAt(Date.now());
+      } catch {
+        if (!stopped && current === generation.current) setError(true);
+      } finally {
+        if (!stopped && current === generation.current) timer = setTimeout(load, POLL_MS);
+      }
+    };
+    void load();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [accountId, expanded, revision, visible]);
 
   return <section className="topbot-panel" aria-label="Trade recorder">
     <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
@@ -41,7 +62,8 @@ function AccountRecorder({ accountId }: { accountId: number }) {
         <p>Recent trades · select a trade to see its recorded points over time.</p>
         <Link to={`/trades?account=${accountId}`} className="text-app-accent hover:underline">All trades</Link>
       </div>
-      {error ? <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-amber-200">
+      {error && trades !== null && <p role="status" className="text-xs text-amber-200">Refresh failed. Showing trades from {updatedAt ? new Date(updatedAt).toLocaleTimeString("en-US", { timeZone: "America/New_York" }) : "the last successful read"} ET.</p>}
+      {error && trades === null ? <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-amber-200">
         <p>Recent trades are unavailable.</p>
         <Button size="sm" variant="ghost" onClick={() => { setError(false); setRevision(value => value + 1); }}>Retry</Button>
       </div> : trades === null ? <p role="status" className="text-sm text-app-muted">Loading recent trades…</p>
@@ -57,7 +79,7 @@ function AccountRecorder({ accountId }: { accountId: number }) {
               onClick={() => setReviewTrade(trade)}>Review path</Button>
           </li>)}
         </ul>}
-      <p className="text-xs text-app-muted">Trades from before recording was enabled may have no path. Missing observations are shown as gaps.</p>
+      <p className="text-xs text-app-muted">Refreshes every 30 s while open{updatedAt ? ` · updated ${new Date(updatedAt).toLocaleTimeString("en-US", { timeZone: "America/New_York" })} ET` : ""}. Trades from before recording was enabled may have no path. Missing observations are shown as gaps. These paths cover each position from entry to exit only; post-exit market data for the exit study is recorded separately.</p>
     </div>}
     {reviewTrade && <TradeProgressReview key={reviewTrade.id} trade={reviewTrade} onClose={() => setReviewTrade(null)} />}
   </section>;

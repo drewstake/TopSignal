@@ -126,11 +126,79 @@ The dashboard bounds actual and research reads to 5,000 entries. Long studies
 need an explicit capacity and reporting review.
 
 The background reader is separate from trading. Expensive replay runs in a
-network-disabled child process at below-normal Windows CPU priority; it cannot
-place orders. Transient processing failures remain pending and visible in reader
-health. Broker execution identifiers are stored in the normal compact account
+network-disabled child process at below-normal Windows CPU priority and
+background I/O priority; it cannot place orders.
+
+### Replay scheduling, checkpoints and failures (November 11, 2026)
+
+Every replay used to re-read and re-verify its capture from event 1, and a fixed
+300-second deadline killed it. Book reconstruction runs at roughly 12,000 events
+per second, so any entry more than about an hour into a busy capture could never
+finish; it was retried from the beginning on a backoff while competing with the
+live recorder for the archive disk. On November 11 every replay attempt timed out.
+
+`topbot_replay_index.py` now keeps derived checkpoints of the recorded reader's
+state at batch boundaries (every five minutes of receipt time). It mirrors the
+hash-chain checks of `recorded_batches` and the per-row logic of
+`topbot_study_store.quotes` exactly; tests replay randomized captures with index
+holes, sequence gaps, stale timestamps and silences and require identical quotes
+and identical `simulate()` results for every start. The mirror is only enabled while
+the source fingerprints of those functions and `DepthState` match; any model
+change disables it and replays use the original full scan. Each checkpoint is
+anchored to its capture batch hash and metadata hash and carries its own SHA-256; a
+mismatch is a checkpoint error that falls back to the full scan and is never
+recorded as missing market evidence. Results carry `replay` provenance (reader,
+checkpoint anchor, events read, seconds).
+
+Each child first extends the capture's checkpoints toward the entry within a
+90-second budget; if it runs out it saves its position and returns
+`index_progress`, which is not a failure. Replays that keep reporting progress are
+not killed for being slow. A child is ended only when it stops reporting progress
+for three minutes or reaches a 30-minute safety cap. Before launching, and while
+a child runs, the reader checks the worker capture for storage backpressure
+(stall, retrying writer, more than 1,024 queued events, a queue older than two
+seconds or a commit slower than two seconds); two consecutive observations stop
+research and retry in a minute, without counting a failure.
+
+Per-entry job state lives in `replay-jobs.sqlite3` beside the results: attempts,
+consecutive failures, next retry, the first and latest sanitized failure (fixed
+category, exception type, phase, source location; never messages or paths) and
+the last progress. It survives restarts. Six consecutive failures mark an entry
+`failed`; it still retries at the six-hour cadence and stays visible. A successful
+scan does not clear an unresolved failure. The Bot page shows, per account,
+entries whose observation window is open, queued, replaying, retrying, failed,
+valid and excluded, with explicit denominators.
+
+Before replaying a later entry, the child extends an older checkpoint index
+through that entry in resumable slices. An existing checkpoint alone is not
+enough: otherwise later trades would repeatedly scan the growing unindexed
+tail. The heatmap deriver yields while a replay runs or the recorder reports
+backpressure, avoiding simultaneous optional archive readers.
+
+Releases now refuse to stop the application while post-exit observation windows
+are open unless the private host configuration sets
+`accept_research_window_gaps`. A restart inside a window ends that capture, and the
+missing interval is excluded rather than reconstructed.
+
+### Fixed take-profit baseline
+
+`topbot_study_report.py` answers whether a larger fixed take-profit than the
+current 25-point target would have done better with the stop fixed at 25 points.
+It pairs each larger target with the 25-point variant on the same valid exploratory
+entries, winners and losers alike, using the simulated chronological target/stop
+order and $1.72 costs. It reports mean and total differences, entries better,
+worse and unchanged, 25-point winners that a larger target turned into stops,
+pointwise 95% and Bonferroni-adjusted session-cluster intervals, and a reading
+that stays `insufficient_data` below 30 entries or five sessions. The trailing
+reference is shown separately and is not the baseline. Excluded entries with some
+resolved outcomes are listed as partial observations and never averaged. Actual
+fixed-bracket broker exits are compared with the simulated 25-point outcome as a
+model check. The held-out validation cohort is not used. Broker execution identifiers are stored in the normal compact account
 records and deduplicated append-only fill journal. Ambiguous/partial exposure
 continues to require explicit reconciliation under the existing execution gates.
+
+The fixed-target baseline table follows the selected strategy, version and date
+filters, while account-wide processing readiness retains its explicit scope.
 
 The existing cache backup discovers the evidence and study SQLite files and uses
 online snapshots, not direct copies of live WAL databases. Source archives remain

@@ -145,6 +145,16 @@ class ReleaseTests(unittest.TestCase):
         exposed["accounts"][0]["positions"] = 1
         host.check_gate_snapshot(exposed, good, False)  # Legitimate post-start trading is preserved.
 
+    def test_open_research_windows_block_activation_unless_explicitly_accepted(self):
+        observed = {"open_research_windows": [{"entry_id": 7, "account_id": 1, "cutoff": "2026-11-11T17:25:00+00:00"},
+                                              {"entry_id": 8, "account_id": 1, "cutoff": "2026-11-11T18:05:00+00:00"}]}
+        with self.assertRaisesRegex(ValueError, "2 post-exit research windows are open until 2026-11-11T18:05"):
+            host.check_research_windows(observed, {})
+        with self.assertRaises(ValueError):
+            host.check_research_windows(observed, {"accept_research_window_gaps": "yes"})
+        host.check_research_windows(observed, {"accept_research_window_gaps": True})
+        host.check_research_windows({"open_research_windows": []}, {})
+
     def test_recording_gate_rejects_loss_restart_missing_state_and_durability_regression(self):
         first = {"1": {"state": "recording", "capture_id": "same", "durable_events": 10, "dropped_events": 0}}
         host.check_recording(first, {"1": dict(first["1"], durable_events=20)})

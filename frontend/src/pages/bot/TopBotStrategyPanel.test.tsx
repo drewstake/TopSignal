@@ -5,24 +5,32 @@ import { botsApi } from "../../lib/api";
 import { TopBotStrategyPanel, type TopBotStatistics } from "./TopBotStrategyPanel";
 import type { BotActivity, BotConfig } from "../../lib/types";
 vi.mock("./usePageVisibility", () => ({ usePageVisibility: () => true }));
+const fixedFuture = { exit_mode: "fixed" as const, take_profit_points: 25, initial_stop_points: 25, trail_activation_points: null,
+  trail_points: null, persistent: false, fixed_bracket_session: "2026-11-04", bot_enabled: true, source: "Bot configuration" };
+const trailingFuture = { ...fixedFuture, exit_mode: "trailing" as const, take_profit_points: null, trail_activation_points: 25, trail_points: 25 };
 const stats: TopBotStatistics = { scope: "Account only", items: [], closed_trades: 2, wins: 1, losses: 1,
   net_pnl_usd: 23.56, winner_hold_mean_seconds: 420, winner_hold_median_seconds: 420,
-  loser_hold_mean_seconds: 120, loser_hold_median_seconds: 120 };
+  loser_hold_mean_seconds: 120, loser_hold_median_seconds: 120, account_id: 123,
+  exit_settings: { future_entries: fixedFuture, open_trades: [], as_of: "2026-11-04T15:00:00Z" } };
 beforeEach(() => {
   vi.spyOn(botsApi, "getTopBotStatistics").mockResolvedValue(stats);
   vi.spyOn(botsApi, "getTopBotAudit").mockResolvedValue({ items: [], next_before: null, storage: "Worker" });
+  vi.spyOn(botsApi, "getTopBotComparison").mockReturnValue(new Promise(() => {}));
+  vi.spyOn(botsApi, "getTopBotResearchStatus").mockReturnValue(new Promise(() => {}));
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
-it.each([true, false])("shows the session exit policy (active=%s)", async active => {
+it.each([true, false])("shows the server-resolved exit policy for new entries (fixed=%s)", async fixed => {
+  vi.mocked(botsApi.getTopBotStatistics).mockResolvedValue({ ...stats, exit_settings: { ...stats.exit_settings!, future_entries: fixed ? fixedFuture : trailingFuture } });
   render(<TopBotStrategyPanel accountId={123}
     bot={{ id: 39, strategy_params: { fixed_bracket_session: "2026-11-04" } } as BotConfig}
-    activity={{ runs: [], profit_guard: { available: true, trading_day: active ? "2026-11-04" : "2026-11-05" } } as unknown as BotActivity}
+    activity={{ runs: [], profit_guard: { available: true, trading_day: "2026-11-04" } } as unknown as BotActivity}
     demoMode={false} onChanged={() => {}} />);
-  expect(screen.getByText(active ? /Fixed stop 25 pts · Take-profit 25 pts · No trailing/ : /Trail 25 pts after \+25/)).toBeTruthy();
+  expect(screen.getByText(/New entries: checking exit settings/)).toBeTruthy();  // Never a hard-coded guess.
+  expect(await screen.findByText(fixed ? /New entries: Fixed stop 25 pts · Take-profit 25 pts · No trailing · Session 2026-11-04 only/ : /New entries: Initial stop 25 pts · Trail 25 pts after \+25/)).toBeTruthy();
   expect(screen.getByText(/Daily profit target \+\$500 · Daily loss stop −\$500/)).toBeTruthy();
   expect(screen.getByText(/Daily loss limit \$500/)).toBeTruthy();
-  if (active) expect(screen.getByText(/Trailing exits resume for new entries next session/)).toBeTruthy();
-  await waitFor(() => expect(screen.getByText("$23.56")).toBeTruthy());
+  if (fixed) expect(screen.getByText(/Trailing exits resume for new entries next session/)).toBeTruthy();
+  expect(screen.getByText("$23.56")).toBeTruthy();
 });
 it("shows the saved entry-limit preference", async () => {
   render(<TopBotStrategyPanel accountId={123} bot={{ id: 39, enabled: true, strategy_params: { daily_entry_limit_enabled: false } } as BotConfig}
@@ -30,16 +38,39 @@ it("shows the saved entry-limit preference", async () => {
   expect(screen.getByText(/Daily entry-count limit disabled/)).toBeTruthy();
   await waitFor(() => expect(screen.getByText("$23.56")).toBeTruthy());
 });
-it.each([null, "2026-12-01"])("shows persistent fixed exits regardless of session availability (%s)", async day => {
+it("shows persistent fixed exits and keeps an open trade's saved protection separate", async () => {
+  vi.mocked(botsApi.getTopBotStatistics).mockResolvedValue({ ...stats, exit_settings: {
+    future_entries: { ...fixedFuture, persistent: true, take_profit_points: 40 },
+    open_trades: [{ entry_id: 188, exit_mode: "fixed", take_profit_points: 25, initial_stop_points: 25, confirmed_stop: 28373, confirmed_target: 28323 }],
+    as_of: "2026-11-04T15:00:00Z" } });
   render(<TopBotStrategyPanel accountId={123}
     bot={{ id: 39, strategy_params: { exit_mode: "fixed", fixed_bracket_session: "2026-11-04" } } as BotConfig}
-    activity={day ? { runs: [], profit_guard: { trading_day: day } } as unknown as BotActivity : null}
-    demoMode={false} onChanged={() => {}} />);
-  expect(screen.getByText(/Fixed stop 25 pts · Take-profit 25 pts · No trailing/)).toBeTruthy();
+    activity={null} demoMode={false} onChanged={() => {}} />);
+  expect(await screen.findByText(/New entries: Fixed stop 25 pts · Take-profit 40 pts · No trailing/)).toBeTruthy();
+  expect(screen.getByText(/Open entry 188: saved fixed take-profit 25 \/ stop 25 pts · broker-confirmed stop 28373, target 28323/)).toBeTruthy();
   expect(screen.getByText(/Fixed exits stay selected across sessions and restarts/)).toBeTruthy();
   expect(screen.queryByText(/Trailing exits resume/)).toBeNull();
   expect(screen.queryByText(/Session 2026-11-04 only/)).toBeNull();
-  await waitFor(() => expect(screen.getByText("$23.56")).toBeTruthy());
+});
+it("labels blocked and failed attempts truthfully and keeps genuine unresolved submissions distinct", async () => {
+  const row = (entry_id: number, attempt_status: string, kind: string, label: string, reason: string | null = null) => ({
+    entry_id, side: "BUY", stats_status: "awaiting_fill", attempt_status, display_status: { kind, label, reason } });
+  vi.mocked(botsApi.getTopBotStatistics).mockResolvedValue({ ...stats, items: [
+    row(1, "blocked", "blocked", "Blocked before submission · no order sent", "Bot execution state changed before provider routing."),
+    row(2, "error", "submission_error", "Submission failed · no fill"),
+    row(3, "submitted", "awaiting_fill", "Submitted · awaiting fill confirmation")] });
+  render(<TopBotStrategyPanel accountId={123} bot={null} activity={null} demoMode={false} onChanged={() => {}} />);
+  expect(await screen.findByText(/Blocked before submission · no order sent/)).toBeTruthy();
+  expect(screen.getByText(/Bot execution state changed before provider routing/)).toBeTruthy();
+  expect(screen.getByText(/Submission failed · no fill/)).toBeTruthy();
+  expect(screen.getByText(/Submitted · awaiting fill confirmation/)).toBeTruthy();
+  expect(screen.queryByText("Awaiting fill")).toBeNull();
+});
+it("ignores a statistics response for a different account", async () => {
+  vi.mocked(botsApi.getTopBotStatistics).mockResolvedValue({ ...stats, account_id: 999, net_pnl_usd: 777 });
+  render(<TopBotStrategyPanel accountId={123} bot={null} activity={null} demoMode={false} onChanged={() => {}} />);
+  expect(await screen.findByText(/Statistics unavailable/)).toBeTruthy();
+  expect(screen.queryByText("$777.00")).toBeNull();
 });
 it("starts broker practice routing for the selected account, not dry run", async () => {
   const start = vi.spyOn(botsApi, "startTopBot").mockResolvedValue({} as never);

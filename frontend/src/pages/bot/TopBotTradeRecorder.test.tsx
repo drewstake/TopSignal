@@ -75,3 +75,21 @@ it("shows read failures and supports retry without presenting missing trades as 
   await waitFor(() => expect(screen.getByText(/No recent trades for this account/)).toBeTruthy());
   expect(screen.queryByRole("img")).toBeNull();
 });
+
+it("refreshes the open trade list on a bounded interval and stops when collapsed", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    vi.mocked(accountsApi.getTrades).mockResolvedValueOnce([trade(1, 1)]).mockResolvedValue([trade(1, 2), trade(1, 1)]);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(view(1));
+    await user.click(screen.getByRole("button", { name: "Review trade paths" }));
+    await screen.findByRole("button", { name: "Review path for MNQ trade 1" });
+    expect(screen.queryByRole("button", { name: "Review path for MNQ trade 2" })).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    await screen.findByRole("button", { name: "Review path for MNQ trade 2" });
+    expect(accountsApi.getTrades).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole("button", { name: "Hide trade paths" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    expect(accountsApi.getTrades).toHaveBeenCalledTimes(2);
+  } finally { vi.useRealTimers(); }
+});

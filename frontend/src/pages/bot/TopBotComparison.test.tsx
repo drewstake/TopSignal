@@ -50,3 +50,44 @@ it("cancels previous account requests and does not display a late response", asy
   resolveOld({ ...data, actual_scope: "Private old account" });
   await waitFor(() => expect(screen.queryByText(/Private old account/)).toBeNull());
 });
+
+it("answers the 25-point baseline question with denominators, pending categories and a separate trailing reference", async () => {
+  const diff = (mean: number, verdict: string) => ({ entries: 3, sessions: 1, mean_difference_usd: mean, total_difference_usd: mean*3,
+    mean_difference_r: mean/50, entries_better: 1, entries_worse: 1, entries_same: 1, interval_95_pointwise_usd: null,
+    interval_adjusted_usd: null, baseline_target_became_stop: 1, verdict });
+  const outcomes = { dollars: { ...empty, expectancy: 10 }, r: empty, take_profit_exits: 1, stop_exits: 2 };
+  vi.spyOn(botsApi, "getTopBotComparison").mockResolvedValue({ ...data, account_id: 123,
+    readiness: { experiment_id: "study", registered_filled_entries: 20, pending: 16, processed: 4, deferred: 3,
+      counts: { observing: 3, queued: 9, processing: 1, retrying: 2, failed: 1, completed_valid: 3, completed_excluded: 1 },
+      processed_coverage: { numerator: 3, denominator: 4, rate: .75, label: "p" }, overall_usable: { numerator: 3, denominator: 20, rate: .15, label: "o" },
+      oldest_overdue: { entry_id: 142, cutoff: "2026-11-10T20:53:17Z", overdue_seconds: 7200, state: "retrying" },
+      unfilled_submissions: [], not_trades: {}, prior_experiment_entries: 0 },
+    research_health: { state: "replaying", last_cycle_at: null, last_error_type: "no_progress", account_deferred: 3, account_overdue: 13 },
+    tp_baseline: { question: "Would a larger fixed take-profit perform better?", report_version: "v1",
+      baseline: { label: "Current fixed bracket: 25-point take-profit, 25-point stop" },
+      cohort: { valid_paired_entries: 3, excluded_entries: 1, sessions: 1 },
+      series: [{ key: "1", ratio: 1, target_points: 25, outcomes }, { key: "2", ratio: 2, target_points: 50, outcomes, versus_baseline: diff(-12.5, "insufficient_data") }],
+      trailing_reference: { label: "Trailing reference (25 stop / +25 activation / 25 trail). Not the requested baseline.", outcomes, versus_baseline: diff(4, "insufficient_data") },
+      partial_observations: [{ entry_id: 168, session: "2026-11-11", resolved: { "1": { exit_reason: "take_profit" } }, unresolved: { "2": "feed_unavailable" } }],
+      baseline_agreement: { compared: 3, same_exit_reason: 3, disagreements: [] }, minimums: { entries: 30, sessions: 5 },
+      interval_methods: { pointwise: "pw", adjusted: "adj" }, caveats: ["More entries do not settle the question by themselves."] } });
+  render(<TopBotComparison accountId={123} />);
+  await screen.findByLabelText("Larger take-profit versus current 25-point take-profit");
+  expect(screen.getByText(/Overall usable: 3 of 20 registered filled entries \(15%\), pending included/)).toBeTruthy();
+  expect(screen.getByText(/Processed coverage: 3 valid of 4 processed \(75%\)/)).toBeTruthy();
+  expect(screen.getByText(/Pending 16: 3 observation window open · 9 queued · 1 replaying · 2 retrying · 1 failed/)).toBeTruthy();
+  expect(screen.getByText(/this account: 3 deferred, 13 overdue/)).toBeTruthy();
+  expect(screen.getByText("50 pts (2:1)")).toBeTruthy();
+  expect(screen.getByText("-12.50")).toBeTruthy();
+  expect(screen.getAllByText("Insufficient data").length).toBe(1);
+  expect(screen.getByText(/Separate reference, not the requested baseline/)).toBeTruthy();
+  expect(screen.getByText(/Entry 168: resolved 1 · unresolved 2 \(feed unavailable\)/)).toBeTruthy();
+  expect(screen.getByText(/same exit as the broker 3 times/)).toBeTruthy();
+});
+
+it("ignores a comparison returned for a different account", async () => {
+  vi.spyOn(botsApi, "getTopBotComparison").mockResolvedValue({ ...data, account_id: 999, actual_scope: "Other account" });
+  render(<TopBotComparison accountId={123} />);
+  await screen.findByText(/Comparison unavailable/);
+  expect(screen.queryByText(/Other account/)).toBeNull();
+});

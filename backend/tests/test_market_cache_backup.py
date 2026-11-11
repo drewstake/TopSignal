@@ -334,6 +334,25 @@ def test_snapshot_without_a_previous_manifest_is_a_full_copy(tmp_path, monkeypat
     tool.verify(output)
 
 
+def test_derived_heatmap_cache_is_rebuilt_not_archived(tmp_path, monkeypatch):
+    tool, _ = incremental_tools(monkeypatch)
+    source, segment, _ = cache(tmp_path)
+    derived = source/'depth-heatmap-v1'/('a'*64)/'sessions'/'2026-11-03.sqlite3'
+    derived.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(derived)) as db:
+        db.execute('PRAGMA journal_mode=WAL')
+        db.execute('CREATE TABLE chunks(id INTEGER PRIMARY KEY)'); db.commit()
+        # Open writer with a live WAL, as the deriver keeps it during a backup.
+        output = tmp_path/'full'
+        tool.backup(source, output, previous=tmp_path/'absent')
+    files = json.loads((output/'backup-manifest.json').read_text())['files']
+    assert not any(name.startswith('depth-heatmap-v1/') for name in files)
+    # Raw segments (the source of the derived cache) and other stores are still archived.
+    assert any(name.endswith(segment.name) for name in files)
+    assert 'live.sqlite3' in files
+    tool.verify(output)
+
+
 def test_snapshot_deadline_grows_with_database_size(monkeypatch):
     tool, _ = incremental_tools(monkeypatch)
     assert tool.snapshot_deadline(0) == 900

@@ -104,11 +104,18 @@ def test_offline_worker_soak_recovers_failures_and_transfers_ownership(tmp_path,
     first = BotWorkerRuntime(session_factory=session_factory, client_factory=lambda *_args, **_kwargs: FakeProvider(), settings=settings)
     second = BotWorkerRuntime(session_factory=session_factory, client_factory=lambda *_args, **_kwargs: FakeProvider(), settings=settings)
 
-    async def wait_until(predicate, timeout=3):
+    # Upper bound only: passing runs return as soon as the condition holds.
+    # Loaded Windows CI runners need more than a few seconds of slack.
+    async def wait_until(predicate, timeout=15):
         deadline = time.monotonic() + timeout
         while not predicate():
             assert time.monotonic() < deadline, "soak condition timed out"
             await asyncio.sleep(0.01)
+
+    def owner_provider_statuses():
+        # Under load the lease may legitimately move between runtimes; follow
+        # whichever one currently owns it rather than assuming `first` does.
+        return {s.provider_status for s in (first.snapshot(), second.snapshot()) if s.owns_lease}
 
     async def run():
         await first.start()
@@ -121,9 +128,9 @@ def test_offline_worker_soak_recovers_failures_and_transfers_ownership(tmp_path,
 
             provider_down.set()
             await wait_until(lambda: counts["provider_failures"] > 0)
-            await wait_until(lambda: first.snapshot().provider_status == "error")
+            await wait_until(lambda: "error" in owner_provider_statuses())
             provider_down.clear()
-            await wait_until(lambda: first.snapshot().provider_status == "ok")
+            await wait_until(lambda: "ok" in owner_provider_statuses())
 
             database_down.set()
             await wait_until(lambda: counts["db_failures"] >= 2)

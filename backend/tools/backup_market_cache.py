@@ -315,6 +315,10 @@ def backup(source, output, *, previous=None, deep_verify=True):
             continue
         if path.is_relative_to(depth_root) and path.resolve() not in depth_files:
             continue  # Preserve all originals on host; do not copy unfinished segments.
+        if path.is_relative_to(source/'depth-heatmap-v1'):
+            # Derived display cache, rebuilt from the backed-up raw segments.
+            # Its live SQLite files would otherwise be re-copied in every backup.
+            continue
         if path.name.endswith(('-wal', '-shm')) and path.with_name(path.name.rsplit('-', 1)[0]).is_file():
             continue  # Consistent SQLite backup includes committed WAL pages.
         relative = path.relative_to(source)

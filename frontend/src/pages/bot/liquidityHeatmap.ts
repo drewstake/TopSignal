@@ -1,6 +1,8 @@
 import { normalizeOrderBookContractId, type OrderBookStore } from "./orderBook";
 
 export const HEATMAP_SAMPLE_MS = 500;
+/** Poll twice per bucket so ordinary timer delays do not leave unsampled half-seconds. */
+export const HEATMAP_TIMER_MS = 250;
 export const HEATMAP_HISTORY_MS = 10 * 60_000;
 export const HEATMAP_MAX_FRAMES = HEATMAP_HISTORY_MS / HEATMAP_SAMPLE_MS;
 export const HEATMAP_LEVEL_LIMIT = 80;
@@ -18,11 +20,16 @@ export interface LiquidityFrame {
   limited: boolean;
 }
 
+export type FeedState = "live" | "incomplete" | "stale" | "disconnected" | "reconnecting" | "closed" | "loading" | "unavailable" | "invalid";
+/** Feed health is reported separately from the display's follow/paused state. */
+export interface FeedStatus { state: FeedState; detail: string; since: number | null; lastDepthAt: number | null }
+
 export interface LiquidityView {
   frames: readonly LiquidityFrame[];
   now: number;
   recordingSince: number | null;
   status: string;
+  feed: FeedStatus;
 }
 
 /** Fixed-capacity ring. Sampling is independent of display pause and React. */
@@ -34,6 +41,7 @@ export class LiquidityHeatmapBuffer {
   private lastEpoch: number | null = null;
   private recordingSince: number | null = null;
   private status = "Loading depth…";
+  private feed: FeedStatus = { state: "loading", detail: "Loading depth…", since: null, lastDepthAt: null };
   readonly contractId: string | null;
   readonly tickSize: number | null;
 
@@ -43,8 +51,11 @@ export class LiquidityHeatmapBuffer {
   }
 
   sample(store: OrderBookStore, now: number): void {
-    // Browser intervals jitter by a few milliseconds. Rate-limit by time bucket,
-    // otherwise a 499ms callback is dropped and creates a false half-second gap.
+    // A corrected clock that moves far backwards would otherwise block sampling
+    // until it caught up; start a fresh, honest buffer instead.
+    if (this.lastTime !== null && Number.isFinite(now) && now < this.lastTime - 2_000) this.clear();
+    // One frame per 500 ms bucket: the first sample taken inside the bucket.
+    // Rate-limit by bucket, not elapsed time, so normal timer jitter never drops one.
     if (!Number.isFinite(now) || (this.lastTime !== null &&
       (now <= this.lastTime || Math.floor(now / HEATMAP_SAMPLE_MS) === Math.floor(this.lastTime / HEATMAP_SAMPLE_MS)))) return;
     const observation = store.getHeatmapObservation(now, HEATMAP_LEVEL_LIMIT);
@@ -52,6 +63,7 @@ export class LiquidityHeatmapBuffer {
     if (observation.contractId !== this.contractId) {
       this.clear();
       this.status = "Waiting for selected contract…";
+      this.setFeed("loading", this.status, now, null);
       return;
     }
     let gap: string | null = null;
@@ -64,7 +76,7 @@ export class LiquidityHeatmapBuffer {
     else if (observation.timestampMs === null) gap = "Loading depth after reset…";
     else if (!observation.fresh) gap = "Stale depth · waiting for fresh updates";
     else if (this.lastEpoch !== null && observation.epoch !== this.lastEpoch) gap = "Depth reset / continuity gap";
-    else if (this.lastTime !== null && now - this.lastTime > HEATMAP_SAMPLE_MS * 2) gap = "Collection gap";
+    else if (this.lastTime !== null && Math.floor(now / HEATMAP_SAMPLE_MS) - Math.floor(this.lastTime / HEATMAP_SAMPLE_MS) > 2) gap = "Collection gap";
 
     const pack = (levels: Array<[number, number]>) => {
       const data = new Float64Array(levels.length * 2);
@@ -85,13 +97,21 @@ export class LiquidityHeatmapBuffer {
     if (!gap && bestBid !== null && bestAsk !== null && bestBid >= bestAsk) gap = "Crossed / locked depth · rebuilding";
     if (!gap && !bids.length && !asks.length) gap = "Incomplete depth · no observed levels";
     const frame: LiquidityFrame = {
-      time: now, sourceTime: observation.timestampMs, epoch: observation.epoch,
+      // Frames align to bucket starts (as recorded history does), so columns tile without seams.
+      time: Math.floor(now / HEATMAP_SAMPLE_MS) * HEATMAP_SAMPLE_MS, sourceTime: observation.timestampMs, epoch: observation.epoch,
       bids: gap ? new Float64Array() : bids, asks: gap ? new Float64Array() : asks,
       bestBid: gap ? null : bestBid, bestAsk: gap ? null : bestAsk, gap, limited: observation.truncated,
     };
     if (!gap && this.recordingSince === null) this.recordingSince = now;
     this.status = gap ?? (bestBid === null || bestAsk === null ? "Incomplete depth · one side missing"
       : !observation.sequenceKnown ? "Incomplete depth · sequence unavailable" : "Live · observed depth");
+    const connection = observation.connection;
+    const state: FeedState = connection === "disconnected" ? "disconnected" : connection === "reconnecting" ? "reconnecting"
+      : connection === "market_closed" ? "closed" : connection === "unavailable" ? "unavailable" : connection === "loading" ? "loading"
+      : observation.awaitingSnapshot || observation.timestampMs === null ? "loading"
+      : !observation.fresh ? "stale"
+      : gap ? "invalid" : bestBid === null || bestAsk === null ? "incomplete" : "live";
+    this.setFeed(state, this.status, now, observation.timestampMs);
     this.lastEpoch = observation.epoch;
     this.lastTime = now;
     this.ring[this.head] = frame;
@@ -105,7 +125,12 @@ export class LiquidityHeatmapBuffer {
 
   view(now: number): LiquidityView {
     const frames = Array.from({ length: this.length }, (_, i) => this.ring[(this.startIndex() + i) % HEATMAP_MAX_FRAMES]!);
-    return { frames, now, recordingSince: this.recordingSince, status: this.status };
+    return { frames, now, recordingSince: this.recordingSince, status: this.status, feed: { ...this.feed } };
+  }
+
+  private setFeed(state: FeedState, detail: string, now: number, lastDepthAt: number | null) {
+    this.feed = { state, detail, since: this.feed.state === state ? this.feed.since ?? now : now,
+      lastDepthAt: lastDepthAt ?? this.feed.lastDepthAt };
   }
 
   private startIndex() { return (this.head - this.length + HEATMAP_MAX_FRAMES) % HEATMAP_MAX_FRAMES; }

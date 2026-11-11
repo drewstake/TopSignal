@@ -922,6 +922,11 @@ def test_worker_shutdown_timeout_retains_inflight_task_and_does_not_release_leas
             assert runtime._runner_task is task
         finally:
             release.set()
+        # The retry is only expected to succeed once the in-flight work has
+        # drained; do not race that drain against the deliberately tiny 20 ms
+        # shutdown budget on a loaded CI runner.
+        await asyncio.wait({task}, timeout=5)
+        assert task.done()
         assert await runtime.stop() is True
         assert released_leases == [True]
         assert runtime._runner_task is None

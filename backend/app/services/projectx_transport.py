@@ -35,7 +35,11 @@ class RequestDeadline:
 
     @property
     def expired(self) -> bool:
-        return monotonic() >= self.expires_at
+        # Once the timer has interrupted the sockets the deadline is spent,
+        # even if a coarse clock (Windows' 15.6 ms monotonic tick) still reads
+        # just short of expires_at. Without this an interrupted read was
+        # misreported as a 502 network error instead of a 504 timeout.
+        return self._closed or monotonic() >= self.expires_at
 
     def remaining(self) -> float:
         remaining = self.expires_at - monotonic()

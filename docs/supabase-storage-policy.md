@@ -15,6 +15,9 @@ the development default is `backend/storage/databento`.
 | Saved backtest results | Application database, with bounded detail; do not embed the complete input candle history |
 | Raw observations, ProjectX candle caches, detailed research snapshots | Local SQLite under `TOPSIGNAL_DATABENTO_CACHE_DIR`; cloud definitions remain fenced |
 | Trade progress samples, lifecycle timelines, fill revisions, enrollment and recorder metadata | Local `trade-progress-v1/progress.sqlite3` under `TOPSIGNAL_DATABENTO_CACHE_DIR`; never Supabase or the cloud mirror; no automatic retention deletion |
+| Exit-study replay checkpoints | Local `topbot-replay-checkpoints-v1/<owner-hash>/<capture-id>.sqlite3` under `TOPSIGNAL_DATABENTO_CACHE_DIR`; derived from worker captures, anchored to each capture's hash chain, never the cloud; 256 MiB per owner and 10 GiB free-space floor stop new checkpoints (replays fall back to full scans); nothing is deleted automatically ([details](topbot-exit-study.md)) |
+| Exit-study replay-job state | Local `topbot-exit-study-v1/<owner-hash>/replay-jobs.sqlite3`; attempts, retry times and sanitized failure categories only; 16 MiB cap; first failure plus the 12 most recent attempts per entry are kept |
+| Derived liquidity-heatmap frames and checkpoints | Local `depth-heatmap-v1/<owner-hash>/` SQLite under `TOPSIGNAL_DATABENTO_CACHE_DIR`; rebuilt from raw depth segments, so excluded from the archive backup; newest 30 sessions kept (user-approved November 11, 2026; older derived session files are deleted automatically, raw recordings never); 4 GiB per owner and 15 GiB free-space bounds stop derivation ([details](live-liquidity-heatmap.md)) |
 
 The legacy `backend/tools/import_databento.py` and its service entry points now
 reject non-SQLite database imports before archive inspection or connection.

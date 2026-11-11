@@ -101,8 +101,8 @@ export function TradeProgressChart({ data }: { data: ProgressTimeline }) {
   const events = samples.filter(s => !["periodic", "coverage_resumed", "gap"].includes(s.kind));
   return <div className="space-y-4">
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div><p className="text-[10px] uppercase tracking-[.2em] text-cyan-300">Position review · {data.source === "live_observation" ? "Observed live" : "Reconstructed history"}</p>
-        <h3 className="mt-1 text-xl font-semibold text-slate-100">Points over time</h3><p className="mt-1 text-xs text-slate-400">{position.contract} · elapsed from entry · points against the average entry at each observation</p></div>
+      <div><p className="text-[10px] uppercase tracking-[.2em] text-cyan-300">Position-only path · {data.source === "live_observation" ? "Observed live" : "Reconstructed history"}</p>
+        <h3 className="mt-1 text-xl font-semibold text-slate-100">Points over time</h3><p className="mt-1 text-xs text-slate-400">{position.contract} · elapsed from entry to exit · points against the average entry at each observation</p><p className="mt-1 text-xs text-slate-500">Ends when the position closes. It is not the post-exit research window used to compare take-profit targets.</p></div>
       <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1 text-xs text-amber-200">{data.coverage === "partial" ? "Partial coverage" : "Observed interval only"}</span>
     </div>
     <div className="grid grid-cols-2 gap-3 text-sm">

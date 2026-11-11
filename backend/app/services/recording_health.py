@@ -14,6 +14,7 @@ from .probabilistic_shadow import cache_root, scope_hash
 GIB = 1024**3
 RECORDER_STALE_SECONDS = 60
 QUEUE_AGE_SECONDS = 5
+DURABLE_AGE_SECONDS = 30
 REVIEW_WARNING_SECONDS = 7 * 86400
 
 
@@ -31,8 +32,19 @@ def _worker_evidence(owner, now, problems):
         streams = [(key[1], stream['state'].capture) for key, stream in feed.streams.items() if key[0] == str(owner)]
     for contract, capture in streams:
         status = capture.status() if capture is not None else {'state': 'unavailable'}
+        # Durable progress, not a connected socket: how long since a batch actually
+        # committed, and how many produced events are not yet durable.
+        committed_age = _age(status.get('last_commit_completed_at'), now)
+        status['durable_age_seconds'] = round(committed_age, 3) if committed_age is not None else None
+        if 'produced_index' in status:
+            status['uncommitted_events'] = status['produced_index']-status.get('durable_index', 0)
         rows.append({'contract_id': contract, **status})
         state = status['state']
+        if (state == 'recording' and status.get('uncommitted_events', 0) > 0
+                and (committed_age is None or committed_age > DURABLE_AGE_SECONDS)):
+            problems.append(dict(code='worker_evidence_not_durable', contract_id=contract,
+                                 seconds=status['durable_age_seconds'], uncommitted=status['uncommitted_events'],
+                                 action='Events are arriving but no batch has committed recently; check the data disk.'))
         if state not in {'recording', 'closed'}:
             problems.append(dict(code='worker_evidence_'+state, contract_id=contract,
                                  category=status.get('error_category'), reason=status.get('blocked_reason'),

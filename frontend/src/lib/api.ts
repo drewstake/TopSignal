@@ -2553,6 +2553,9 @@ export const botsApi = {
   getTopBotComparison: (accountId: number, filters: Record<string, string>, options: RequestSignalOptions = {}) =>
     requestJson<import("../pages/bot/TopBotComparison").Comparison>(`/api/accounts/${accountId}/topbot/comparison`, {
       query: Object.fromEntries(Object.entries(filters).filter(([, value]) => value !== "")), signal: options.signal }),
+  getTopBotResearchStatus: (accountId: number, options: RequestSignalOptions = {}) =>
+    requestJson<import("../pages/bot/TopBotResearchStatus").ResearchStatus>(`/api/accounts/${accountId}/topbot/research-status`, {
+      signal: options.signal }),
   registerTopBotCandidate: (accountId: number, ratio: number) =>
     requestJson<{ ratio: number; registered_at: string }>(`/api/accounts/${accountId}/topbot/comparison/candidate`, {
       method: "POST", query: { ratio } }),

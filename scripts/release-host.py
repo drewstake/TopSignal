@@ -209,6 +209,32 @@ def check_gate_snapshot(observed: dict, baseline: dict | None, require_flat: boo
             raise ValueError("Broker exposure is active; wait without interrupting management")
 
 
+def check_research_windows(observed: dict, config: dict) -> None:
+    """A restart ends every open post-exit observation window early.
+
+    The missing interval is never reconstructed, so those entries are excluded
+    from the exit study. Activation waits for the windows to close unless the
+    private host configuration explicitly accepts the loss.
+    """
+    windows = observed.get("open_research_windows") or []
+    if windows and config.get("accept_research_window_gaps") is not True:
+        latest = max(w["cutoff"] for w in windows)
+        raise ValueError(f"{len(windows)} post-exit research windows are open until {latest}; a restart would cut them "
+                         "short. Activate after that time or set accept_research_window_gaps in the host configuration")
+
+
+def open_research_windows(db, BotOrderAttempt, now: datetime) -> list[dict]:
+    rows = db.query(BotOrderAttempt.id, BotOrderAttempt.account_id, BotOrderAttempt.raw_request).filter(
+        BotOrderAttempt.raw_request["strategySnapshot"]["research_cutoff"].as_string() > now.isoformat()).limit(1000).all()
+    windows = []
+    for entry_id, account_id, request in rows:
+        runner = ((request or {}).get("timeExit") or {}).get("runner") or {}
+        cutoff = (request or {}).get("strategySnapshot", {}).get("research_cutoff")
+        if runner.get("entry_at") and cutoff:
+            windows.append({"entry_id": int(entry_id), "account_id": int(account_id), "cutoff": cutoff})
+    return windows
+
+
 def gate(stage: Path, config: dict, root: Path, record: bool, require_flat: bool,
          allow_restart_disarm: bool = False) -> dict:
     # Application imports happen only inside the host gate, never at tool import time.
@@ -247,6 +273,7 @@ def gate(stage: Path, config: dict, root: Path, record: bool, require_flat: bool
         unresolved = db.query(BotOrderAttempt).filter(BotOrderAttempt.bot_config_id.in_(ids),
                            BotOrderAttempt.status.in_(["pending", "submission_unknown"])).count()
         database_bytes = db.execute(text("select pg_database_size(current_database())")).scalar()
+        research_windows = open_research_windows(db, BotOrderAttempt, datetime.now(timezone.utc)) if record else []
         db.rollback()
     observed = {"config_sha256": hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest(),
                 "configs": {row["id"]: row for row in rows},
@@ -273,6 +300,10 @@ def gate(stage: Path, config: dict, root: Path, record: bool, require_flat: bool
     baseline_path = stage / "broker-before.json"
     baseline = None if record else json.loads(baseline_path.read_text(encoding="utf-8"))
     check_gate_snapshot(observed, baseline, require_flat, allow_restart_disarm)
+    if record:
+        # Only before stopping: after the switch the reader re-establishes retention itself.
+        observed["open_research_windows"] = research_windows
+        check_research_windows(observed, config)
     observed["restart_disarmed"] = bool(baseline and observed["runs"] != baseline["runs"])
     if record:
         if baseline_path.exists():

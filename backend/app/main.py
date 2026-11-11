@@ -454,6 +454,14 @@ async def app_lifespan(_: FastAPI):
     from .services.topbot_study_worker import StudyRecorder
     study_recorder = StudyRecorder(SessionLocal, _projectx_client_for_user_without_open_transaction)
     study_recorder.start()
+    from .services.liquidity_heatmap_history import HeatmapDeriverSupervisor
+    heatmap_deriver = HeatmapDeriverSupervisor()
+    try:
+        # Display-only derivation in a separate background-priority process;
+        # yields to replay work and recorder pressure without blocking startup.
+        heatmap_deriver.start()
+    except Exception:
+        logger.exception("heatmap_deriver_start_failed")
     try:
         _start_streaming_runtime_if_enabled()
         _bot_worker_runtime = BotWorkerRuntime(
@@ -463,6 +471,7 @@ async def app_lifespan(_: FastAPI):
         await _bot_worker_runtime.start()
         yield
     finally:
+        heatmap_deriver.request_stop()  # Instant; the wait happens last.
         if not await asyncio.to_thread(progress_recorder.stop):
             logger.error("trade_progress_recorder_shutdown_incomplete")
         study_stopped = await asyncio.to_thread(study_recorder.stop)
@@ -489,6 +498,8 @@ async def app_lifespan(_: FastAPI):
                 drained = await asyncio.to_thread(market_observation_writer.shutdown, timeout_seconds=5.0)
                 if not drained:
                     logger.warning("market_observation_shutdown_incomplete")
+                if not await asyncio.to_thread(heatmap_deriver.stop):
+                    logger.warning("heatmap_deriver_shutdown_incomplete")
                 if _bot_worker_runtime is None and recorder_stopped and study_stopped:
                     engine.dispose()
 
@@ -3349,12 +3360,13 @@ def get_topbot_depth(response: Response, contract_id: str = Query(min_length=1, 
 @app.get("/api/accounts/{account_id}/topbot/statistics")
 def get_topbot_statistics(account_id: int, db: Session = Depends(get_db)):
     from .services.topbot_runner import statistics
+    from .services.topbot_study_report import augment_statistics
     user_id = get_authenticated_user_id()
     try:
         _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="account_not_found") from exc
-    return statistics(db, user_id=user_id, account_id=account_id)
+    return augment_statistics(db, user_id, account_id, statistics(db, user_id=user_id, account_id=account_id))
 
 
 @app.get("/api/accounts/{account_id}/topbot/comparison")
@@ -3365,14 +3377,31 @@ def get_topbot_comparison(account_id: int, response: Response,
                          end: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
                          phase: str = Query(default="exploratory", pattern="^(exploratory|holdout)$"),
                          db: Session = Depends(get_db)):
-    from .services.topbot_runner import study_statistics
+    from .services.topbot_study_report import comparison_report
     user_id = get_authenticated_user_id()
     try:
         _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="account_not_found") from exc
     response.headers["Cache-Control"] = "no-store"
-    return study_statistics(db, user_id=user_id, account_id=account_id, version=version, strategy=strategy, start=start, end=end, phase=phase)
+    return comparison_report(db, user_id, account_id, version=version, strategy=strategy, start=start, end=end, phase=phase)
+
+
+@app.get("/api/accounts/{account_id}/topbot/research-status")
+def get_topbot_research_status(account_id: int, response: Response, db: Session = Depends(get_db)):
+    """Position recording, post-exit recording, analysis progress and backup health for one account."""
+    import sqlite3
+    from .services.topbot_study_report import research_status
+    user_id = get_authenticated_user_id()
+    try:
+        _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="account_not_found") from exc
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return research_status(db, user_id, account_id)
+    except (OSError, sqlite3.Error) as exc:
+        raise HTTPException(status_code=503, detail="research_storage_unavailable") from exc
 
 
 @app.post("/api/accounts/{account_id}/topbot/comparison/candidate")
@@ -3885,6 +3914,45 @@ def get_order_book_history(
         raise HTTPException(status_code=422, detail="History exceeds the bounded session reader; choose a shorter range.") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/accounts/{account_id}/liquidity-heatmap")
+def get_liquidity_heatmap_history(
+    account_id: int,
+    request: Request,
+    contract_id: str,
+    start_ms: int,
+    end_ms: int,
+    tier: int = Query(default=0, ge=0, le=2),
+    data_live: bool = False,
+    summary: bool = False,
+    db: Session = Depends(get_db),
+):
+    from .services.liquidity_heatmap_history import account_heatmap
+    user_id = get_authenticated_user_id()
+    _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
+    db.rollback()  # Release the read transaction before filesystem/host IO.
+    headers = {"Cache-Control": "no-store"}
+
+    def failure(status: int, message: str) -> HTTPException:
+        # The browser aligns its live depth clock to the server even when history is unavailable.
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        return HTTPException(status_code=status, detail={"message": message, "server_time_ms": now_ms}, headers=headers)
+
+    if not re.fullmatch(r"CON\.F\.US\.MNQ\.[A-Z0-9]{1,12}", contract_id):
+        raise failure(422, "Heatmap history requires an explicit MNQ delivery contract.")
+    try:
+        payload = account_heatmap(user_id=user_id, contract_id=contract_id, data_live=data_live,
+                                  start_ms=start_ms, end_ms=end_ms, tier=tier, summary=summary)
+    except ValueError as exc:
+        raise failure(422, "Choose a shorter heatmap window for this resolution.") from exc
+    except RuntimeError as exc:
+        raise failure(503, str(exc)) from exc
+    if "gzip" in request.headers.get("accept-encoding", "").lower() and len(payload) > 4096:
+        import gzip as _gzip
+        payload = _gzip.compress(payload, compresslevel=5)
+        headers.update({"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+    return Response(content=payload, media_type="application/json", headers=headers)
 
 
 @app.get("/api/accounts/{account_id}/bot-logs")

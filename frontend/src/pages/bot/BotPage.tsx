@@ -105,8 +105,9 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
       </section>
       <aside className="topbot-book-shell"><Depth key={`${monitor.scope}:${depthContract}`} contractId={depthContract} symbol={market?.symbol} demoMode={demoMode} sharedStore={depthStore} /></aside>
     </div>
-    <LiquidityHeatmapPanel key={`${monitor.scope}:${depthContract}`} store={depthStore} contractId={depthContract}
-      symbol={market?.symbol} tickSize={resolvedMarket?.contract_id === depthContract ? resolvedMarket?.tick_size : null} demoMode={demoMode} />
+    <LiquidityHeatmapPanel key={`${accountId}:${monitor.scope}:${depthContract}`} store={depthStore} contractId={depthContract}
+      symbol={market?.symbol} tickSize={resolvedMarket?.contract_id === depthContract ? resolvedMarket?.tick_size : null} demoMode={demoMode}
+      accountId={demoMode || pending || unavailable ? null : accountId} />
       <TopBotThinking activity={strategyActivity} status={monitor.status} snapshot={matchingSnapshot} now={now} error={monitor.error} strategyUnconfigured={strategyUnconfigured}
         liquidityHistory={!demoMode && !pending && !unavailable && accountId != null && (
           <div className="mt-4 space-y-4" aria-label="Recorded liquidity history">

@@ -89,66 +89,179 @@ def test_reader_restart_restores_filled_retention_without_reenrollment(db_sessio
         assert db.execute("select count(*) from enrollments").fetchone()[0] == 1
 
 
-def test_overdue_replay_is_reported_once_deferred_and_cleared_by_success(db_session, dom_entry, tmp_path, monkeypatch):
-    import io
-    import pytest
-    from contextlib import contextmanager
+def _overdue_entry(db_session, dom_entry, minutes_ago=1):
     from copy import deepcopy
-    from app.services import topbot_study_store as store
-    from app.services import topbot_study_worker as worker
-    monkeypatch.setattr(store, "default_cache_root", lambda: tmp_path)
     result, _, _ = dom_entry
     row = result.order_attempt
     request = deepcopy(row.raw_request)
     now = datetime.now(timezone.utc)
-    request["strategySnapshot"]["research_cutoff"] = (now-timedelta(minutes=1)).isoformat()
-    request["timeExit"]["runner"].update(entry_at=(now-timedelta(minutes=30)).isoformat(), entry_price=20000, stats_status="open")
+    request["strategySnapshot"]["research_cutoff"] = (now-timedelta(minutes=minutes_ago)).isoformat()
+    request["timeExit"]["runner"].update(entry_at=(now-timedelta(minutes=30)).isoformat(), entry_price=20000,
+                                         stats_status="complete", exit_reason="take_profit",
+                                         exit_at=(now-timedelta(minutes=29)).isoformat())
     request["entryEvidence"] = {"pre_submit": {"evidence": {"capture_id": "ab"*16}}}
     row.raw_request = request
     db_session.commit()
+    return row
+
+
+class FakeChild:
+    """Popen stand-in that writes progress lines to the real stderr file the parent reads."""
+    made = []
+
+    def __init__(self, args, stdin=None, stdout=None, stderr=None, **kwargs):
+        import io
+        class Input(io.BytesIO):
+            def close(inner): inner.sent = inner.getvalue(); super().close()
+        self.args, self.stdin, self.stdout, self.stderr = args, Input(), stdout, stderr
+        self.code, self.terminated = None, False
+        FakeChild.made.append(self)
+
+    def progress(self, events):
+        line = {"phase": "replay", "events": events, "received_at": "2026-11-11T15:00:00+00:00"}
+        self.stderr.write((json.dumps(line)+"\n").encode())
+        self.stderr.flush()
+
+    def finish(self, code, payload):
+        self.stdout.write(json.dumps(payload).encode())
+        self.code = code
+
+    def poll(self): return self.code
+    def terminate(self): self.terminated, self.code = True, 1
+    def wait(self, timeout=None): return self.code
+    def kill(self): self.code = 1
+
+
+def _worker_env(monkeypatch, tmp_path):
+    from app.services import databento_cache, topbot_study_store as store
+    from app.services import topbot_study_worker as worker
+    monkeypatch.setattr(store, "default_cache_root", lambda: tmp_path)
+    monkeypatch.setattr(databento_cache, "default_cache_root", lambda: tmp_path)
+    monkeypatch.setattr(worker, "recording_pressure", lambda: None)
+    clock = [1000.]
+    monkeypatch.setattr(worker, "monotonic", lambda: clock[0])
+    FakeChild.made = []
+    monkeypatch.setattr(subprocess, "Popen", FakeChild)
+    return worker, clock
+
+
+def test_progressing_replay_is_not_killed_stalled_one_is_and_failures_are_durable(db_session, dom_entry, tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from app.services import topbot_study_store as store, topbot_study_jobs as jobs
+    from app.services.topbot_study import EXPERIMENT_ID
+    worker, clock = _worker_env(monkeypatch, tmp_path)
+    row = _overdue_entry(db_session, dom_entry)
+    owner, account = str(row.user_id), int(row.account_id)
     @contextmanager
     def sessions(): yield db_session
-    children = []
-    class Input(io.BytesIO):
-        def close(self): self.sent = self.getvalue(); super().close()
-    class Child:
-        def __init__(self, *args, **kwargs):
-            self.stdin, self.code, self.terminated = Input(), None, False
-            children.append(self)
-        def poll(self): return self.code
-        def terminate(self): self.terminated, self.code = True, 1
-        def wait(self, timeout=None): return self.code
-        def kill(self): self.code = 1
-    monkeypatch.setattr(subprocess, "Popen", Child)
     def forbidden(db, *, user_id): raise AssertionError("No broker call is needed")
     recorder = worker.StudyRecorder(sessions, forbidden)
     recorder.cycle()
-    assert len(children) == 1 and recorder.job["entry_id"] == row.id
-    recorder.job["started"] -= worker.DEADLINE_SECONDS+1
-    with pytest.raises(TimeoutError):
+    child = FakeChild.made[-1]
+    assert "--checkpoints" in child.args and recorder.job["entry_id"] == row.id
+    assert worker.account_activity(owner, account)["active"]["entry_id"] == row.id
+    assert worker.account_activity(owner, account+1)["active"] is None  # Another account never sees it.
+    # Slow work that keeps progressing outlives the old fixed 300 s deadline.
+    for step in range(1, 6):
+        child.progress(step*100_000)
+        clock[0] += 120
         recorder.cycle()
-    assert children[0].terminated and recorder.job is None
-    assert recorder.failures[row.id][0] == 1 and worker.HEALTH["deferred_replays"] == 1
-    # The terminated child is not reported a second time and is not restarted at once.
+        assert not child.terminated
+    # No new progress for longer than the stall limit ends the child as a recorded failure.
+    clock[0] += worker.NO_PROGRESS_SECONDS+1
     recorder.cycle()
+    assert child.terminated and recorder.job is None
+    state = jobs.jobs(owner, account)[(account, row.id, EXPERIMENT_ID)]
+    assert state["last_outcome"] == "no_progress" and state["consecutive_failures"] == 1
+    assert state["last_failure"]["category"] == "no_progress" and state["last_failure"]["progress"]["events"] == 500_000
+    # A restarted reader keeps the retry schedule instead of starting over immediately.
+    restarted = worker.StudyRecorder(sessions, forbidden)
+    restarted.cycle()
+    assert len(FakeChild.made) == 1 and restarted.job is None
+    with jobs.connection(owner, write=True) as db:
+        db.execute("update jobs set next_attempt_at=?", ((datetime.now(timezone.utc)-timedelta(seconds=1)).isoformat(),))
+    restarted.cycle()
+    child = FakeChild.made[-1]
+    child.finish(3, {"failure": {"category": "disk_io", "type": "OperationalError", "phase": "replay",
+                                 "code": "C:\\Users\\secret\\path", "frames": ["topbot_replay_index.py:12:batches"]}})
+    restarted.cycle()
+    state = jobs.jobs(owner, account)[(account, row.id, EXPERIMENT_ID)]
+    assert state["last_outcome"] == "child_failed" and state["consecutive_failures"] == 2
+    assert state["last_failure"]["code"] == "redacted" and state["last_failure"]["category"] == "disk_io"
+    assert state["first_failure"]["category"] == "no_progress"
+    history = jobs.history(owner, account, row.id, EXPERIMENT_ID)
+    assert [h["outcome"] for h in history] == ["child_failed", "no_progress"]
+    # Checkpoint progress is not a failure and is retried at once.
+    with jobs.connection(owner, write=True) as db:
+        db.execute("update jobs set next_attempt_at=null")
+    restarted.cycle()
+    FakeChild.made[-1].finish(0, {"index_progress": {"state": "budget_exhausted", "events": 10}})
+    restarted.cycle()
+    assert jobs.jobs(owner, account)[(account, row.id, EXPERIMENT_ID)]["consecutive_failures"] == 0
+    assert len(FakeChild.made) == 4  # Relaunched in the same cycle.
+    entry = json.loads(FakeChild.made[-1].stdin.sent)["entry"]
+    FakeChild.made[-1].finish(0, simulate(entry, [], gap_reason="test_gap"))
+    restarted.cycle()
+    assert store.completed_ids(owner, account) == {row.id}
+    assert jobs.jobs(owner, account)[(account, row.id, EXPERIMENT_ID)]["last_outcome"] == "completed"
+
+
+def test_recording_pressure_pauses_research_without_counting_a_failure(db_session, dom_entry, tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from app.services import topbot_study_jobs as jobs
+    from app.services.topbot_study import EXPERIMENT_ID
+    worker, clock = _worker_env(monkeypatch, tmp_path)
+    row = _overdue_entry(db_session, dom_entry)
+    owner, account = str(row.user_id), int(row.account_id)
+    @contextmanager
+    def sessions(): yield db_session
+    recorder = worker.StudyRecorder(sessions, lambda db, *, user_id: None)
+    pressure = {"reason": "worker_capture_backlog", "queued_events": 3000}
+    monkeypatch.setattr(worker, "recording_pressure", lambda: pressure)
     recorder.cycle()
-    assert len(children) == 1
-    recorder.failures[row.id] = (1, 0)  # Retry time reached.
+    assert not FakeChild.made and worker.HEALTH["state"] == "paused_recording_pressure"
+    monkeypatch.setattr(worker, "recording_pressure", lambda: None)
     recorder.cycle()
-    assert len(children) == 2
-    children[1].code = 3
-    with pytest.raises(RuntimeError):
-        recorder.cycle()
-    assert recorder.failures[row.id][0] == 2 and recorder.job is None
-    recorder.failures[row.id] = (2, 0)
+    child = FakeChild.made[-1]
+    monkeypatch.setattr(worker, "recording_pressure", lambda: pressure)
     recorder.cycle()
-    assert len(children) == 3
-    entry = json.loads(children[2].stdin.sent)["entry"]
-    recorder.job["output"].write(json.dumps(simulate(entry, [], gap_reason="test_gap")).encode())
-    children[2].code = 0
+    assert not child.terminated  # One sample is not enough; avoid flapping.
     recorder.cycle()
-    assert recorder.failures == {} and recorder.job is None and len(children) == 3
-    assert store.completed_ids(str(row.user_id), int(row.account_id)) == {row.id}
+    assert child.terminated
+    state = jobs.jobs(owner, account)[(account, row.id, EXPERIMENT_ID)]
+    assert state["last_outcome"] == "paused_recording_pressure" and state["consecutive_failures"] == 0
+    assert state["next_attempt_at"] is not None
+
+
+def test_post_exit_retention_survives_take_profit_and_paused_entries(db_session, dom_entry, tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from copy import deepcopy
+    from app.models import BotConfig
+    worker, clock = _worker_env(monkeypatch, tmp_path)
+    result, _, _ = dom_entry
+    row = result.order_attempt
+    now = datetime.now(timezone.utc)
+    request = deepcopy(row.raw_request)
+    request["strategySnapshot"]["research_cutoff"] = (now+timedelta(minutes=90)).isoformat()
+    request["timeExit"]["runner"].update(entry_at=(now-timedelta(minutes=30)).isoformat(), entry_price=20000,
+        stats_status="complete", exit_reason="take_profit", exit_at=(now-timedelta(minutes=25)).isoformat())
+    row.raw_request = request
+    for config in db_session.query(BotConfig).all():
+        config.enabled = False  # New entries paused; the trading worker no longer touches the feed.
+    db_session.commit()
+    @contextmanager
+    def sessions(): yield db_session
+    calls = []
+    monkeypatch.setattr(worker.feed, "retain", lambda owner, contract, factory, until, params: calls.append((owner, contract, until)))
+    worker.StudyRecorder(sessions, lambda db, *, user_id: "client").cycle()
+    assert calls and calls[0][2] == datetime.fromisoformat(request["strategySnapshot"]["research_cutoff"])
+    activity = worker.account_activity(str(row.user_id), int(row.account_id))
+    assert activity["retention"][row.id]["state"] == "retained"
+    def broken(*args): raise ConnectionError("provider down")
+    monkeypatch.setattr(worker.feed, "retain", broken)
+    worker.StudyRecorder(sessions, lambda db, *, user_id: "client").cycle()  # Must not raise or hide the failure.
+    failed = worker.account_activity(str(row.user_id), int(row.account_id))["retention"][row.id]
+    assert failed["state"] == "failed" and failed["error_type"] == "ConnectionError"
 
 
 def test_retention_resolves_a_client_through_the_application_factory(db_session, dom_entry, tmp_path, monkeypatch):
