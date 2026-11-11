@@ -12,6 +12,57 @@ from test_bot_execution_safety import db_session, open_exchange_session
 from test_topbot_dom import dom_entry
 
 
+def test_capture_failure_cooldown_survives_restart_and_unblocks_other_recordings(tmp_path, monkeypatch):
+    from app.services import topbot_study_worker as worker, topbot_study_jobs as jobs
+    from app.services.topbot_study import EXPERIMENT_ID
+    monkeypatch.setenv("TOPSIGNAL_DATABENTO_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(worker, "recording_pressure", lambda: None)
+    now = datetime.now(timezone.utc)
+    retry = now + timedelta(minutes=15)
+    jobs.record("owner", 1, 1, EXPERIMENT_ID, outcome="no_progress", failure=True,
+                started_at=now.isoformat(), detail={"category": "no_progress"}, next_attempt_at=retry.isoformat())
+
+    def candidate(owner, account, entry_id, capture):
+        return (now-timedelta(hours=1)+timedelta(seconds=entry_id), owner, account, CONTRACT,
+                {"entryEvidence": {"pre_submit": {"evidence": {"capture_id": capture}}}},
+                {"entry_id": entry_id}, {})
+
+    stalled = [candidate("owner", 1, 1, "a"*32), candidate("owner", 1, 2, "a"*32)]
+    current = candidate("owner", 2, 3, "b"*32)
+    launched = []
+    # A fresh reader derives the hold from durable state; no in-memory special case.
+    reader = worker.StudyRecorder(None, None)
+    monkeypatch.setattr(reader, "launch", lambda *args: launched.append(args))
+    reader._schedule(now, stalled+[current])
+    assert launched[-1][3]["entry_id"] == 3
+    assert jobs.jobs("owner", 1)[(1, 1, EXPERIMENT_ID)]["consecutive_failures"] == 1
+    assert (1, 2, EXPERIMENT_ID) not in jobs.jobs("owner", 1)  # Never fabricate a failed attempt.
+    # The same capture identifier owned by someone else is independent.
+    other_owner = candidate("other", 3, 2, "a"*32)
+    reader._schedule(now, stalled+[other_owner, current])
+    assert launched[-1][0] == "other"
+    reader._schedule(retry+timedelta(seconds=1), stalled+[current])
+    assert launched[-1][3]["entry_id"] == 1  # The capture remains retryable.
+
+
+def test_successful_index_slice_does_not_hold_other_entries_in_capture(tmp_path, monkeypatch):
+    from app.services import topbot_study_worker as worker, topbot_study_jobs as jobs
+    from app.services.topbot_study import EXPERIMENT_ID
+    monkeypatch.setenv("TOPSIGNAL_DATABENTO_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(worker, "recording_pressure", lambda: None)
+    now = datetime.now(timezone.utc)
+    jobs.record("owner", 1, 1, EXPERIMENT_ID, outcome="index_progress", failure=False,
+                started_at=now.isoformat(), detail={"category": "index_progress"},
+                next_attempt_at=(now+timedelta(seconds=15)).isoformat())
+    request = {"entryEvidence": {"signal": {"evidence": {"capture_id": "a"*32}}}}
+    candidates = [(now, "owner", 1, CONTRACT, request, {"entry_id": i}, {}) for i in (1, 2)]
+    reader = worker.StudyRecorder(None, None)
+    launched = []
+    monkeypatch.setattr(reader, "launch", lambda *args: launched.append(args))
+    reader._schedule(now, candidates)
+    assert launched[-1][3]["entry_id"] == 2
+
+
 def test_real_offline_child_reads_verified_path_past_actual_exit(tmp_path):
     cap = Capture("owner", CONTRACT, root=tmp_path, free_floor=0)
     path = [(.1, 0), (.5, 25.25), (.8, 80), (2, 80), (3, 80), (4, 80), (5, 80), (5.3, 80), (5.7, 54), (6, 53)]
