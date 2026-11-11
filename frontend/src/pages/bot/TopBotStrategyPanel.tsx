@@ -123,9 +123,10 @@ export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChan
       <td><TopBotExecutionEvidence execution={row.execution} coverage={row.coverage} /></td>
     </tr>)}</tbody></table></div> : <p className="topbot-muted">No strategy fills recorded yet. Holding times and P&amp;L populate from broker executions.</p>}
     <p className="topbot-footnote">{stats?.scope ?? "Most recent 500 strategy entries on this account"}. Excursions and milestone times use observed executable quotes and may miss moves during data gaps. A dash means not observed, not zero. Holding-time statistics do not delay stops.</p>
-    <TopBotAuditTrail key={accountId} accountId={accountId} demoMode={demoMode} />
+    {/* Sibling keys must be unique: a shared key makes React orphan a poller without cleanup on every re-render. */}
+    <TopBotAuditTrail key={`audit:${accountId}`} accountId={accountId} demoMode={demoMode} />
     <TopBotRecordingStatus evidence={stats?.depth?.evidence} />
-    {accountId != null && !demoMode && <TopBotResearchStatus key={accountId} accountId={accountId} />}
-    {accountId != null && !demoMode && <TopBotComparison key={accountId} accountId={accountId} />}
+    {accountId != null && !demoMode && <TopBotResearchStatus key={`research:${accountId}`} accountId={accountId} />}
+    {accountId != null && !demoMode && <TopBotComparison key={`comparison:${accountId}`} accountId={accountId} />}
   </section>;
 }
