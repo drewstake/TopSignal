@@ -229,12 +229,17 @@ or recovery on a verified destination.
    Registration writes only local feature metadata. It does not enroll accounts.
    A mismatch or less than 10 GB free rejects activation. Repeat under the actual
    service environment if the command reports an unexpected root or host.
-4. In the authenticated **Trades** flow, select the intended connected account and
-   choose **Enable recording**. This calls the ownership-checked local enrollment
+4. On **Bot → Overview**, find **Trade recorder · 1 second** directly below the
+   TopBot heading. Select the intended connected account and choose **Enable
+   recording** (the same controls remain on **Trades**). This calls the ownership-checked local enrollment
    endpoint. Wait for **Recording** and a recent heartbeat; inspect failures before
    claiming coverage. Manual positions are included without arming a bot. Enrolling
    during an existing position starts partial coverage, not a retroactive path.
-5. After naturally occurring activity, open **Review path** on a trade. Confirm
+5. After naturally occurring activity, choose **Review trade paths** on Bot, then
+   **Review path** beside a recent trade to open its chart without leaving Bot.
+   The list loads the latest 20 account trades on demand; reopening it refreshes
+   the list. **All trades** opens the account-scoped Trades page for older trades.
+   Switching accounts closes the previous account's list and review. Confirm
    contract, basis changes, mark age and gaps. Do not place a test trade solely to
    validate the recorder. The backend can be checked while flat via its health
    endpoint and independent recorder heartbeat.

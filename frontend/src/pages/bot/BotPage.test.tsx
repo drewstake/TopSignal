@@ -22,6 +22,7 @@ vi.mock("./LiquidityHeatmapPanel", () => ({ LiquidityHeatmapPanel: () => <div>Li
 vi.mock("./SessionOrderFlowPanel", () => ({ SessionOrderFlowPanel: () => <div>Session order flow</div> }));
 vi.mock("./TopBotBiasStrip", () => ({ TopBotBiasStrip: () => <div>Biases</div> }));
 vi.mock("./TopBotPosition", () => ({ TopBotPosition: () => <div>Position</div> }));
+vi.mock("./TopBotTradeRecorder", () => ({ TopBotTradeRecorder: ({ accountId }: { accountId: number }) => <div>Trade recorder for {accountId}</div> }));
 vi.mock("./history/BotLiquidityHistory", () => ({
   HistoryView: ({ accountId }: { accountId: number }) => <div>Liquidity history for {accountId}</div>,
 }));
@@ -49,6 +50,7 @@ const botStatus = () => within(screen.getByRole("banner")).getByRole("status");
 it("shows green only for a confirmed running bot and healthy worker", async () => {
   render(<MemoryRouter><BotPage /></MemoryRouter>);
   expect(screen.getByRole("heading", { name: "TopBot" })).not.toBeNull();
+  expect(screen.getByText("Trade recorder for 1")).toBeTruthy();
   await waitFor(() => expect(botStatus().title).toBe("Dry Run active"));
   expect(botStatus().querySelector(".bg-emerald-400")).not.toBeNull();
   expect(within(screen.getByRole("region", { name: "What TopBot sees" })).getByText("Liquidity history for 1")).toBeTruthy();

@@ -15,6 +15,7 @@ import { SessionOrderFlowPanel } from "./SessionOrderFlowPanel";
 import { TopBotActivity, TopBotEvaluation, TopBotThinking } from "./TopBotEvaluation";
 import { TopBotPosition } from "./TopBotPosition";
 import { TopBotStrategyPanel } from "./TopBotStrategyPanel";
+import { TopBotTradeRecorder } from "./TopBotTradeRecorder";
 import { TopBotLiveImbalance } from "./TopBotLiveImbalance";
 import { HistoryView } from "./history/BotLiquidityHistory";
 import { useTopBotMonitor } from "./useTopBotMonitor";
@@ -91,6 +92,7 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
         <span>{monitor.status.label}</span><small>{monitor.updatedAt ? `Bot checked ${timeLabel(monitor.updatedAt)}` : "Waiting for bot status"} · polls every 15s</small>
       </div>
     </header>
+    {!demoMode && !pending && !unavailable && accountId != null && <TopBotTradeRecorder accountId={accountId} />}
     <SessionOrderFlowPanel accountId={accountId} contractId={market?.contract_id ?? null} scope={monitor.scope}
       enabled={!demoMode && !pending && !unavailable} />
     <TopBotBiasStrip key={`${market?.contract_id ?? "pending"}:${demoMode}`} market={market} demoMode={demoMode} />
