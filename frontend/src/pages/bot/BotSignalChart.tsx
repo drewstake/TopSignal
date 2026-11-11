@@ -29,7 +29,13 @@ import { loadContinuousMnqIntraday } from "./continuousMnqIntraday";
 import { sameMnqDelivery } from "./continuousMnqDaily";
 import { APP_SCALE_CHANGED_EVENT, getAppScale } from "../../lib/appScale";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
-import { botsApi, buildUserScopedProjectXCandleRequestKey, streamProjectXMarketPrice, type CandleQuery } from "../../lib/api";
+import {
+  botsApi,
+  buildUserScopedProjectXCandleRequestKey,
+  streamProjectXMarketPrice,
+  type CandleQuery,
+  type MarketPriceStreamHealth,
+} from "../../lib/api";
 import { ENABLE_PERF_LOGS, logPerfInfo } from "../../lib/perf";
 import { APP_THEME_CHANGED_EVENT } from "../../lib/theme";
 import { DEMO_AS_OF_ISO } from "../../lib/demoScenario";
@@ -140,6 +146,8 @@ import { BOT_CHART_BUY_COLOR, BOT_CHART_SELL_COLOR, readBotChartThemeColors } fr
 import { buildVolumeData, UP_VOLUME_COLOR, DOWN_VOLUME_COLOR } from "./botChartVolume";
 import { resolveBotChartIndicators } from "./botChartIndicators";
 import { usePageVisibility } from "./usePageVisibility";
+import { useStreamVisibility } from "./useStreamVisibility";
+import { isPriceStreamHealthy, resolvePriceFeedStatus } from "./priceFeedStatus";
 import { resolveBotChartViewState } from "./botChartViewState";
 import {
   buildBotDrawingStorageKey,
@@ -169,9 +177,10 @@ const MAX_GAP_REPAIR_WINDOWS = 3;
 const GAP_REPAIR_INTERVAL_MS = 5_000;
 const GAP_REPAIR_ERROR_INTERVAL_MS = 15_000;
 const LIVE_PRICE_POLL_INTERVAL_MS = 3_000;
+// While the stream is confirmed healthy it carries the price; REST then only
+// reconciles partial-bar volume, sparing ProjectX's shared history quota.
+const LIVE_PRICE_STREAMING_POLL_INTERVAL_MS = 15_000;
 const LIVE_PRICE_STREAM_THROTTLE_MS = 250;
-const LIVE_PRICE_STREAM_STALE_MS = 5_000;
-const LIVE_PRICE_STALE_AFTER_MS = 2 * LIVE_PRICE_POLL_INTERVAL_MS + 5_000;
 const CANDLE_REQUEST_TIMEOUT_MS = 70_000;
 const LIVE_PRICE_REQUEST_TIMEOUT_MS = 12_000;
 const BACKGROUND_CANDLE_START_INTERVAL_MS = 300;
@@ -365,6 +374,8 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
 }) {
   const requestProjectXCandles = continuousHistory ? requestContinuousCandles : requestExactContractCandles;
   const pageVisible = usePageVisibility();
+  // Streams survive brief tab switches; polling still pauses immediately.
+  const streamsEnabled = useStreamVisibility();
   const bot = savedBot ?? market ?? null;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartHandlesRef = useRef<ChartHandles | null>(null);
@@ -404,8 +415,14 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
   const timeframeViewportRef = useRef<{ key: string; range: { from: Time; to: Time } } | null>(null);
   const [historyViewportReadyKey, setHistoryViewportReadyKey] = useState<string | null>(null);
   const viewportRestoreFrameRef = useRef<number | null>(null);
-  const lastLiveStreamEventAtRef = useRef(0);
   const pendingLiveStreamPriceRef = useRef<ProjectXMarketPrice | null>(null);
+  // Newest accepted stream trade (out-of-order guard) and one held while hidden.
+  const latestStreamPriceRef = useRef<ProjectXMarketPrice | null>(null);
+  const hiddenStreamPriceRef = useRef<ProjectXMarketPrice | null>(null);
+  // Feed evidence for timers; render uses the matching state below.
+  const streamHealthRef = useRef<MarketPriceStreamHealth | null>(null);
+  const lastStreamPriceAtRef = useRef<number | null>(null);
+  const lastPollAttemptAtRef = useRef(0);
   const liveStreamRenderTimeoutRef = useRef<number | null>(null);
   const candlesRef = useRef<ProjectXMarketCandle[]>([]);
   const liveCandleRef = useRef<ProjectXMarketCandle | null>(null);
@@ -419,7 +436,11 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
   const [chartThemeColors, setChartThemeColors] = useState(readBotChartThemeColors);
   const [liveCandle, setLiveCandle] = useState<ProjectXMarketCandle | null>(null);
   const [streamPrice, setStreamPrice] = useState<ProjectXMarketPrice | null>(null);
-  const [streamActive, setStreamActive] = useState(false);
+  const [streamHealth, setStreamHealth] = useState<MarketPriceStreamHealth | null>(null);
+  const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null);
+  const [streamPriceAt, setStreamPriceAt] = useState<number | null>(null);
+  const [pollSuccessAt, setPollSuccessAt] = useState<number | null>(null);
+  const [streamRestartToken, setStreamRestartToken] = useState(0);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -631,7 +652,12 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
     if (!marketDataMatchesContext) {
       return null;
     }
-    if (streamPrice && Number.isFinite(streamPrice.price) && Number.isFinite(Date.parse(streamPrice.timestamp))) {
+    // A stream price kept through an outage must not hide a newer REST quote.
+    const pollIsNewer = pollSuccessAt !== null && (streamPriceAt === null || pollSuccessAt > streamPriceAt);
+    if (
+      streamPrice && !(pollIsNewer && liveCandle) &&
+      Number.isFinite(streamPrice.price) && Number.isFinite(Date.parse(streamPrice.timestamp))
+    ) {
       return {
         timestamp: streamPrice.timestamp,
         observedAt: streamPrice.timestamp,
@@ -648,15 +674,26 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
       };
     }
     return null;
-  }, [liveCandle, marketDataMatchesContext, streamPrice]);
+  }, [liveCandle, marketDataMatchesContext, pollSuccessAt, streamPrice, streamPriceAt]);
   const livePrice = livePricePoint?.price ?? null;
   void freshnessTick; // Re-render trigger for data/price age and session transitions.
   const nowMs = chartNow(demoMode).getTime();
   const chartSessionOpen = isFuturesSessionOpen(nowMs, bot?.symbol);
-  const livePriceObservedAtMs = livePricePoint ? Date.parse(livePricePoint.observedAt) : Number.NaN;
-  const livePriceIsStale =
-    livePricePoint !== null &&
-    (!Number.isFinite(livePriceObservedAtMs) || nowMs - livePriceObservedAtMs > LIVE_PRICE_STALE_AFTER_MS);
+  const streamTradeTimestampMs = streamPrice && livePricePoint?.observedAt === streamPrice.timestamp
+    ? Date.parse(streamPrice.timestamp)
+    : null;
+  const feedStatus = resolvePriceFeedStatus({
+    nowMs,
+    sessionOpen: chartSessionOpen,
+    hasPrice: livePricePoint !== null,
+    health: streamHealth,
+    streamStartedAtMs: streamStartedAt,
+    lastStreamPriceAtMs: streamPriceAt,
+    lastTradeTimestampMs: streamTradeTimestampMs,
+    lastPollSuccessAtMs: pollSuccessAt,
+    lastConfirmedLiveAtMs: Math.max(streamHealth?.lastConfirmedAt ?? 0, streamPriceAt ?? 0) || null,
+  });
+  const livePriceIsStale = livePricePoint !== null && feedStatus.connection === "stale";
   const liquidityDragContextKey = chartViewportKey;
   const drawingStorageScope = useMemo<BotDrawingStorageScope | null>(
     () =>
@@ -1345,7 +1382,6 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
       liveCandleRef.current = null;
       setLiveCandle(null);
       setStreamPrice(null);
-      setStreamActive(false);
       return;
     }
 
@@ -1354,12 +1390,16 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
     }
 
     const request = liveRequestsRef.current.begin(chartViewportKey);
+    lastPollAttemptAtRef.current = Date.now();
     const timeoutId = window.setTimeout(() => request.controller.abort(), LIVE_PRICE_REQUEST_TIMEOUT_MS);
     requestTimeoutIdsRef.current.add(timeoutId);
     const queryWindow = buildBotLivePriceQuery(chartConfig);
 
     try {
-      const fetchedRows = await requestProjectXCandles(authenticatedCacheScope, {
+      // The quote fallback reads the exact streamed contract from ProjectX,
+      // never the continuous archive: an archive outage must not also remove
+      // the fallback for a live stream (it did after the archive went missing).
+      const fetchedRows = await requestExactContractCandles(authenticatedCacheScope, {
         contractId: chartConfig.contract_id,
         symbol: chartConfig.symbol ?? undefined,
         start: queryWindow.start,
@@ -1439,6 +1479,9 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
         liveCandleRef.current = latest;
         return latest;
       });
+      if (latest) {
+        setPollSuccessAt(Date.now());
+      }
       setLivePriceError(latest ? null : "No live price was returned.");
     } catch (err) {
       if (!liveRequestsRef.current.accepts(request, chartViewportKeyRef.current)) {
@@ -1450,7 +1493,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
       requestTimeoutIdsRef.current.delete(timeoutId);
       liveRequestsRef.current.finish(request);
     }
-  }, [authenticatedCacheScope, chartConfig, chartViewportKey, commitCandleFetch, requestProjectXCandles]);
+  }, [authenticatedCacheScope, chartConfig, chartViewportKey, commitCandleFetch]);
 
   const loadOlderCandles = useCallback(async () => {
     if (document.hidden) return;
@@ -1662,6 +1705,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
       }
 
       setStreamPrice(price);
+      setStreamPriceAt(Date.now());
       setLivePriceError(null);
 
       // Fold the tick into the active candle so the bar itself moves, instead of
@@ -2810,7 +2854,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
       lineStyle: LineStyle.Dashed,
       lineVisible: false,
       axisLabelVisible: true,
-      title: livePriceIsStale ? "Stale" : livePricePoint?.isPartial ? "Live" : "Last",
+      title: feedStatus.pricePrefix,
       axisLabelColor: livePriceIsStale ? "rgb(217,119,6)" : "rgb(8,145,178)",
       axisLabelTextColor: "rgb(240,249,255)",
     };
@@ -2820,7 +2864,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
     } else {
       livePriceLineRef.current = handles.candleSeries.createPriceLine(priceLineOptions);
     }
-  }, [livePrice, livePriceIsStale, livePricePoint?.isPartial]);
+  }, [feedStatus.pricePrefix, livePrice, livePriceIsStale]);
 
   useEffect(() => {
     // These requests use independent latest-wins lanes and merge with
@@ -3027,20 +3071,37 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
   }, [authenticatedCacheScope, bot, demoMode, loadCandles, pageVisible]);
 
   useEffect(() => {
-    if (demoMode || !pageVisible || !bot || !chartSessionOpen) {
-      lastLiveStreamEventAtRef.current = 0;
+    if (demoMode || !streamsEnabled || !bot || !chartSessionOpen) {
       pendingLiveStreamPriceRef.current = null;
-      setStreamPrice(null);
+      hiddenStreamPriceRef.current = null;
+      streamHealthRef.current = null;
+      setStreamHealth(null);
+      setStreamStartedAt(null);
+      if (demoMode || !bot || !chartSessionOpen) {
+        // A closed session or another market has no current last trade.
+        latestStreamPriceRef.current = null;
+        lastStreamPriceAtRef.current = null;
+        setStreamPrice(null);
+        setStreamPriceAt(null);
+      }
       return;
     }
 
-    lastLiveStreamEventAtRef.current = 0;
+    // Keep the last valid trade across a resume of the same contract; it is
+    // labelled by feed status, never presented as live on its own.
+    const previous = latestStreamPriceRef.current;
+    if (previous && previous.contract_id.trim().toUpperCase() !== bot.contract_id.trim().toUpperCase()) {
+      latestStreamPriceRef.current = null;
+      lastStreamPriceAtRef.current = null;
+      setStreamPrice(null);
+      setStreamPriceAt(null);
+    }
     pendingLiveStreamPriceRef.current = null;
-    setStreamPrice(null);
     if (liveStreamRenderTimeoutRef.current !== null) {
       window.clearTimeout(liveStreamRenderTimeoutRef.current);
       liveStreamRenderTimeoutRef.current = null;
     }
+    setStreamStartedAt(Date.now());
 
     let stopped = false;
     const stopStreaming = streamProjectXMarketPrice(
@@ -3051,15 +3112,24 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
       },
       {
         onPrice: (price) => {
-          if (stopped || document.hidden) return;
-          lastLiveStreamEventAtRef.current = Date.now();
-          setStreamActive(true);
+          if (stopped) return;
+          const newest = latestStreamPriceRef.current;
+          // Prices are absolute: an older or repeated trade never replaces a newer one.
+          if (newest && Date.parse(price.timestamp) < Date.parse(newest.timestamp)) return;
+          if (newest && newest.timestamp === price.timestamp && newest.price === price.price) return;
+          latestStreamPriceRef.current = price;
+          lastStreamPriceAtRef.current = Date.now();
+          if (document.hidden) {
+            // Not painted while hidden; the newest trade is applied on return.
+            hiddenStreamPriceRef.current = price;
+            return;
+          }
           scheduleLiveStreamPrice(price);
         },
-        onError: () => {
-          if (stopped || document.hidden) return;
-          lastLiveStreamEventAtRef.current = 0;
-          setStreamActive(false);
+        onHealth: (health) => {
+          if (stopped) return;
+          streamHealthRef.current = health;
+          setStreamHealth(health);
         },
       },
     );
@@ -3067,16 +3137,38 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
     return () => {
       stopped = true;
       stopStreaming();
-      lastLiveStreamEventAtRef.current = 0;
       pendingLiveStreamPriceRef.current = null;
-      setStreamActive(false);
-      setStreamPrice(null);
+      streamHealthRef.current = null;
+      setStreamHealth(null);
       if (liveStreamRenderTimeoutRef.current !== null) {
         window.clearTimeout(liveStreamRenderTimeoutRef.current);
         liveStreamRenderTimeoutRef.current = null;
       }
     };
-  }, [authenticatedCacheScope, bot, chartSessionOpen, demoMode, pageVisible, scheduleLiveStreamPrice]);
+  }, [authenticatedCacheScope, bot, chartSessionOpen, demoMode, scheduleLiveStreamPrice, streamRestartToken, streamsEnabled]);
+
+  // Apply the newest trade received while hidden as soon as the page shows.
+  useEffect(() => {
+    if (!pageVisible) return;
+    const held = hiddenStreamPriceRef.current;
+    hiddenStreamPriceRef.current = null;
+    if (held) scheduleLiveStreamPrice(held);
+  }, [pageVisible, scheduleLiveStreamPrice]);
+
+  // A rejected stream is not retried in the background; reopen it on the
+  // next user-visible wake (e.g. after sign-in refreshed during sleep).
+  useEffect(() => {
+    if (streamHealth?.transport !== "stopped") return undefined;
+    const reopen = () => {
+      if (!document.hidden) setStreamRestartToken((current) => current + 1);
+    };
+    window.addEventListener("online", reopen);
+    document.addEventListener("visibilitychange", reopen);
+    return () => {
+      window.removeEventListener("online", reopen);
+      document.removeEventListener("visibilitychange", reopen);
+    };
+  }, [streamHealth?.transport]);
 
   useEffect(() => {
     if (demoMode || !pageVisible || !bot) {
@@ -3084,10 +3176,13 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
     }
 
     const intervalId = window.setInterval(() => {
-      const streamIsStale = Date.now() - lastLiveStreamEventAtRef.current > LIVE_PRICE_STREAM_STALE_MS;
-      if (streamIsStale) {
-        setStreamPrice(null);
-        setStreamActive(false);
+      const streaming = isPriceStreamHealthy({
+        nowMs: Date.now(),
+        health: streamHealthRef.current,
+        lastStreamPriceAtMs: lastStreamPriceAtRef.current,
+      });
+      if (streaming && Date.now() - lastPollAttemptAtRef.current < LIVE_PRICE_STREAMING_POLL_INTERVAL_MS) {
+        return;
       }
       void loadLivePrice();
     }, LIVE_PRICE_POLL_INTERVAL_MS);
@@ -3116,13 +3211,11 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
     : undefined;
   const livePriceText =
     livePrice !== null
-      ? `${livePriceIsStale ? "Stale" : livePricePoint?.isPartial ? "Live" : "Last"} ${priceFormatter.format(livePrice)}`
+      ? `${feedStatus.pricePrefix} ${priceFormatter.format(livePrice)}`
       : null;
   const livePriceTitle = livePricePoint
-    ? `Price timestamp ${lastLoadedFormatter.format(new Date(livePricePoint.timestamp))} ET (${
-        streamActive ? "streaming" : "polling"
-      })`
-    : undefined;
+    ? `${streamTradeTimestampMs !== null ? "Last trade" : "Quote bar"} ${lastLoadedFormatter.format(new Date(livePricePoint.timestamp))} ET · ${feedStatus.detail}`
+    : feedStatus.detail;
   const gapChipTitle =
     unrepairedDataGaps.length > 0
       ? unrepairedDataGaps
@@ -3142,8 +3235,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
       ? "Move Buy liq and Sell liq to their computed swing liquidity levels"
       : "No computed liquidity levels are available yet";
   const drawingToolsDisabled = !bot || chartCandles.length === 0;
-  const connectionState =
-    !bot ? "unavailable" : !chartSessionOpen ? "closed" : livePrice === null ? "unavailable" : livePriceIsStale ? "stale" : streamActive ? "live" : "delayed";
+  const connectionState = !bot ? "unavailable" : feedStatus.connection;
   const latestBarState = latestOhlcCandle ? (latestOhlcCandle.isPartial ? "partial" : "closed") : "none";
   const keyboardHelpId = `bot-chart-keyboard-help-${bot?.id ?? "none"}`;
   const chartViewState = resolveBotChartViewState({
@@ -3263,7 +3355,8 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
                 </div>
               ) : <BotChartStatus
                 connection={connectionState}
-                connectionTitle={livePriceError ?? livePriceTitle ?? undefined}
+                connectionLabel={bot ? feedStatus.label : undefined}
+                connectionTitle={[feedStatus.detail, connectionState === "live" ? null : livePriceError].filter(Boolean).join(" · ")}
                 barState={latestBarState}
                 lastRefreshTitle={freshnessTitle}
                 stale={dataIsStale}
@@ -3281,13 +3374,13 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
             ) : livePriceText ? (
               <span
                 className={`inline-flex h-8 items-center gap-2 whitespace-nowrap rounded-md border px-2.5 text-xs font-semibold ${
-                  livePriceIsStale || livePriceError
+                  connectionState === "stale" || connectionState === "reconnecting" || (livePriceError && connectionState !== "live")
                     ? "border-app-warning/35 bg-app-warning/10 text-app-warning"
                     : "border-app-accent/35 bg-app-accent/10 text-app-accent"
                 }`}
-                title={livePriceError ?? livePriceTitle}
+                title={connectionState !== "live" && livePriceError ? `${livePriceError} · ${livePriceTitle}` : livePriceTitle}
               >
-                <span className={`h-2 w-2 rounded-full bg-current ${streamActive && !livePriceIsStale ? "animate-pulse" : "opacity-50"}`} />
+                <span className={`h-2 w-2 rounded-full bg-current ${feedStatus.pricePrefix === "Live" ? "animate-pulse" : "opacity-50"}`} />
                 {livePriceText}
               </span>
             ) : bot && livePriceError ? (

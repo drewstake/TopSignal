@@ -89,7 +89,8 @@ def read_system_logs(*, user_id, hours=24, limit=200):
         if not since <= stamp <= now:
             continue
         level, message = FEED_STATES[state]
-        source = "Order book" if row.get("stream_kind") == "depth" else "Market quotes"
+        kind = row.get("stream_kind")
+        source = "Order book" if kind == "depth" else "Trade prints" if kind == "trades" else "Market quotes"
         entries.append(_entry(stamp.isoformat(), source, state, level, message))
     entries = sorted({row["id"]: row for row in entries}.values(), key=lambda row: row["timestamp"], reverse=True)
     return dict(generated_at=now.isoformat(), entries=entries[:limit], has_more=len(entries) > limit,

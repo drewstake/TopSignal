@@ -2,11 +2,13 @@ import type { ReactNode } from "react";
 
 import type { BotChartViewState } from "./botChartViewState";
 
-export type BotChartConnectionState = "live" | "delayed" | "stale" | "unavailable" | "closed";
+export type BotChartConnectionState = "live" | "delayed" | "reconnecting" | "stale" | "unavailable" | "closed";
 export type BotChartBarState = "partial" | "closed" | "none";
 
 export interface BotChartStatusProps {
   connection: BotChartConnectionState;
+  /** Overrides the default label, e.g. "Live · no trades 45s". */
+  connectionLabel?: string;
   connectionTitle?: string;
   barState: BotChartBarState;
   lastRefreshTitle?: string;
@@ -18,6 +20,7 @@ export interface BotChartStatusProps {
 
 export function BotChartStatus({
   connection,
+  connectionLabel: labelOverride,
   connectionTitle,
   barState,
   lastRefreshTitle,
@@ -26,18 +29,20 @@ export function BotChartStatus({
   timeframeLabel,
   timezoneLabel,
 }: BotChartStatusProps) {
-  const connectionLabel =
+  const connectionLabel = labelOverride ?? (
     connection === "live"
       ? "Live stream"
       : connection === "delayed"
         ? "Delayed / polling"
-        : connection === "stale"
-          ? "Stale price feed"
-          : connection === "closed" ? "Market closed" : "Live unavailable";
+        : connection === "reconnecting"
+          ? "Reconnecting"
+          : connection === "stale"
+            ? "Stale price feed"
+            : connection === "closed" ? "Market closed" : "Live unavailable");
   const connectionTone =
     connection === "live"
       ? "border-app-positive/35 bg-app-positive/10 text-app-positive"
-      : connection === "delayed"
+      : connection === "delayed" || connection === "reconnecting"
         ? "border-app-warning/35 bg-app-warning/10 text-app-warning"
         : connection === "stale"
           ? "border-app-negative/35 bg-app-negative/10 font-semibold text-app-negative"

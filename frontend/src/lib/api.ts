@@ -75,6 +75,7 @@ import type {
   BotTimeframeUnit,
   ProjectXContract,
   ProjectXMarketCandle,
+  ProjectXMarketDepthConnectionState,
   ProjectXMarketDepthSnapshot,
   ProjectXMarketDepthState,
   ProjectXMarketDepthUpdate,
@@ -1471,9 +1472,39 @@ interface MarketPriceStreamQuery {
   throttleMs?: number;
 }
 
+/** Browser↔TopSignal transport for the current attempt. */
+export type MarketPriceStreamTransport = "connecting" | "open" | "retrying" | "stopped";
+
+/**
+ * Observed health of one price stream. Every field is a measurement; none is
+ * inferred from price movement, so a quiet market is not mistaken for a fault.
+ */
+export interface MarketPriceStreamHealth {
+  transport: MarketPriceStreamTransport;
+  /** Latest TopSignal-reported ProjectX state for this contract. */
+  upstream: ProjectXMarketDepthConnectionState | null;
+  /** Browser time of the last bytes received on the open connection. */
+  lastActivityAt: number | null;
+  /** Browser time data was last confirmed flowing: a trade, or a heartbeat with ProjectX connected. */
+  lastConfirmedAt: number | null;
+  /** Backend-measured time since ProjectX last sent any frame. */
+  upstreamIdleMs: number | null;
+  /** Backend clock minus browser clock at the last heartbeat. */
+  serverClockOffsetMs: number | null;
+  /** The backend sends periodic heartbeats on this connection. */
+  heartbeats: boolean;
+  /** Transport reconnect attempts since this stream was opened. */
+  reconnects: number;
+  /** Why the previous transport attempt ended, for diagnostics. */
+  lastInterruption: string | null;
+  /** Browser time of the next scheduled attempt while retrying. */
+  retryAt: number | null;
+}
+
 interface MarketPriceStreamCallbacks {
   onPrice: (price: ProjectXMarketPrice) => void;
   onError?: (error: unknown) => void;
+  onHealth?: (health: MarketPriceStreamHealth) => void;
 }
 
 interface BotStartOptions {
@@ -1572,15 +1603,158 @@ async function requestAccountEmergencyFlatten(
   }
 }
 
+const MARKET_PRICE_RECONNECT_MIN_MS = 1_000;
+const MARKET_PRICE_RECONNECT_MAX_MS = 15_000;
+/** Backends without heartbeats send an SSE comment after 15s of silence. */
+const LEGACY_STREAM_IDLE_TIMEOUT_MS = 35_000;
+/** Three missed 5s heartbeats: the path is broken even if TCP never closed. */
+const HEARTBEAT_STREAM_IDLE_TIMEOUT_MS = 15_000;
+/** On wake (network back, tab shown) a connection silent this long is presumed dead. */
+const WAKE_STALE_STREAM_MS = 12_000;
+
+class StreamIdleTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`No data from the stream for ${Math.round(timeoutMs / 1000)}s.`);
+    this.name = "StreamIdleTimeoutError";
+  }
+}
+
+/**
+ * Reads one chunk, failing if nothing arrives within the idle timeout. After
+ * sleep or a network change a half-open connection can otherwise wait forever.
+ */
+async function readStreamChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  idleTimeoutMs: number,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_, reject) => {
+        timeoutId = globalThis.setTimeout(() => reject(new StreamIdleTimeoutError(idleTimeoutMs)), idleTimeoutMs);
+      }),
+    ]);
+  } finally {
+    globalThis.clearTimeout(timeoutId);
+  }
+}
+
+/** Calls back when the network returns or the page becomes visible. */
+function watchStreamWake(onWake: () => void): () => void {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return () => undefined;
+  }
+  const handleOnline = () => onWake();
+  const handleVisibility = () => {
+    if (!document.hidden) onWake();
+  };
+  window.addEventListener("online", handleOnline);
+  document.addEventListener("visibilitychange", handleVisibility);
+  return () => {
+    window.removeEventListener("online", handleOnline);
+    document.removeEventListener("visibilitychange", handleVisibility);
+  };
+}
+
+/**
+ * Waits out a reconnect delay. A wake ends the wait early so recovery after
+ * sleep or network loss does not sit in a long backoff; it never starts a
+ * second, parallel attempt.
+ */
+function waitForStreamRetry(delayMs: number, signal: AbortSignal): Promise<"elapsed" | "woken" | "aborted"> {
+  if (signal.aborted) {
+    return Promise.resolve("aborted");
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    let stopWake: () => void = () => undefined;
+    const finish = (outcome: "elapsed" | "woken" | "aborted") => {
+      if (settled) return;
+      settled = true;
+      globalThis.clearTimeout(timeoutId);
+      signal.removeEventListener("abort", handleAbort);
+      stopWake();
+      resolve(outcome);
+    };
+    const handleAbort = () => finish("aborted");
+    const timeoutId = globalThis.setTimeout(() => finish("elapsed"), delayMs);
+    signal.addEventListener("abort", handleAbort, { once: true });
+    stopWake = watchStreamWake(() => finish("woken"));
+  });
+}
+
+/**
+ * One transport attempt linked to the stream's lifetime. On wake it checks a
+ * quiet connection immediately instead of waiting for the idle watchdog.
+ */
+function createStreamAttempt(outer: AbortSignal) {
+  const controller = new AbortController();
+  let lastActivityAt = Date.now();
+  let wakeChecked = false;
+  const abortWithOuter = () => controller.abort();
+  outer.addEventListener("abort", abortWithOuter, { once: true });
+  const stopWake = watchStreamWake(() => {
+    if (Date.now() - lastActivityAt > WAKE_STALE_STREAM_MS) {
+      wakeChecked = true;
+      controller.abort();
+    }
+  });
+  return {
+    signal: controller.signal,
+    touch: () => {
+      lastActivityAt = Date.now();
+    },
+    get endedByWakeCheck() {
+      return wakeChecked;
+    },
+    dispose: () => {
+      outer.removeEventListener("abort", abortWithOuter);
+      stopWake();
+      controller.abort();
+    },
+  };
+}
+
+type StreamAttempt = ReturnType<typeof createStreamAttempt>;
+
+function describeStreamInterruption(error: unknown): string {
+  if (error instanceof StreamIdleTimeoutError) return "idle_timeout";
+  if (error instanceof ApiError) return `http_${error.status}`;
+  if (isAbortError(error)) return "aborted";
+  return error instanceof TypeError ? "network_error" : "stream_error";
+}
+
+function initialPriceStreamHealth(): MarketPriceStreamHealth {
+  return {
+    transport: "connecting",
+    upstream: null,
+    lastActivityAt: null,
+    lastConfirmedAt: null,
+    upstreamIdleMs: null,
+    serverClockOffsetMs: null,
+    heartbeats: false,
+    reconnects: 0,
+    lastInterruption: null,
+    retryAt: null,
+  };
+}
+
 export function streamProjectXMarketPrice(query: MarketPriceStreamQuery, callbacks: MarketPriceStreamCallbacks): () => void {
   const controller = new AbortController();
   let closed = false;
   let blockedByDemo = false;
+  const live = () => !closed && !blockedByDemo && !isDemoModeEnabled();
   const guardedCallbacks: MarketPriceStreamCallbacks = {
     ...callbacks,
     onPrice: (price) => {
-      if (!closed && !blockedByDemo && !isDemoModeEnabled()) {
+      if (live()) {
         callbacks.onPrice(price);
+      }
+    },
+    onHealth: (health) => {
+      if (live()) {
+        callbacks.onHealth?.(health);
       }
     },
   };
@@ -1625,32 +1799,60 @@ async function reconnectProjectXMarketPriceStream(
   callbacks: MarketPriceStreamCallbacks,
   signal: AbortSignal,
 ): Promise<void> {
-  let delayMs = 1_000;
+  let delayMs = MARKET_PRICE_RECONNECT_MIN_MS;
+  const health = initialPriceStreamHealth();
+  const publish = (patch: Partial<MarketPriceStreamHealth>) => {
+    Object.assign(health, patch);
+    callbacks.onHealth?.({ ...health });
+  };
   while (!signal.aborted) {
+    // The previous attempt's upstream report no longer describes this one.
+    publish({ transport: "connecting", upstream: null, upstreamIdleMs: null, retryAt: null });
+    const attempt = createStreamAttempt(signal);
+    let interruption = "closed";
     try {
-      await runProjectXMarketPriceStream(query, {
-        ...callbacks,
-        onPrice: (price) => {
-          delayMs = 1_000;
-          callbacks.onPrice(price);
-        },
-      }, signal);
-      if (!signal.aborted) callbacks.onError?.(new Error("Market price stream disconnected."));
+      await runProjectXMarketPriceStream(query, callbacks, attempt, health, publish, () => {
+        delayMs = MARKET_PRICE_RECONNECT_MIN_MS;
+      });
+      if (signal.aborted) return;
+      if (attempt.endedByWakeCheck) interruption = "stale_after_wake";
+      callbacks.onError?.(new Error("Market price stream disconnected."));
     } catch (error) {
-      if (signal.aborted || isAbortError(error)) return;
+      if (signal.aborted) return;
+      interruption = attempt.endedByWakeCheck ? "stale_after_wake" : describeStreamInterruption(error);
       callbacks.onError?.(error);
-      if (error instanceof ApiError && [400, 401, 403, 404, 422].includes(error.status)) return;
+      if (error instanceof ApiError && [400, 401, 403, 404, 422].includes(error.status)) {
+        // Rejected requests are not retried in the background; the owner may
+        // reopen the stream on a user-visible wake (e.g. after sign-in refresh).
+        publish({ transport: "stopped", lastInterruption: interruption, retryAt: null });
+        return;
+      }
+    } finally {
+      attempt.dispose();
     }
-    if (!(await waitForAbortableDelay(delayMs, signal))) return;
-    delayMs = Math.min(delayMs * 2, 15_000);
+    publish({
+      transport: "retrying",
+      lastInterruption: interruption,
+      reconnects: health.reconnects + 1,
+      retryAt: Date.now() + delayMs,
+    });
+    const outcome = await waitForStreamRetry(delayMs, signal);
+    if (outcome === "aborted") return;
+    delayMs = outcome === "woken"
+      ? MARKET_PRICE_RECONNECT_MIN_MS
+      : Math.min(delayMs * 2, MARKET_PRICE_RECONNECT_MAX_MS);
   }
 }
 
 async function runProjectXMarketPriceStream(
   query: MarketPriceStreamQuery,
   callbacks: MarketPriceStreamCallbacks,
-  signal: AbortSignal,
+  attempt: StreamAttempt,
+  health: MarketPriceStreamHealth,
+  publish: (patch: Partial<MarketPriceStreamHealth>) => void,
+  onHealthy: () => void,
 ): Promise<void> {
+  const { signal } = attempt;
   if (signal.aborted) return;
   if (isDemoModeEnabled()) {
     throw demoLiveTransportUnavailableError("Live market price streaming");
@@ -1689,24 +1891,60 @@ async function runProjectXMarketPriceStream(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let idleTimeoutMs = LEGACY_STREAM_IDLE_TIMEOUT_MS;
+  attempt.touch();
+  publish({ transport: "open", lastActivityAt: Date.now() });
 
   const cancelReader = () => { void reader.cancel().catch(() => undefined); };
   signal.addEventListener("abort", cancelReader, { once: true });
   try {
     while (!signal.aborted) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readStreamChunk(reader, idleTimeoutMs);
       if (done) {
         break;
       }
+      attempt.touch();
+      // Track activity without a render per chunk; heartbeats publish it.
+      health.lastActivityAt = Date.now();
 
-      buffer += decoder.decode(value, { stream: true });
+      buffer = (buffer + decoder.decode(value, { stream: true })).replaceAll("\r\n", "\n");
       let boundary = buffer.indexOf("\n\n");
       while (boundary >= 0) {
         const frame = buffer.slice(0, boundary);
         buffer = buffer.slice(boundary + 2);
-        const price = parseMarketPriceSseFrame(frame);
-        if (price && marketPriceMatchesStreamQuery(price, query)) {
-          callbacks.onPrice(price);
+        const event = parseMarketPriceStreamFrame(frame);
+        if (event?.kind === "price") {
+          onHealthy();
+          if (marketPriceMatchesStreamQuery(event.price.contract_id, query)) {
+            health.lastConfirmedAt = Date.now();
+            callbacks.onPrice(event.price);
+          }
+        } else if (event?.kind === "state") {
+          if (marketPriceMatchesStreamQuery(event.state.contract_id, query)) {
+            publish({
+              upstream: event.state.state,
+              lastConfirmedAt: event.state.state === "connected" ? Date.now() : health.lastConfirmedAt,
+            });
+          }
+        } else if (event?.kind === "heartbeat") {
+          onHealthy();
+          if (marketPriceMatchesStreamQuery(event.heartbeat.contract_id, query)) {
+            idleTimeoutMs = HEARTBEAT_STREAM_IDLE_TIMEOUT_MS;
+            const serverMs = Date.parse(event.heartbeat.server_time);
+            const upstream = event.heartbeat.state ?? health.upstream;
+            publish({
+              heartbeats: true,
+              upstream,
+              lastConfirmedAt: upstream === "connected" ? Date.now() : health.lastConfirmedAt,
+              upstreamIdleMs: event.heartbeat.upstream_idle_ms,
+              serverClockOffsetMs: Number.isFinite(serverMs) ? serverMs - Date.now() : health.serverClockOffsetMs,
+              lastActivityAt: health.lastActivityAt,
+            });
+          }
+        } else if (event?.kind === "comment") {
+          // Legacy keepalive: the path works even if no trade printed.
+          onHealthy();
+          publish({ lastActivityAt: health.lastActivityAt });
         }
         boundary = buffer.indexOf("\n\n");
       }
@@ -1718,16 +1956,34 @@ async function runProjectXMarketPriceStream(
   }
 }
 
-function marketPriceMatchesStreamQuery(price: ProjectXMarketPrice, query: MarketPriceStreamQuery): boolean {
-  return price.contract_id.trim().toUpperCase() === query.contractId.trim().toUpperCase();
+function marketPriceMatchesStreamQuery(contractId: string, query: MarketPriceStreamQuery): boolean {
+  return contractId.trim().toUpperCase() === query.contractId.trim().toUpperCase();
 }
 
-function parseMarketPriceSseFrame(frame: string): ProjectXMarketPrice | null {
+interface MarketPriceHeartbeat {
+  contract_id: string;
+  server_time: string;
+  state: ProjectXMarketDepthConnectionState | null;
+  upstream_idle_ms: number | null;
+}
+
+type MarketPriceStreamFrame =
+  | { kind: "price"; price: ProjectXMarketPrice }
+  | { kind: "state"; state: ProjectXMarketDepthState }
+  | { kind: "heartbeat"; heartbeat: MarketPriceHeartbeat }
+  | { kind: "comment" };
+
+function parseMarketPriceStreamFrame(frame: string): MarketPriceStreamFrame | null {
   let eventType = "message";
   const dataLines: string[] = [];
+  let comment = false;
 
   for (const line of frame.split(/\r?\n/)) {
-    if (line === "" || line.startsWith(":")) {
+    if (line === "") {
+      continue;
+    }
+    if (line.startsWith(":")) {
+      comment = true;
       continue;
     }
 
@@ -1745,16 +2001,42 @@ function parseMarketPriceSseFrame(frame: string): ProjectXMarketPrice | null {
     }
   }
 
-  if (eventType !== "price" || dataLines.length === 0) {
-    return null;
+  if (dataLines.length === 0) {
+    return comment ? { kind: "comment" } : null;
   }
 
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(dataLines.join("\n"));
-    return isProjectXMarketPrice(parsed) ? parsed : null;
+    parsed = JSON.parse(dataLines.join("\n"));
   } catch {
     return null;
   }
+  if (eventType === "price") {
+    return isProjectXMarketPrice(parsed) ? { kind: "price", price: parsed } : null;
+  }
+  if (eventType === "state") {
+    const state = parseMarketDepthState(parsed);
+    return state ? { kind: "state", state } : null;
+  }
+  if (eventType === "heartbeat") {
+    const heartbeat = parseMarketPriceHeartbeat(parsed);
+    return heartbeat ? { kind: "heartbeat", heartbeat } : null;
+  }
+  return null;
+}
+
+function parseMarketPriceHeartbeat(value: unknown): MarketPriceHeartbeat | null {
+  const candidate = asUnknownRecord(value);
+  if (!candidate || typeof candidate.contract_id !== "string" || typeof candidate.server_time !== "string") {
+    return null;
+  }
+  const idle = candidate.upstream_idle_ms;
+  return {
+    contract_id: candidate.contract_id,
+    server_time: candidate.server_time,
+    state: isMarketDepthConnectionState(candidate.state) ? candidate.state : null,
+    upstream_idle_ms: typeof idle === "number" && Number.isFinite(idle) && idle >= 0 ? idle : null,
+  };
 }
 
 function isProjectXMarketPrice(value: unknown): value is ProjectXMarketPrice {
@@ -1903,20 +2185,22 @@ async function runProjectXMarketDepthStream(
       });
       return;
     }
+    const attempt = createStreamAttempt(signal);
     try {
-      await readProjectXMarketDepthConnection(contractId, callbacks, signal, () => {
+      await readProjectXMarketDepthConnection(contractId, callbacks, attempt.signal, () => {
         reconnectDelayMs = MARKET_DEPTH_RECONNECT_MIN_MS;
-      });
+      }, attempt.touch);
       if (signal.aborted) {
         return;
       }
       callbacks.onState({
         contract_id: contractId,
         state: "disconnected",
-        message: "Market depth stream closed.",
+        message: attempt.endedByWakeCheck ? "Market depth went quiet; reconnecting." : "Market depth stream closed.",
       });
     } catch (error) {
-      if (signal.aborted || isAbortError(error)) {
+      // Only the stream's owner ends it; a stalled attempt reconnects.
+      if (signal.aborted) {
         return;
       }
       if (isTerminalMarketDepthStreamError(error)) {
@@ -1930,18 +2214,23 @@ async function runProjectXMarketDepthStream(
       callbacks.onState({
         contract_id: contractId,
         state: "disconnected",
-        message: marketDepthErrorMessage(error),
+        message: attempt.endedByWakeCheck ? "Market depth went quiet; reconnecting." : marketDepthErrorMessage(error),
       });
+    } finally {
+      attempt.dispose();
     }
 
     if (!(await waitForAbortableDelay(250, signal))) {
       return;
     }
     callbacks.onState({ contract_id: contractId, state: "reconnecting", message: "Reconnecting market depth…" });
-    if (!(await waitForAbortableDelay(reconnectDelayMs, signal))) {
+    const outcome = await waitForStreamRetry(reconnectDelayMs, signal);
+    if (outcome === "aborted") {
       return;
     }
-    reconnectDelayMs = Math.min(reconnectDelayMs * 2, MARKET_DEPTH_RECONNECT_MAX_MS);
+    reconnectDelayMs = outcome === "woken"
+      ? MARKET_DEPTH_RECONNECT_MIN_MS
+      : Math.min(reconnectDelayMs * 2, MARKET_DEPTH_RECONNECT_MAX_MS);
   }
 }
 
@@ -1950,6 +2239,7 @@ async function readProjectXMarketDepthConnection(
   callbacks: MarketDepthStreamCallbacks,
   signal: AbortSignal,
   onHealthy: () => void,
+  onActivity: () => void = () => undefined,
 ): Promise<void> {
   if (isDemoModeEnabled()) {
     throw demoLiveTransportUnavailableError("Live market depth");
@@ -1989,10 +2279,13 @@ async function readProjectXMarketDepthConnection(
 
   try {
     while (!signal.aborted) {
-      const { done, value } = await reader.read();
+      // Backend keepalives arrive at least every 15s; silence beyond the
+      // watchdog means a half-open connection (sleep, network change).
+      const { done, value } = await readStreamChunk(reader, LEGACY_STREAM_IDLE_TIMEOUT_MS);
       if (done) {
         return;
       }
+      onActivity();
       buffer += decoder.decode(value, { stream: true });
       // Normalizing after each append also handles CR/LF split across chunks.
       buffer = buffer.replaceAll("\r\n", "\n");
@@ -2235,11 +2528,12 @@ export function streamProjectXMarketTrades(contractId: string, callbacks: Market
     let delay = 500;
     while (!signal.aborted && !isDemoModeEnabled()) {
       state("reconnecting", "Connecting trade feed…");
+      const attempt = createStreamAttempt(signal);
       try {
         const token = await getAccessToken();
         if (signal.aborted || isDemoModeEnabled()) return;
         const response = await fetch(buildUrl("/api/projectx/market-trades/stream", { contract_id: contract }), {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined, signal, cache: "no-store",
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined, signal: attempt.signal, cache: "no-store",
         });
         if (!response.ok) {
           if ([400, 401, 403, 404, 422].includes(response.status)) {
@@ -2250,13 +2544,14 @@ export function streamProjectXMarketTrades(contractId: string, callbacks: Market
         if (!response.body) throw new Error("Trade feed has no body.");
         const reader = response.body.getReader();
         const cancel = () => { void reader.cancel().catch(() => undefined); };
-        signal.addEventListener("abort", cancel, { once: true });
+        attempt.signal.addEventListener("abort", cancel, { once: true });
         try {
           const decoder = new TextDecoder();
           let buffer = "";
-          while (!signal.aborted) {
-            const { value, done } = await reader.read();
+          while (!attempt.signal.aborted) {
+            const { value, done } = await readStreamChunk(reader, LEGACY_STREAM_IDLE_TIMEOUT_MS);
             if (done) break;
+            attempt.touch();
             buffer = (buffer + decoder.decode(value, { stream: true })).replaceAll("\r\n", "\n");
             if (buffer.length > 2_000_000) throw new Error("Trade feed frame exceeds display limit.");
             let boundary = buffer.indexOf("\n\n");
@@ -2276,17 +2571,22 @@ export function streamProjectXMarketTrades(contractId: string, callbacks: Market
             }
           }
         } finally {
-          signal.removeEventListener("abort", cancel);
+          attempt.signal.removeEventListener("abort", cancel);
           await reader.cancel().catch(() => undefined);
           reader.releaseLock();
         }
+        if (signal.aborted) return;
         state("disconnected", "Trade feed disconnected · missing prints are not backfilled.");
-      } catch (error) {
-        if (signal.aborted || isAbortError(error)) return;
+      } catch {
+        // Only the stream's owner ends it; a stalled attempt reconnects.
+        if (signal.aborted) return;
         state("disconnected", "Trade feed interrupted · missing prints are not backfilled.");
+      } finally {
+        attempt.dispose();
       }
-      if (!(await waitForAbortableDelay(delay, signal))) return;
-      delay = Math.min(delay * 2, 10_000);
+      const outcome = await waitForStreamRetry(delay, signal);
+      if (outcome === "aborted") return;
+      delay = outcome === "woken" ? 500 : Math.min(delay * 2, 10_000);
     }
   }
   void run().finally(unsubscribe);

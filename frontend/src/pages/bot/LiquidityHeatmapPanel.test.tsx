@@ -8,6 +8,7 @@ import { OrderBookPanel } from "./OrderBookPanel";
 import { OrderBookStore } from "./orderBook";
 import { drawLiquidityHeatmap, type HeatmapRenderInput } from "./liquidityHeatmapCanvas";
 import type { HistoryFetcher, RawHeatmapHistory } from "./heatmapHistory";
+import { STREAM_HIDDEN_GRACE_MS } from "./useStreamVisibility";
 
 vi.mock("./liquidityHeatmapCanvas", async importOriginal => ({
   ...await importOriginal<typeof import("./liquidityHeatmapCanvas")>(),
@@ -218,10 +219,13 @@ it("isolates history, prints and live samples when the contract or account chang
   expect(vi.mocked(fetcher).mock.calls.at(-1)![0]).toMatchObject({ accountId: 8, contractId: "CON.F.US.MNQ.H27" });
 });
 
-it("stops the trade subscription while hidden and records a timestamped interruption", () => {
+it("keeps prints through a brief hide, then stops the subscription and records a timestamped interruption", () => {
   render(<LiquidityHeatmapPanel store={liveStore()} contractId={contractId} tickSize={.25} />);
   const hidden = vi.spyOn(document, "hidden", "get");
   act(() => { hidden.mockReturnValue(true); document.dispatchEvent(new Event("visibilitychange")); });
+  act(() => { vi.advanceTimersByTime(60_000); });
+  expect(vi.mocked(api.streamProjectXMarketTrades).mock.results[0].value).not.toHaveBeenCalled();
+  act(() => { vi.advanceTimersByTime(STREAM_HIDDEN_GRACE_MS); });
   expect(vi.mocked(api.streamProjectXMarketTrades).mock.results[0].value).toHaveBeenCalledOnce();
   act(() => { hidden.mockReturnValue(false); document.dispatchEvent(new Event("visibilitychange")); });
   flush();

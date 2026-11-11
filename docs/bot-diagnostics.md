@@ -129,6 +129,41 @@ actual fills and realized results in existing records. These logs contain neithe
 full input candle series nor enough market data to reconstruct an exact replay.
 Existing decision-research capture is a separate system with its own settings.
 
+## Live price feed status
+
+The Bot chart's feed pill is derived only from measured signals
+(`frontend/src/pages/bot/priceFeedStatus.ts`):
+
+| Pill | Meaning |
+| --- | --- |
+| Live stream | Stream open, ProjectX connected, a trade printed in the last 30s |
+| Live · quiet | Same healthy path, but no recent trade; the price is the last trade |
+| Delayed / polling | Stream not confirmed; a REST quote under 11s old is shown |
+| Reconnecting | Stream or ProjectX recovering, confirmed live within the last 30s |
+| Stale price feed | Nothing has confirmed the feed for 30s; the last value is kept and marked |
+
+Hover the pill or price for one diagnostic line. It separates the
+browser↔TopSignal transport (`open`, `retrying in …`, last-data age, reconnect
+count and reason such as *no data received* or *silent after sleep/network
+change*) from ProjectX state reported by the backend (`connected`,
+`reconnecting`, provider silence) and from browser/host clock offset.
+
+The backend price stream sends a `heartbeat` SSE event every 5s even when no
+trades print. Brief tab switches keep streams open for two minutes; the
+backend keeps the ProjectX price/print subscription for 60s after its last
+viewer, so reloads and returns reuse it and replay the real last trade with its
+provider timestamp. Diagnostics events for the next incident:
+
+- `projectx_feed_reconnect` (warning): `stream_kind` (`depth`, `price`,
+  `trades`), `reason`, `uptime_seconds`, `delivered_data`, `retry_in_seconds`.
+  A provider-side drop is visible here; a browser-only gap is not.
+- `projectx_feed_state`: unchanged, now labels trade prints as `trades`
+  (shown as *Trade prints* in Bot → Logs).
+- `event_loop_stall` (warning): `worst_lag_ms`, `stalls`, `window_seconds`.
+  A backend stall delays every stream and request at once; one appearing at the
+  same time as host liveness-probe failures points at the backend, not ProjectX
+  or the network.
+
 ## Storage and privacy
 
 The new file rotates at 10 MiB, retaining 30 backups (about 310 MiB total, plus at

@@ -8,30 +8,44 @@ import type { MarketDepthStreamCallbacks } from "../../lib/api";
 import { OrderBookPanel } from "./OrderBookPanel";
 import { OrderBookStore } from "./orderBook";
 import { connectOrderBookPanelStream, type MarketDepthStreamFactory } from "./orderBookPanelStream";
+import { STREAM_HIDDEN_GRACE_MS } from "./useStreamVisibility";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe("OrderBookPanel", () => {
-  it("closes the depth stream while hidden and starts a fresh subscription on return", () => {
-    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
-    const close = vi.fn();
-    const streamFactory = vi.fn<MarketDepthStreamFactory>(() => close);
-    render(<OrderBookPanel contractId="CON.F.US.MNQ.U26" streamFactory={streamFactory} />);
-    expect(streamFactory).toHaveBeenCalledTimes(1);
-    act(() => {
-      streamFactory.mock.calls[0][1].onSnapshot({ contract_id: "CON.F.US.MNQ.U26", sequence: 1,
-        timestamp: "2026-09-08T14:00:00Z", bids: [{ price: 20000, size: 5 }], asks: [] });
-    });
-    act(() => { hidden.mockReturnValue(true); document.dispatchEvent(new Event("visibilitychange")); });
-    expect(close).toHaveBeenCalledTimes(1);
-    expect(streamFactory).toHaveBeenCalledTimes(1);
-    act(() => { hidden.mockReturnValue(false); document.dispatchEvent(new Event("visibilitychange")); });
-    expect(streamFactory).toHaveBeenCalledTimes(2);
-    act(() => {
-      streamFactory.mock.calls[1][1].onUpdate({ contract_id: "CON.F.US.MNQ.U26", sequence: 2,
-        timestamp: "2026-09-08T14:01:00Z", side: "bid", price: 20000, size: 99 });
-    });
-    expect(screen.queryByLabelText("Best bid 20,000.00, aggregate size 99")).toBeNull();
+  it("keeps the depth stream through a brief hide and resubscribes fresh after a long one", () => {
+    vi.useFakeTimers();
+    try {
+      const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+      const close = vi.fn();
+      const streamFactory = vi.fn<MarketDepthStreamFactory>(() => close);
+      render(<OrderBookPanel contractId="CON.F.US.MNQ.U26" streamFactory={streamFactory} />);
+      expect(streamFactory).toHaveBeenCalledTimes(1);
+      act(() => {
+        streamFactory.mock.calls[0][1].onSnapshot({ contract_id: "CON.F.US.MNQ.U26", sequence: 1,
+          timestamp: "2026-09-08T14:00:00Z", bids: [{ price: 20000, size: 5 }], asks: [] });
+      });
+      // A glance at another window keeps the same subscription and book.
+      act(() => { hidden.mockReturnValue(true); document.dispatchEvent(new Event("visibilitychange")); });
+      act(() => { vi.advanceTimersByTime(60_000); });
+      expect(close).not.toHaveBeenCalled();
+      act(() => { hidden.mockReturnValue(false); document.dispatchEvent(new Event("visibilitychange")); });
+      expect(streamFactory).toHaveBeenCalledTimes(1);
+      // A long absence releases the stream; the return starts snapshot-first.
+      act(() => { hidden.mockReturnValue(true); document.dispatchEvent(new Event("visibilitychange")); });
+      act(() => { vi.advanceTimersByTime(STREAM_HIDDEN_GRACE_MS); });
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(streamFactory).toHaveBeenCalledTimes(1);
+      act(() => { hidden.mockReturnValue(false); document.dispatchEvent(new Event("visibilitychange")); });
+      expect(streamFactory).toHaveBeenCalledTimes(2);
+      act(() => {
+        streamFactory.mock.calls[1][1].onUpdate({ contract_id: "CON.F.US.MNQ.U26", sequence: 2,
+          timestamp: "2026-09-08T14:01:00Z", side: "bid", price: 20000, size: 99 });
+      });
+      expect(screen.queryByLabelText("Best bid 20,000.00, aggregate size 99")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows a stable market-closed state, clears prices, and resumes on the same stream", async () => {

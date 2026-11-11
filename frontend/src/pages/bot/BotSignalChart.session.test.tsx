@@ -9,6 +9,7 @@ import { findCandleGaps, isFuturesSessionOpen } from "./botCandleGaps";
 import { buildBotCandleCacheKey, writeBotCandleCache } from "./botCandleCache";
 import { getDemoApiResponse } from "../../lib/demoData";
 import { DEMO_AS_OF_ISO } from "../../lib/demoScenario";
+import { STREAM_HIDDEN_GRACE_MS } from "./useStreamVisibility";
 import type { BotConfigListResponse } from "../../lib/types";
 
 const chartSeries = vi.hoisted(() => ({ update: vi.fn(), setData: vi.fn() }));
@@ -131,7 +132,7 @@ it("keeps demo history and snapshot time anchored when the real date advances", 
   expect(api.streamProjectXMarketPrice).not.toHaveBeenCalled();
 });
 
-it("stops chart polling and queued timeframe warming while hidden, then refreshes on return", async () => {
+it("stops chart polling while hidden, keeps the stream through a brief hide, and refreshes on return", async () => {
   vi.setSystemTime(new Date("2026-09-08T14:01:00Z"));
   const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
   mount();
@@ -140,13 +141,20 @@ it("stops chart polling and queued timeframe warming while hidden, then refreshe
   act(() => { hidden.mockReturnValue(true); document.dispatchEvent(new Event("visibilitychange")); });
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   const callsWhileHidden = vi.mocked(api.botsApi.getCandles).mock.calls.length;
-  expect(stop).toHaveBeenCalledTimes(1);
   await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  // REST polling pauses at once; the stream survives a brief tab switch.
   expect(api.botsApi.getCandles).toHaveBeenCalledTimes(callsWhileHidden);
-  expect(api.streamProjectXMarketPrice).toHaveBeenCalledTimes(1);
+  expect(stop).not.toHaveBeenCalled();
   act(() => { hidden.mockReturnValue(false); document.dispatchEvent(new Event("visibilitychange")); });
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   expect(vi.mocked(api.botsApi.getCandles).mock.calls.length).toBeGreaterThan(callsWhileHidden);
+  expect(api.streamProjectXMarketPrice).toHaveBeenCalledTimes(1);
+  // A long absence releases the stream; returning opens exactly one new one.
+  act(() => { hidden.mockReturnValue(true); document.dispatchEvent(new Event("visibilitychange")); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(STREAM_HIDDEN_GRACE_MS); });
+  expect(stop).toHaveBeenCalledTimes(1);
+  act(() => { hidden.mockReturnValue(false); document.dispatchEvent(new Event("visibilitychange")); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   expect(api.streamProjectXMarketPrice).toHaveBeenCalledTimes(2);
 });
 
@@ -438,4 +446,110 @@ it("reports provider-empty gaps and does not repeatedly request them", async () 
   expect(screen.getByText("4 gaps unavailable")).not.toBeNull();
   await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
   expect(repairs).toHaveBeenCalledTimes(1);
+});
+
+const healthyFeed = (patch: Partial<api.MarketPriceStreamHealth> = {}): api.MarketPriceStreamHealth => ({
+  transport: "open", upstream: "connected", lastActivityAt: Date.now(), lastConfirmedAt: Date.now(),
+  upstreamIdleMs: 500, serverClockOffsetMs: 0, heartbeats: true, reconnects: 0,
+  lastInterruption: null, retryAt: null, ...patch,
+});
+const closedBar = (): ProjectXMarketCandle => ({
+  id: null, contract_id: bot.contract_id, symbol: bot.symbol, live: false, unit: "minute", unit_number: 5,
+  timestamp: "2026-09-08T13:55:00Z", open: 19999, high: 20001, low: 19998, close: 20000,
+  volume: 100, is_partial: false, fetched_at: null,
+});
+const mountLive = async (scope: string) => {
+  render(<BotSignalChart bot={null} market={bot} authenticatedCacheScope={scope}
+    activity={null} lastEvaluation={null} refreshToken={0} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  return vi.mocked(api.streamProjectXMarketPrice).mock.calls.at(-1)![1];
+};
+const trade = (price: number, timestamp = new Date().toISOString()) =>
+  ({ contract_id: bot.contract_id, symbol: bot.symbol, price, timestamp });
+
+it("keeps a healthy stream live through quiet tape and slows the redundant REST quote poll", async () => {
+  vi.setSystemTime(new Date("2026-09-08T14:01:00Z"));
+  vi.mocked(api.botsApi.getCandles).mockImplementation(async (query) => query.includePartialBar ? [] : [closedBar()]);
+  const callbacks = await mountLive("quiet-tape");
+  await act(async () => {
+    callbacks.onHealth?.(healthyFeed());
+    callbacks.onPrice(trade(20002.25));
+    await vi.advanceTimersByTimeAsync(250);
+  });
+  expect(screen.getByText("Live stream")).not.toBeNull();
+  const polls = () => vi.mocked(api.botsApi.getCandles).mock.calls.filter(([query]) => query.includePartialBar).length;
+  const pollsBefore = polls();
+  // 45 seconds without a trade; heartbeats keep confirming the path every 5s.
+  for (let index = 0; index < 9; index += 1) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+      callbacks.onHealth?.(healthyFeed());
+    });
+  }
+  expect(screen.queryByText("Stale price feed")).toBeNull();
+  expect(screen.queryByText("Delayed / polling")).toBeNull();
+  expect(screen.getByText("Live · quiet")).not.toBeNull();
+  expect(screen.getByText("Last 20,002.25")).not.toBeNull();
+  // The stream carries the price, so REST only reconciles volume (~15s, not 3s).
+  expect(polls() - pollsBefore).toBeLessThanOrEqual(4);
+});
+
+it("keeps the monitor chart's quote fallback working when the continuous archive is missing", async () => {
+  vi.setSystemTime(new Date("2026-09-08T14:01:00Z"));
+  vi.spyOn(api, "requestJson").mockRejectedValue(new api.ApiError("databento_chart_history_missing", 404, null, null));
+  vi.mocked(api.botsApi.getCandles).mockImplementation(async (query) => query.includePartialBar ? [{
+    ...closedBar(), timestamp: "2026-09-08T14:00:00Z", close: 20010.5, is_partial: true, fetched_at: new Date().toISOString(),
+  }] : []);
+  render(<BotSignalChart monitorOnly bot={bot} authenticatedCacheScope="archive-missing" activity={null}
+    lastEvaluation={null} refreshToken={0} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+  expect(vi.mocked(api.botsApi.getCandles).mock.calls.some(([query]) =>
+    query.includePartialBar && query.contractId === bot.contract_id)).toBe(true);
+  expect(screen.getByText("Delayed / polling")).not.toBeNull();
+  expect(screen.getByText("Delayed 20,010.50")).not.toBeNull();
+});
+
+it("shows Reconnecting after a drop, keeps the last trade, and reports stale only after the grace", async () => {
+  vi.setSystemTime(new Date("2026-09-08T14:01:00Z"));
+  vi.mocked(api.botsApi.getCandles).mockImplementation(async (query) => query.includePartialBar ? [] : [closedBar()]);
+  const callbacks = await mountLive("drop-recovery");
+  await act(async () => {
+    callbacks.onHealth?.(healthyFeed());
+    callbacks.onPrice(trade(20002.25));
+    await vi.advanceTimersByTimeAsync(250);
+  });
+  const lastGood = Date.now();
+  await act(async () => {
+    callbacks.onHealth?.(healthyFeed({ transport: "retrying", upstream: null, lastActivityAt: lastGood,
+      lastConfirmedAt: lastGood, reconnects: 1, lastInterruption: "network_error", retryAt: Date.now() + 1_000 }));
+  });
+  expect(screen.getByText("Reconnecting")).not.toBeNull();
+  expect(screen.getByText("Last 20,002.25")).not.toBeNull();
+  expect(screen.queryByText("Stale price feed")).toBeNull();
+  await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+  expect(screen.getByText("Stale price feed")).not.toBeNull();
+  expect(screen.getByText("Stale 20,002.25")).not.toBeNull();
+  await act(async () => {
+    callbacks.onHealth?.(healthyFeed({ reconnects: 1, lastInterruption: "network_error" }));
+    callbacks.onPrice(trade(20004));
+    await vi.advanceTimersByTimeAsync(250);
+  });
+  expect(screen.getByText("Live stream")).not.toBeNull();
+  expect(screen.getByText("Live 20,004.00")).not.toBeNull();
+});
+
+it("never lets an older or repeated trade replace a newer one", async () => {
+  vi.setSystemTime(new Date("2026-09-08T14:01:00Z"));
+  vi.mocked(api.botsApi.getCandles).mockImplementation(async (query) => query.includePartialBar ? [] : [closedBar()]);
+  const callbacks = await mountLive("ordering");
+  await act(async () => {
+    callbacks.onHealth?.(healthyFeed());
+    callbacks.onPrice(trade(20003, "2026-09-08T14:00:59Z"));
+    await vi.advanceTimersByTimeAsync(250);
+    callbacks.onPrice(trade(20001, "2026-09-08T14:00:55Z"));
+    callbacks.onPrice(trade(20003, "2026-09-08T14:00:59Z"));
+    await vi.advanceTimersByTimeAsync(250);
+  });
+  expect(screen.getByText("Live 20,003.00")).not.toBeNull();
+  expect(chartSeries.update).not.toHaveBeenCalledWith(expect.objectContaining({ close: 20001 }));
 });

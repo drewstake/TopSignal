@@ -33,6 +33,7 @@ error_category blocked_reason dropped_events recording_healthy problems queued_e
 oldest_queued_seconds durable_events last_durable_at last_commit_seconds max_commit_seconds
 decision_queue decision_written decision_failed decision_last_write_seconds
 depth_recorder_state depth_recorder_age_seconds backup_stale disk_free_bytes
+worst_lag_ms stalls window_seconds uptime_seconds delivered_data retry_in_seconds
 """.split())
 
 

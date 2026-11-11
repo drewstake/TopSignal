@@ -14,6 +14,8 @@ from .trading_day import futures_session_is_open
 class ProjectXMarketTradesSession(ProjectXMarketPriceSession):
     # Inherit only the authenticated, reference-counted trades hub lifecycle.
     # No research hooks, price coalescing, account subscriptions or bot callbacks.
+    _stream_kind = "trades"
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._print_epoch = uuid4().hex
@@ -58,6 +60,9 @@ class ProjectXMarketTradesSession(ProjectXMarketPriceSession):
                         continue
                     if _json_number(price) is None or _json_number(volume) is None:
                         continue
+                    # A valid print proves this connection delivers data, so
+                    # its loss restarts the reconnect backoff ladder.
+                    self._healthy_connection_generation = self._connection_generation
                     native_id = entry.get("tradeId")
                     if isinstance(native_id, (str, int)) and not isinstance(native_id, bool) and str(native_id).strip():
                         key = (contract, str(native_id))

@@ -329,8 +329,18 @@ _bot_worker_runtime: BotWorkerRuntime | None = None
 # Once viewed, keep depth current on the backend until shutdown, including
 # while the browser is closed. Provider outages still invalidate stale books.
 _order_book_registry = ProjectXOrderBookRegistry(keep_alive_without_viewers=True)
-_market_price_registry = ProjectXOrderBookRegistry(session_factory=ProjectXMarketPriceSession)
-_market_trades_registry = ProjectXOrderBookRegistry(session_factory=ProjectXMarketTradesSession)
+# Display price/print hubs outlive their last viewer briefly. Tab switches,
+# reloads and browser reconnects then reuse the live ProjectX subscription
+# instead of renegotiating it; idle sessions still close after the grace.
+_DISPLAY_STREAM_DISCONNECT_GRACE_SECONDS = 60.0
+_market_price_registry = ProjectXOrderBookRegistry(
+    session_factory=ProjectXMarketPriceSession,
+    disconnect_grace_seconds=_DISPLAY_STREAM_DISCONNECT_GRACE_SECONDS,
+)
+_market_trades_registry = ProjectXOrderBookRegistry(
+    session_factory=ProjectXMarketTradesSession,
+    disconnect_grace_seconds=_DISPLAY_STREAM_DISCONNECT_GRACE_SECONDS,
+)
 _backtest_capacity_lock = Lock()
 _backtest_active_total = 0
 _backtest_active_by_user: dict[str, "_BacktestCapacityLease"] = {}
@@ -445,6 +455,8 @@ async def app_lifespan(_: FastAPI):
     except Exception as exc:
         _log_trade_import_preview_cleanup_failure(exc)
     cleanup_task = asyncio.create_task(_trade_import_preview_cleanup_loop())
+    from .services.event_loop_monitor import monitor_event_loop_lag
+    loop_monitor_task = asyncio.create_task(monitor_event_loop_lag(), name="event-loop-lag-monitor")
     from .services.historical_trade_excursions import ExcursionRecorder
     excursion_recorder = ExcursionRecorder(SessionLocal, _projectx_client_for_user_without_open_transaction)
     excursion_recorder.start()
@@ -486,10 +498,12 @@ async def app_lifespan(_: FastAPI):
                     _bot_worker_runtime = None
         finally:
             cleanup_task.cancel()
-            try:
-                await cleanup_task
-            except asyncio.CancelledError:
-                pass
+            loop_monitor_task.cancel()
+            for task in (cleanup_task, loop_monitor_task):
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
             try:
                 await asyncio.gather(_order_book_registry.close(), _market_price_registry.close(), _market_trades_registry.close())
             finally:

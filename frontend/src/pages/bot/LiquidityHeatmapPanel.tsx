@@ -7,7 +7,7 @@ import { drawHeatmapOverlay, drawLiquidityHeatmap, HEAT_GRADIENT_CSS, heatmapMin
 import { useHeatmapTickSize } from "./useHeatmapTickSize";
 import { streamProjectXMarketTrades } from "../../lib/api";
 import { HeatmapTradeBuffer, type TradeBubbleView } from "./heatmapTrades";
-import { usePageVisibility } from "./usePageVisibility";
+import { useStreamVisibility } from "./useStreamVisibility";
 import { ServerClock } from "./heatmapClock";
 import { HeatmapHistoryStore, INT32_NONE, isCovered, loadedSpans, sessionStartMs, TIER_MS, type HeatmapGap, type HistoryFetcher,
   type HistoryStatus } from "./heatmapHistory";
@@ -157,7 +157,8 @@ function HeatmapDisplay({ store, contractId, symbol, tickSize, demoMode = false,
   const [keyboardCursor, setKeyboardCursor] = useState<{ time: number; tick: number } | null>(null);
   const [pin, setPin] = useState<Pin | null>(null);
   const [autoSaturation, setAutoSaturation] = useState(25);
-  const pageVisible = usePageVisibility();
+  // Prints keep flowing through brief tab switches (no artificial gap).
+  const pageVisible = useStreamVisibility();
   const hoverRef = useRef(hover);
   hoverRef.current = hover;
   const chartRef = useRef<HTMLDivElement>(null);
@@ -208,7 +209,7 @@ function HeatmapDisplay({ store, contractId, symbol, tickSize, demoMode = false,
   }, [live, tiles, historyStatus?.summary, tickSize]);
   useEffect(() => { setViewport(view => followPrice(view, midTick)); }, [midTick]);
 
-  // Live trade prints (display-only subscription; paused while the page is hidden).
+  // Live trade prints (display-only subscription; paused after the page stays hidden).
   useEffect(() => {
     if (demoMode || !contractId || !tickSize || !pageVisible) return;
     let closed = false;

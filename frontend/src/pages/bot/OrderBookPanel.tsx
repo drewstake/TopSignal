@@ -18,7 +18,7 @@ import {
   type OrderBookSide,
 } from "./orderBook";
 import { connectOrderBookPanelStream, type MarketDepthStreamFactory } from "./orderBookPanelStream";
-import { usePageVisibility } from "./usePageVisibility";
+import { useStreamVisibility } from "./useStreamVisibility";
 
 const priceFormatter = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 2,
@@ -41,7 +41,8 @@ export function OrderBookPanel({
   streamFactory = streamProjectXMarketDepth,
   sharedStore,
 }: OrderBookPanelProps) {
-  const pageVisible = usePageVisibility();
+  // Brief tab switches keep the book subscribed instead of rebuilding it.
+  const pageVisible = useStreamVisibility();
   const normalizedContractId = normalizeOrderBookContractId(contractId);
   const liveContractId = demoMode ? null : normalizedContractId;
   const store = useMemo(() => sharedStore ?? new OrderBookStore(liveContractId, "all"), [liveContractId, sharedStore]);

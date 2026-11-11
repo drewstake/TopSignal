@@ -302,6 +302,12 @@ class ProjectXMarketDepthSession:
 
     _subscribe_target = _SUBSCRIBE_TARGET
     _unsubscribe_target = _UNSUBSCRIBE_TARGET
+    # Diagnostic label only; it distinguishes hub connections in feed logs.
+    _stream_kind = "depth"
+    # Depth updates flow continuously in an open session, so a long-lived
+    # connection without depth still indicates a credential/provider fault.
+    # Trade feeds can be legitimately silent and opt into uptime as health.
+    _uptime_proves_health = False
 
     def __init__(
         self,
@@ -319,6 +325,7 @@ class ProjectXMarketDepthSession:
         keep_alive_without_viewers: bool = False,
         on_idle: Callable[[], Any] | None = None,
         now: Callable[[], datetime] | None = None,
+        stable_connection_seconds: float = 60.0,
     ):
         self._client = client
         self._market_hub_url = validate_projectx_url(
@@ -360,6 +367,12 @@ class ProjectXMarketDepthSession:
         self._closed = False
         self._observation_user_id: str | None = None
         self._observation_epoch = uuid4().hex
+        # A connection that stayed up this long proved itself even when a quiet
+        # market produced no data frames; its loss restarts the retry ladder.
+        self._stable_connection_seconds = max(0.0, float(stable_connection_seconds))
+        # Monotonic loop times for viewer heartbeats and reconnect diagnostics.
+        self._connected_since: float | None = None
+        self._last_upstream_frame_at: float | None = None
 
     def set_observation_user(self, user_id: str) -> None:
         self._observation_user_id = user_id
@@ -743,6 +756,8 @@ class ProjectXMarketDepthSession:
             active_websocket: Any | None = None
             active_generation: int | None = None
             token: str | None = None
+            connected_at: float | None = None
+            interruption: str | None = None
             try:
                 token = await asyncio.to_thread(self._client.get_access_token)
                 any_open, _ = await self._refresh_market_states()
@@ -762,6 +777,9 @@ class ProjectXMarketDepthSession:
                     pending_frames = await _signalr_handshake(websocket)
                     active_generation = await self._activate_connection(websocket)
                     active_websocket = websocket
+                    connected_at = asyncio.get_running_loop().time()
+                    self._connected_since = connected_at
+                    self._last_upstream_frame_at = connected_at
                     await self._sync_provider_subscriptions(
                         websocket=websocket,
                         connection_generation=active_generation,
@@ -784,6 +802,7 @@ class ProjectXMarketDepthSession:
                         )
 
                     await self._run_connected(websocket, active_generation)
+                    interruption = "provider_closed"
                     if await self._has_active_contracts():
                         await self._broadcast_state(
                             "reconnecting",
@@ -792,12 +811,14 @@ class ProjectXMarketDepthSession:
             except asyncio.CancelledError:
                 raise
             except ProjectXClientError:
+                interruption = "authentication_unavailable"
                 logger.warning("[market-depth] ProjectX authentication unavailable")
                 await self._broadcast_state(
                     "unavailable",
                     message="ProjectX market depth is unavailable.",
                 )
             except Exception as exc:
+                interruption = type(exc).__name__
                 logger.warning(
                     "[market-depth] connection interrupted error_type=%s",
                     type(exc).__name__,
@@ -807,6 +828,7 @@ class ProjectXMarketDepthSession:
                     message="Market depth connection interrupted.",
                 )
             finally:
+                self._connected_since = None
                 if active_websocket is not None and active_generation is not None:
                     await self._deactivate_connection(
                         active_websocket,
@@ -815,7 +837,21 @@ class ProjectXMarketDepthSession:
 
             if not await self._has_active_contracts():
                 break
-            if active_generation is not None and self._healthy_connection_generation == active_generation:
+            uptime_seconds = (
+                None if connected_at is None
+                else asyncio.get_running_loop().time() - connected_at
+            )
+            delivered_data = (
+                active_generation is not None
+                and self._healthy_connection_generation == active_generation
+            )
+            stable = (
+                self._uptime_proves_health
+                and uptime_seconds is not None
+                and self._stable_connection_seconds > 0
+                and uptime_seconds >= self._stable_connection_seconds
+            )
+            if delivered_data or stable:
                 backoff_seconds = self._reconnect_base_seconds
                 failures_without_depth = 0
             else:
@@ -825,6 +861,19 @@ class ProjectXMarketDepthSession:
                 # failure streak, while retaining backoff during provider outages.
                 if failures_without_depth == 3 and token is not None:
                     await asyncio.to_thread(self._client.invalidate_access_token, token)
+            # One structured line per upstream drop: distinguishes provider
+            # interruptions (and their retry cost) from browser/backend gaps.
+            logger.warning(
+                "%s",
+                json.dumps({
+                    "event": "projectx_feed_reconnect",
+                    "stream_kind": self._stream_kind,
+                    "reason": interruption or "unknown",
+                    "uptime_seconds": None if uptime_seconds is None else round(uptime_seconds, 1),
+                    "delivered_data": bool(delivered_data),
+                    "retry_in_seconds": round(backoff_seconds, 2),
+                }, sort_keys=True),
+            )
             if connected_once:
                 await self._clear_books_for_reconnect()
             await asyncio.sleep(backoff_seconds)
@@ -853,7 +902,7 @@ class ProjectXMarketDepthSession:
             diagnostic_event(logger, "projectx_feed_state",
                              level=logging.WARNING if payload["state"] in {"reconnecting", "unavailable", "disconnected"} else logging.INFO,
                              user_id=self._observation_user_id, state=payload["state"],
-                             stream_kind="depth" if self._subscribe_target == "SubscribeContractMarketDepth" else "price")
+                             stream_kind=self._stream_kind)
         channel.last_state = payload
         self._broadcast_to_channel_locked(channel, {"event": "state", "data": payload})
 
@@ -904,8 +953,14 @@ class ProjectXMarketDepthSession:
                     await websocket.send('{"type":6}' + _SIGNALR_RECORD_SEPARATOR)
 
     async def _run_connected(self, websocket: Any, generation: int) -> None:
+        loop = asyncio.get_running_loop()
+
         async def receive() -> None:
             async for raw_message in websocket:
+                # Any provider frame, including SignalR pings, proves the
+                # upstream socket is alive even when no trades print.
+                if self._websocket is websocket and self._connection_generation == generation:
+                    self._last_upstream_frame_at = loop.time()
                 for frame in _decode_signalr_frames(raw_message):
                     await self.process_signalr_frame(frame, connection_generation=generation)
 
@@ -1216,6 +1271,37 @@ class ProjectXMarketDepthSession:
     async def _has_active_contracts(self) -> bool:
         async with self._lock:
             return bool(self._channels) and not self._closed
+
+    def feed_status(self, contract_id: str) -> dict[str, Any]:
+        """Point-in-time upstream health for one viewer heartbeat.
+
+        Reads loop-owned fields without awaiting, so it is consistent within
+        the event loop. It reports observations only; it never fabricates data.
+        """
+        normalized_contract_id = _normalize_contract_id(contract_id)
+        channel = self._channels.get(normalized_contract_id)
+        last_state = channel.last_state if channel is not None else None
+        state = (
+            str(last_state.get("state"))
+            if isinstance(last_state, dict) and last_state.get("state")
+            else self._state_for_market(normalized_contract_id, self._connection_state)["state"]
+        )
+        now = asyncio.get_running_loop().time()
+        upstream_idle_ms = (
+            None if self._connected_since is None or self._last_upstream_frame_at is None
+            else max(0, round((now - self._last_upstream_frame_at) * 1000))
+        )
+        connected_for_ms = (
+            None if self._connected_since is None
+            else max(0, round((now - self._connected_since) * 1000))
+        )
+        return {
+            "contract_id": normalized_contract_id,
+            "server_time": datetime.now(timezone.utc).isoformat(),
+            "state": state,
+            "upstream_idle_ms": upstream_idle_ms,
+            "connected_for_ms": connected_for_ms,
+        }
 
 
 @dataclass

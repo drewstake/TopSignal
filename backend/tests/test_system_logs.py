@@ -81,3 +81,16 @@ def test_feed_state_logging_deduplicates_and_scopes_transitions(caplog):
     events = [json.loads(record.getMessage()) for record in caplog.records if "projectx_feed_state" in record.getMessage()]
     assert [event["state"] for event in events] == ["reconnecting", "connected"]
     assert all(event["user_id"] == "owner" and event["stream_kind"] == "depth" for event in events)
+
+
+def test_feed_history_labels_each_hub_kind(tmp_path, monkeypatch):
+    path = tmp_path / "bot-diagnostics.jsonl"
+    monkeypatch.setattr(logs, "diagnostic_path", lambda: path)
+    rows = [dict(timestamp=datetime(2026, 11, 11, 19, minute, tzinfo=timezone.utc).isoformat(), user_id="owner",
+                 event="projectx_feed_state", state="reconnecting", stream_kind=kind)
+            for minute, kind in ((0, "depth"), (1, "price"), (2, "trades"))]
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    monkeypatch.setattr(logs, "datetime", type("Clock", (datetime,), {
+        "now": classmethod(lambda cls, tz=None: datetime(2026, 11, 11, 19, 30, tzinfo=timezone.utc))}))
+    sources = [row["source"] for row in logs.read_system_logs(user_id="owner")["entries"]]
+    assert sorted(sources) == ["Market quotes", "Order book", "Trade prints"]
