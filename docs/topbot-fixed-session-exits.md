@@ -1,4 +1,14 @@
-# Fixed exits for one TopBot session
+# Fixed exits for TopBot
+
+Set `strategy_params.exit_mode` to `fixed` for a persistent 25-point stop loss
+and 25-point take profit on new entries. The preference is account-scoped and
+survives Stop / Start, contract rolls, worker restarts and trading-day rollover.
+The strategy panel displays fixed exits without an expiration date. Other
+accounts and configs without this preference retain the `trailing` default.
+Changing it does not enable a bot or alter an existing trade's saved exit plan.
+
+The existing `fixed_bracket_session` override remains supported when the base
+mode is trailing. Persistent fixed mode takes precedence over that dated override.
 
 The DOM strategy accepts `strategy_params.fixed_bracket_session` as a canonical
 `YYYY-MM-DD` trading date. When it matches the current New York trading session,
@@ -17,10 +27,10 @@ plus/minus 25 points. The worker never trails these stops. Missing or mismatched
 protection uses the existing verified, fenced flatten/reconciliation path.
 Position/session management and fill statistics continue as before.
 
-The existing daily loss limit, +$400 daily profit target and session cutoff
+The existing daily loss limit, +$500 daily profit target and session cutoff
 remain effective and can close a position before its fixed stop or target.
 The retired +$200-to-$0 break-even profit stop remains disabled.
 
-The strategy panel shows whether the override applies to the server-reported
-current trading session. No migration, historical-data import, retention change,
+For a dated override, the strategy panel checks the server-reported current
+trading session. No migration, historical-data import, retention change,
 or new market-data persistence is required.

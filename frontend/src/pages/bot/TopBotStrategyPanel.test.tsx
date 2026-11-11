@@ -30,6 +30,17 @@ it("shows the saved entry-limit preference", async () => {
   expect(screen.getByText(/Daily entry-count limit disabled/)).toBeTruthy();
   await waitFor(() => expect(screen.getByText("$23.56")).toBeTruthy());
 });
+it.each([null, "2026-12-01"])("shows persistent fixed exits regardless of session availability (%s)", async day => {
+  render(<TopBotStrategyPanel accountId={123}
+    bot={{ id: 39, strategy_params: { exit_mode: "fixed", fixed_bracket_session: "2026-11-04" } } as BotConfig}
+    activity={day ? { runs: [], profit_guard: { trading_day: day } } as unknown as BotActivity : null}
+    demoMode={false} onChanged={() => {}} />);
+  expect(screen.getByText(/Fixed stop 25 pts · Take-profit 25 pts · No trailing/)).toBeTruthy();
+  expect(screen.getByText(/Fixed exits stay selected across sessions and restarts/)).toBeTruthy();
+  expect(screen.queryByText(/Trailing exits resume/)).toBeNull();
+  expect(screen.queryByText(/Session 2026-11-04 only/)).toBeNull();
+  await waitFor(() => expect(screen.getByText("$23.56")).toBeTruthy());
+});
 it("starts broker practice routing for the selected account, not dry run", async () => {
   const start = vi.spyOn(botsApi, "startTopBot").mockResolvedValue({} as never);
   const changed = vi.fn();

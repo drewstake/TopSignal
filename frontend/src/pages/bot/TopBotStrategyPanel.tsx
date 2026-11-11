@@ -34,7 +34,8 @@ export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChan
   const visible = usePageVisibility();
   const running = Boolean(bot?.enabled && activity?.runs.some(r => r.status === "running"));
   const fixedSession = bot?.strategy_params?.fixed_bracket_session;
-  const fixed = Boolean(fixedSession && activity?.profit_guard?.trading_day === fixedSession);
+  const persistentFixed = bot?.strategy_params?.exit_mode === "fixed";
+  const fixed = persistentFixed || Boolean(fixedSession && activity?.profit_guard?.trading_day === fixedSession);
   useEffect(() => {
     if (accountId == null || demoMode || !visible) return;
     const controller = new AbortController();
@@ -68,9 +69,9 @@ export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChan
       <p className="topbot-muted">Up to 100 available levels per side · 10% imbalance for 30s · Bid-heavy → short · Ask-heavy → long</p>
     </div><button className="topbot-run-button" disabled={busy || accountId == null || demoMode}
       onClick={() => void act()}>{busy ? "Updating…" : running ? "Stop new entries" : "Start practice bot"}</button></div>
-    <p className="topbot-muted">1 MNQ · {fixed ? `Fixed stop 25 pts · Take-profit 25 pts · No trailing · Session ${fixedSession} only` : "Initial stop 25 pts · Trail 25 pts after +25 · No fixed trade target"} · All trading sessions, including overnight · Daily loss limit ${bot?.max_daily_loss ?? 500} · {bot?.strategy_params?.daily_entry_limit_enabled === false ? "Daily entry-count limit disabled" : `Up to ${bot?.max_trades_per_day ?? 4} entries/day`}</p>
+    <p className="topbot-muted">1 MNQ · {fixed ? `Fixed stop 25 pts · Take-profit 25 pts · No trailing${persistentFixed ? "" : ` · Session ${fixedSession} only`}` : "Initial stop 25 pts · Trail 25 pts after +25 · No fixed trade target"} · All trading sessions, including overnight · Daily loss limit ${bot?.max_daily_loss ?? 500} · {bot?.strategy_params?.daily_entry_limit_enabled === false ? "Daily entry-count limit disabled" : `Up to ${bot?.max_trades_per_day ?? 4} entries/day`}</p>
     <p className="topbot-muted">Daily profit target +$500 · Daily loss stop −$500 · Either threshold closes the TopBot position and pauses entries until the next trading session. Includes unrealized P&amp;L. Resets at 18:00 New York.</p>
-    {fixed && <p className="topbot-muted">Applies to new entries. Trailing exits resume for new entries next session; open trades keep their saved exit settings.</p>}
+    {fixed && <p className="topbot-muted">{persistentFixed ? "Fixed exits stay selected across sessions and restarts. Open trades keep their saved exit settings." : "Applies to new entries. Trailing exits resume for new entries next session; open trades keep their saved exit settings."}</p>}
     <p className="topbot-muted">Entries pause at the daily flatten cutoff (normally 16:08 New York, earlier on early closes) until the next session opens.</p>
     {stats?.depth && <p className="topbot-muted">Entry check: {stats.depth.ready
       ? `${stats.depth.bid_total} bid / ${stats.depth.ask_total} ask · ${((stats.depth.imbalance ?? 0) * 100).toFixed(1)}% imbalance · ${(stats.depth.persistence_seconds ?? 0).toFixed(0)}s sustained`

@@ -8,7 +8,8 @@ MESSAGE = "TopBot has no strategy configured. Define your strategy before starti
 DEFAULTS = {"revision": REVISION, "imbalance_threshold": 0.10, "persistence_seconds": 30,
             "depth_levels": 100, "initial_stop_points": 25, "trail_activation_points": 25,
             "trail_distance_points": 25, "practice_auto_resume": False,
-            "daily_entry_limit_enabled": True, "fixed_bracket_session": None}
+            "daily_entry_limit_enabled": True, "fixed_bracket_session": None,
+            "exit_mode": "trailing"}
 
 
 def selected(params):
@@ -26,6 +27,10 @@ def normalize_params(params=None):
     if params and not selected(params):
         return {"revision": "custom_unconfigured"}
     result = dict(DEFAULTS)
+    mode = (params or {}).get("exit_mode", "trailing")
+    if mode not in ("trailing", "fixed"):
+        raise ValueError("Invalid exit_mode; expected trailing or fixed")
+    result["exit_mode"] = mode
     session = (params or {}).get("fixed_bracket_session")
     if session is not None:
         if not isinstance(session, str) or date.fromisoformat(session).isoformat() != session:
@@ -48,8 +53,10 @@ def normalize_params(params=None):
 
 
 def exit_mode(params, now=None):
-    """A session override affects new entries only; saved trade plans never expire."""
+    """Resolve new-entry policy; each open trade keeps its saved exit plan."""
     from .trading_day import trading_day_key
+    if (params or {}).get("exit_mode") == "fixed":
+        return "fixed"
     session = (params or {}).get("fixed_bracket_session")
     return "fixed" if session and session == trading_day_key(now or datetime.now(timezone.utc)) else "trailing"
 

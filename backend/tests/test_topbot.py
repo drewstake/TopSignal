@@ -82,6 +82,20 @@ def test_account_and_user_isolation(db):
     assert first.execution_mode == "dry_run"
 
 
+def test_fixed_exit_preference_survives_stop_start_and_contract_roll_without_crossing_accounts(db):
+    config = prepare_topbot(db, user_id=USER, account_id=101, dry_run=True, contract_id="CON.F.US.MNQ.U26")
+    config.strategy_params = {**config.strategy_params, "exit_mode": "fixed"}
+    db.commit()
+    updated = prepare_topbot(db, user_id=USER, account_id=101, dry_run=True, contract_id="CON.F.US.MNQ.Z26")
+    db.commit()
+    db.expire_all()
+    assert db.get(BotConfig, updated.id).strategy_params["exit_mode"] == "fixed"
+    other = prepare_topbot(db, user_id=USER, account_id=102, dry_run=True, contract_id="CON.F.US.MNQ.Z26")
+    assert other.strategy_params["exit_mode"] == "trailing"
+    assert updated.order_size == updated.max_contracts == 1
+    assert updated.max_daily_loss == 500
+
+
 @pytest.mark.parametrize("dry_run", [True, False])
 def test_saved_bot_cannot_restart_even_with_old_strategy_params(db, dry_run):
     from app.services.bot_service import start_bot_run

@@ -26,10 +26,23 @@ def test_override_only_applies_to_selected_new_york_trading_session(at, expected
     assert strategy.exit_mode(params, datetime.fromisoformat(at)) == expected
 
 
+@pytest.mark.parametrize("value", [None, True, 1, "FIXED", "unknown", ""])
+def test_persistent_exit_policy_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="Invalid exit_mode"):
+        strategy.normalize_params({**strategy.DEFAULTS, "exit_mode": value})
+
+
+@pytest.mark.parametrize("at", ["2026-11-04T22:59:59+00:00", "2026-11-04T23:00:00+00:00", "2026-12-01T15:00:00+00:00"])
+def test_persistent_fixed_policy_survives_session_rollover(at):
+    params = strategy.normalize_params({**strategy.DEFAULTS, "exit_mode": "fixed", "fixed_bracket_session": "2026-11-04"})
+    assert strategy.exit_mode(params, datetime.fromisoformat(at)) == "fixed"
+
+
+@pytest.mark.parametrize("policy", [{"fixed_bracket_session": "2026-11-04"}, {"exit_mode": "fixed"}])
 @pytest.mark.parametrize("imbalance,action", [(.2, "SELL"), (-.2, "BUY")])
-def test_fixed_signal_has_equal_25_point_stop_and_target(imbalance, action):
+def test_fixed_signal_has_equal_25_point_stop_and_target(imbalance, action, policy):
     now = datetime(2026, 11, 4, 15, tzinfo=timezone.utc)
-    signal = strategy.evaluate([], strategy_params={**strategy.DEFAULTS, "fixed_bracket_session": "2026-11-04"},
+    signal = strategy.evaluate([], strategy_params={**strategy.DEFAULTS, **policy},
                                observation=observation(now, imbalance), now=now)
     assert signal.action == action
     p = signal.raw_payload
@@ -40,7 +53,7 @@ def test_fixed_signal_has_equal_25_point_stop_and_target(imbalance, action):
     assert p["exit_mode"] == "fixed"
 
 
-@pytest.mark.parametrize("dom_entry", ["fixed"], indirect=True)
+@pytest.mark.parametrize("dom_entry", ["fixed", "persistent_fixed"], indirect=True)
 def test_fixed_entry_routes_native_brackets_and_saves_exit_mode(dom_entry):
     result, client, _ = dom_entry
     call = client.place_order_calls[0]

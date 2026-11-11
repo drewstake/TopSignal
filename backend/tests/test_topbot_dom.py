@@ -157,6 +157,8 @@ def dom_entry(db_session, monkeypatch, open_exchange_session, request):
     if getattr(request, "param", None) == "fixed":
         from app.services.trading_day import trading_day_key
         config.strategy_params = {**config.strategy_params, "fixed_bracket_session": trading_day_key(now)}
+    elif getattr(request, "param", None) == "persistent_fixed":
+        config.strategy_params = {**config.strategy_params, "exit_mode": "fixed"}
     db_session.commit()
     client = RecordingClient()
     result = bot_service.start_bot_run(db_session,user_id=USER_A,bot_config_id=config.id,client=client,
