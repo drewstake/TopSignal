@@ -63,6 +63,24 @@ def test_successful_index_slice_does_not_hold_other_entries_in_capture(tmp_path,
     assert launched[-1][3]["entry_id"] == 2
 
 
+def test_resumable_slices_take_fair_turns_across_accounts_and_keep_oldest_entry_first(monkeypatch):
+    from app.services import topbot_study_worker as worker
+    monkeypatch.setattr(worker.jobs, "jobs", lambda *args: {})
+    monkeypatch.setattr(worker, "recording_pressure", lambda: None)
+    now = datetime.now(timezone.utc)
+    request = {"entryEvidence": {"signal": {"evidence": {"capture_id": "a"*32}}}}
+    # Account 1 has two older entries, followed by accounts 2 and 3.
+    candidates = [(now-timedelta(hours=5-i), "owner", account, CONTRACT, request, {"entry_id": i}, {})
+                  for i, account in ((1, 1), (2, 1), (3, 2), (4, 3))]
+    reader = worker.StudyRecorder(None, None)
+    launched = []
+    monkeypatch.setattr(reader, "launch", lambda *args: launched.append((args[1], args[3]["entry_id"])))
+    for _ in range(6):
+        # A slice returned index_progress, so its entry remains eligible.
+        reader._schedule(now, candidates)
+    assert launched == [(1, 1), (2, 3), (3, 4)]*2
+
+
 def test_real_offline_child_reads_verified_path_past_actual_exit(tmp_path):
     cap = Capture("owner", CONTRACT, root=tmp_path, free_floor=0)
     path = [(.1, 0), (.5, 25.25), (.8, 80), (2, 80), (3, 80), (4, 80), (5, 80), (5.3, 80), (5.7, 54), (6, 53)]

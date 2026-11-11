@@ -109,6 +109,8 @@ class StudyRecorder:
         self.pressure_seen = 0
         self.holds = {}  # (owner, entry) -> monotonic time; only if the job store cannot be written.
         self.enrolled = {}
+        self.scope_turns = {}
+        self.turn = 0
 
     def start(self):
         if os.getenv("TOPSIGNAL_BOT_WORKER_ENABLED", "false").lower() != "true": return
@@ -383,7 +385,14 @@ class StudyRecorder:
             HEALTH["pressure"] = {**pressure, "at": now.isoformat()}
             result["state"] = "paused_recording_pressure"
             return result
-        owner, account, contract, request, entry, enrollment = eligible[0]
+        # One resumable slice per account turn. A healthy but large historical
+        # capture must not consume every slice ahead of a newer active account.
+        scopes = {(c[0], c[1]) for c in eligible}
+        self.scope_turns = {k: v for k, v in self.scope_turns.items() if k in scopes}
+        owner, account, contract, request, entry, enrollment = min(
+            eligible, key=lambda c: self.scope_turns.get((c[0], c[1]), 0))
+        self.turn += 1
+        self.scope_turns[(owner, account)] = self.turn
         capture_id = _capture_id(request)
         if capture_id is None:
             from .topbot_study import simulate

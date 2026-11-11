@@ -175,6 +175,9 @@ starts; trying every entry from that file would repeat the same work and delay
 unrelated accounts. The shared hold is reconstructed from durable job state,
 expires with the recorded retry time, and never marks unattempted entries as
 failed. Successful checkpoint slices do not impose this hold.
+Eligible accounts take turns after each child finishes a replay or saves a
+checkpoint slice. Entries remain oldest-first within an account; a large older
+account's capture cannot monopolize every slice ahead of another account.
 
 Before replaying a later entry, the child extends an older checkpoint index
 through that entry in resumable slices. An existing checkpoint alone is not
