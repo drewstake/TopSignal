@@ -1247,6 +1247,7 @@ export interface BotAnalysis {
 }
 
 export interface BotStrategyParams {
+  exit_mode?: "fixed" | "trailing";
   imbalance_threshold?: number;
   persistence_seconds?: number;
   daily_entry_limit_enabled?: boolean;
