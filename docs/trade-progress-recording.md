@@ -1,9 +1,11 @@
 # Trade progress recording
 
-Deployed on peteamdpc November 11, 2026 as `20261111-trade-progress-77`
+Introduced on peteamdpc November 11, 2026 as `20261111-trade-progress-77`
 (`46afcd9`). One-second recording is enabled for practice account `29593203`;
 25 consecutive checks over two minutes confirmed healthy connections and
-advancing heartbeats after activation. The bot remains stopped.
+advancing heartbeats after activation. The subsequent
+[fixed-bracket deployment and start](audits/2026-11-11/fixed-brackets-deployment.md)
+preserved recording and started the practice bot with persistent 25-point SL/TP.
 See the [deployment record](audits/2026-11-11/trade-progress-deployment.md)
 for activation, validation and backup evidence. This implements
 [the recording proposal](trade-progress-recording-idea.md).
@@ -296,5 +298,6 @@ remain visible. Restoring does not recover observations that were never recorded
   and expanded position-event states. The narrow layout was corrected to preserve
   readable axes. Temporary preview files/server/tab were removed afterward.
 - No broker orders, strategy/risk parameters, retention or historical paths were
-  changed by this deployment. Bot run 17 was stopped normally while flat and
-  remains disarmed; progress recording operates independently of it.
+  changed by the initial recorder deployment. Bot run 17 was stopped normally
+  while flat. The later authorized fixed-bracket deployment started run 18;
+  progress recording operates independently of bot arm state.
