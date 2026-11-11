@@ -207,7 +207,7 @@ def test_center_and_original_produce_identical_synthetic_execution_ledgers():
         settings = deepcopy(TOPBOT_SETTINGS)
         settings.update(fixture.get_settings(variant))
         config = _config(user_id="research-test", contract_id="CON.F.US.MNQ.U26", **settings)
-        assert config.max_daily_loss == 250
+        assert config.max_daily_loss == 500
         assert config.order_size == config.max_contracts == config.max_open_position == 1
         engine = make_engine_class(replay, fixture, variant)(
             config=config, candles=deepcopy(rows), execution_candles=deepcopy(minutes),

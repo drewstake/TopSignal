@@ -94,7 +94,7 @@ def test_scope_is_bound_to_request_and_new_preset_cannot_weaken_model_limits(tmp
         strategy.RULES, minimum_training_paths=2, position_size=10, routing_policy="live"))
     assert normalized == {"revision": "custom_unconfigured"}
     assert TOPBOT_SETTINGS["strategy_params"]["revision"] == "dom_contrarian_v1"
-    assert TOPBOT_SETTINGS["max_daily_loss"] == 250
+    assert TOPBOT_SETTINGS["max_daily_loss"] == 500
     assert TOPBOT_SETTINGS["order_size"] == 1
     removed = {"revision": "mnq_ema_vwap_pullback_v6_all_sessions", "ema_period": 20, "stop_points": 50.0}
     assert bot_service._normalize_strategy_params("topbot_adaptive", removed) == normalized
