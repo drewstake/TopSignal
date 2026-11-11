@@ -32,6 +32,33 @@ it.each([true, false])("shows the server-resolved exit policy for new entries (f
   if (fixed) expect(screen.getByText(/Trailing exits resume for new entries next session/)).toBeTruthy();
   expect(screen.getByText("$23.56")).toBeTruthy();
 });
+it("keeps exactly one audit poller when the panel re-renders", async () => {
+  // Sibling children sharing one React key make React orphan the earlier one on
+  // re-render without running its effect cleanup, leaking a 15 s polling loop each time.
+  const props = { accountId: 123, bot: null, activity: null, demoMode: false };
+  const { rerender } = render(<TopBotStrategyPanel {...props} onChanged={() => {}} />);
+  await waitFor(() => expect(screen.getByText("$23.56")).toBeTruthy());
+  for (let i = 0; i < 5; i += 1) rerender(<TopBotStrategyPanel {...props} onChanged={() => {}} />);
+  await waitFor(() => expect(screen.getByText(/No audit events recorded yet/)).toBeTruthy());
+  expect(screen.getAllByRole("region", { name: "TopBot action audit" })).toHaveLength(1);
+  expect(botsApi.getTopBotAudit).toHaveBeenCalledTimes(1);
+  expect(botsApi.getTopBotResearchStatus).toHaveBeenCalledTimes(1);
+  expect(botsApi.getTopBotComparison).toHaveBeenCalledTimes(1);
+});
+it("stops all audit polling when a re-rendered panel unmounts", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const props = { accountId: 123, bot: null, activity: null, demoMode: false };
+    const { rerender, unmount } = render(<TopBotStrategyPanel {...props} onChanged={() => {}} />);
+    await waitFor(() => expect(screen.getByText("$23.56")).toBeTruthy());
+    for (let i = 0; i < 5; i += 1) rerender(<TopBotStrategyPanel {...props} onChanged={() => {}} />);
+    await waitFor(() => expect(screen.getAllByText(/No audit events recorded yet/).length).toBeGreaterThan(0));
+    const before = vi.mocked(botsApi.getTopBotAudit).mock.calls.length;
+    unmount();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(vi.mocked(botsApi.getTopBotAudit).mock.calls.length - before).toBe(0);
+  } finally { vi.useRealTimers(); }
+});
 it("shows the saved entry-limit preference", async () => {
   render(<TopBotStrategyPanel accountId={123} bot={{ id: 39, enabled: true, strategy_params: { daily_entry_limit_enabled: false } } as BotConfig}
     activity={null} demoMode={false} onChanged={() => {}} />);
