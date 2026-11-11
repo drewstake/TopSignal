@@ -16,7 +16,7 @@ import tarfile
 import time
 from uuid import uuid4
 
-from backup_market_cache import verify, checksum, filesystem_path
+from backup_market_cache import verify, checksum, filesystem_path, materialize
 from check_market_archive_restore import restore_check
 
 
@@ -39,7 +39,11 @@ def quote(value):
 
 
 def run(args, *, timeout=1200):
-    result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    # pythonw hides this launcher, but console children (SSH/SCP) need their
+    # own flag to avoid opening a terminal during scheduled backups.
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+    result = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                            creationflags=creationflags)
     if result.returncode:
         # Do not persist arbitrary command output or credential-bearing paths.
         raise RuntimeError('Backup subprocess failed: '+Path(args[0]).name)
@@ -71,7 +75,20 @@ def publish(config, status):
            "if(Test-Path -LiteralPath $p){[IO.File]::Replace($tmp,$p,$p+'.'+[guid]::NewGuid().ToString()+'.previous')}else{[IO.File]::Move($tmp,$p)}", timeout=45)
 
 
-def unpack_backup(archive_path, destination, *, max_bytes):
+def unique_bytes(root):
+    """Bytes on disk: a file hard-linked into several backups is counted once."""
+    seen, total = set(), 0
+    for path in filesystem_path(root).rglob('*'):
+        if path.is_file():
+            info = path.stat()
+            key = (info.st_dev, info.st_ino) if info.st_ino else path
+            if key not in seen:
+                seen.add(key)
+                total += info.st_size
+    return total
+
+
+def unpack_backup(archive_path, destination, *, max_bytes, previous=None):
     """Extract regular snapshot files only, with explicit path/size bounds."""
     destination = filesystem_path(destination)
     if destination.exists():
@@ -97,17 +114,20 @@ def unpack_backup(archive_path, destination, *, max_bytes):
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.extractfile(member) as source, target.open('xb') as output:
                 shutil.copyfileobj(source, output)
+    # Members unchanged since the previous verified backup are restored from it,
+    # then every file, restored or received, is checked against the manifest.
+    materialize(destination, previous)
     return verify(destination)
 
 
-def attempt(config, *, previous=None, force_restore=False):
+def attempt(config, *, previous=None, force_restore=False, progress=lambda stage: None):
     root = Path(config['destination']).resolve()
     if not root.is_dir():
         raise OSError('Authorized backup destination unavailable')
     previous = previous or {}
     identity = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+uuid4().hex[:8]
     limit = int(config.get('capacity_limit_bytes', 250_000_000_000))
-    used = sum(p.stat().st_size for p in filesystem_path(root).rglob('*') if p.is_file())
+    used = unique_bytes(root)
     if used >= limit or shutil.disk_usage(root).free < 5_000_000_000:
         raise OSError('Off-device capacity budget reached; no automatic deletion')
     stage = config['remote_staging'].rstrip('/')+'/'+identity
@@ -120,29 +140,49 @@ if(($used+2*$bytes) -gt {limit}){{throw 'Staging capacity budget reached'}}
 if((Get-Volume -DriveLetter D).SizeRemaining -lt (2*$bytes+5GB)){{throw 'Staging free space floor'}}
 $bytes | ConvertTo-Json -Compress
 '''
-    estimated = int(json.loads(remote(config, script, timeout=60)))
+    # Walking the whole cache took longer than the former 60-second limit.
+    progress('estimate')
+    estimated = int(json.loads(remote(config, script, timeout=900)))
     if used+estimated*3 > limit or shutil.disk_usage(root).free < estimated*3+5_000_000_000:
         raise OSError('Backup and restore capacity insufficient')
-    remote(config, f"& {quote(config['remote_python'])} {quote(config['remote_helper'])} --source {quote(config['remote_source'])} --output {quote(stage)}; if($LASTEXITCODE -ne 0){{throw 'Snapshot failed'}}")
+    # An SSH timeout does not stop the remote snapshot. Never start a second one
+    # beside it: two full walks of the recording disk make both fail.
+    progress('overlap_check')
+    running = remote(config, "@(Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*backup_market_cache*' }).Count", timeout=120)
+    if int(running.strip() or 0):
+        raise RuntimeError('An earlier snapshot is still running on the host')
+    # Reuse unchanged members only relative to a backup that is verified here.
+    earlier = Path(previous.get('destination') or '') if previous.get('status') == 'verified' or previous.get('last_verified_at') else None
+    earlier = earlier if earlier and (earlier/'backup-manifest.json').is_file() and earlier.parent == root/'backups' else None
+    reuse = f" --previous {quote(config['remote_staging'].rstrip('/')+'/'+earlier.name)}" if earlier else ''
+    progress('snapshot')
+    remote(config, f"& {quote(config['remote_python'])} {quote(config['remote_helper'])} --source {quote(config['remote_source'])} --output {quote(stage)}{reuse} --receiver-verifies; if($LASTEXITCODE -ne 0){{throw 'Snapshot failed'}}")
     backups = root/'backups'
     backups.mkdir(exist_ok=True)
     destination = backups/identity
+    progress('pack')
     transport = json.loads(remote(config, f"& {quote(config['remote_python'])} {quote(config['remote_helper'])} --pack {quote(stage)} --output {quote(stage+'.tar')}; if($LASTEXITCODE -ne 0){{throw 'Packing failed'}}"))
     if transport['bytes'] > estimated:
         raise OSError('Snapshot grew beyond estimated transport budget')
     local_archive = backups/(identity+'.tar')
-    run(['scp', *ssh_options(config), config['ssh_host']+':'+stage+'.tar', str(local_archive)])
+    progress('transfer')
+    run(['scp', *ssh_options(config), config['ssh_host']+':'+stage+'.tar', str(local_archive)],
+        timeout=int(config.get('remote_timeout_seconds', 1200)))
     if local_archive.stat().st_size != transport['bytes'] or checksum(local_archive) != transport['sha256']:
         raise ValueError('Transport archive checksum mismatch')
-    manifest = unpack_backup(local_archive, destination, max_bytes=estimated)
+    progress('verify')
+    manifest = unpack_backup(local_archive, destination, max_bytes=estimated, previous=earlier)
     result = dict(previous, schema=1, last_attempt_at=utc(), last_verified_at=utc(), status='verified',
                   destination=str(destination), schedule=config.get('schedule'),
                   dependency='Development computer powered on, drews signed in, private SSH connected; no browser required',
                   verified_files=len(manifest['files']), verified_bytes=sum(f['bytes'] for f in manifest['files'].values()),
-                  last_failure=None)
+                  transferred_bytes=transport['bytes'],
+                  reused_files=sum(bool(f.get('reused')) for f in manifest['files'].values()),
+                  incremental_from=earlier.name if earlier else None, last_failure=None)
     last_restore = previous.get('last_restore_at')
     due = not last_restore or (datetime.now(timezone.utc)-datetime.fromisoformat(last_restore)).total_seconds() >= 7*86400
     if force_restore or due:
+        progress('restore_check')
         result['restore'] = restore_check(destination, root/'restore-checks'/identity)
         result['last_restore_at'] = utc()
     return result
@@ -157,12 +197,16 @@ def execute(config, *, force_restore=False, sleep=time.sleep):
     status = previous
     for number in range(1, 4):
         started = utc()
+        stage = ['start']
         try:
-            status = attempt(config, previous=status, force_restore=force_restore)
+            status = attempt(config, previous=status, force_restore=force_restore,
+                             progress=lambda name: stage.__setitem__(0, name))
             status['attempt'] = number
         except Exception as exc:
+            # The stage says which step failed without recording command output.
             status = dict(status, schema=1, status='failed', last_attempt_at=started, attempt=number,
-                          last_failure=dict(at=utc(), type=type(exc).__name__), schedule=config.get('schedule'))
+                          last_failure=dict(at=utc(), type=type(exc).__name__, stage=stage[0]),
+                          schedule=config.get('schedule'))
         atomic_json(state_path, status)
         atomic_json(state_path.parent/'backup-receipts'/(datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+uuid4().hex[:8]+'.json'), status)
         for publish_attempt in range(3):

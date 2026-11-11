@@ -307,6 +307,32 @@ subprocess timeouts also bound outages. If publishing to the host fails, the loc
 status records it and the host's last success ages visibly. Failed staging copies
 are retained. No backup or original evidence is automatically deleted.
 
+### Incremental snapshots (November 10, 2026)
+
+Full daily copies stopped fitting the job's limits once the cache passed about
+9 GB: every file was read four times on the recording disk at background I/O
+priority, and no attempt after November 4 finished. Snapshots are now
+incremental relative to the last backup that was verified off-device:
+
+- A sealed depth segment whose manifest hash matches the previous snapshot, an
+  ordinary file with the same size and modification time, and a worker capture
+  whose database and WAL state are unchanged are listed in the new manifest
+  with their recorded hash and marked `reused`. They are not read or copied on
+  the host. Other SQLite files are live stores and are always snapshotted.
+- The transport archive holds only the files that were copied. The development
+  PC restores each reused file from its previous verified backup (hard link,
+  or a copy), then checks **every** file against the manifest and runs the
+  SQLite integrity checks. Each dated folder is still a complete backup. A
+  missing or altered previous file fails the run.
+- A reused file is not re-read on the host. The job protects the off-device
+  copy; it does not detect later corruption of the source disk.
+- The per-database snapshot limit grows with database and WAL size (15 minutes
+  plus one second per MiB), the size estimate has 15 minutes instead of 60
+  seconds, and a new run refuses to start while an earlier snapshot is still
+  running on the host. A failed attempt records which stage failed, and the
+  host leaves the reason in `<staging>.failure.json`.
+- Capacity counts a hard-linked file once.
+
 Both source staging and off-device copies have a 250 GB budget and 5 GB free-space
 reserve; reaching it reports failure rather than deleting files. Daily full copies
 of a growing ~3 GB/year archive could use roughly 0.5 TB during the first year

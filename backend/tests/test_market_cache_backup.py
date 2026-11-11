@@ -198,3 +198,221 @@ def test_transport_rejects_unsafe_members_before_writing(tmp_path,monkeypatch,na
     destination=tmp_path/'destination'
     with pytest.raises(ValueError):unpack_backup(archive,destination,max_bytes=limit)
     assert not destination.exists()
+
+
+# --- incremental snapshots -----------------------------------------------------
+
+CONTRACT = 'CON.F.US.MNQ.Z26'
+
+
+def incremental_tools(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1]/'tools'))
+    import backup_market_cache as tool
+    import run_market_archive_backup as runner
+    return tool, runner
+
+
+def seal_segment(source, payload):
+    from depth_recording import SegmentRecorder
+    recorder = SegmentRecorder(source/'depth-recordings-v1', 'a'*64)
+    recorder.append(CONTRACT, 'connect', payload)
+    recorder.close()
+    return next(recorder.path.glob('*.ndjson.gz'))
+
+
+def cache(tmp_path):
+    source = tmp_path/'source'
+    segment = seal_segment(source, {'connection': 1})
+    (source/'versions').mkdir()
+    (source/'versions'/'model.json').write_text('{"frozen":true}')
+    capture = source/'topbot-worker-evidence-v1'/'owner'/'closed.sqlite3'
+    capture.parent.mkdir(parents=True)
+    for path in (capture, source/'live.sqlite3'):
+        with closing(sqlite3.connect(path)) as db:
+            db.execute('CREATE TABLE rows(id INTEGER PRIMARY KEY)')
+            db.execute('INSERT INTO rows VALUES(1)'); db.commit()
+    return source, segment, capture
+
+
+def test_incremental_snapshot_ships_only_changes_and_restores_a_fully_verified_copy(tmp_path, monkeypatch):
+    tool, runner = incremental_tools(monkeypatch)
+    source, old_segment, capture = cache(tmp_path)
+    first = tmp_path/'staging'/'first'
+    tool.backup(source, first)
+    tool.pack(first, tmp_path/'first.tar')
+    offsite_first = tmp_path/'offsite'/'first'
+    runner.unpack_backup(tmp_path/'first.tar', offsite_first, max_bytes=10**7)
+
+    new_segment = seal_segment(source, {'connection': 2})
+    with closing(sqlite3.connect(source/'live.sqlite3')) as db:
+        db.execute('INSERT INTO rows VALUES(2)'); db.commit()
+    original = tool.checksum
+    reread = []
+
+    def recording_checksum(path):
+        reread.append(str(path).replace(chr(92), '/'))
+        return original(path)
+
+    monkeypatch.setattr(tool, 'checksum', recording_checksum)
+    second = tmp_path/'staging'/'second'
+    tool.backup(source, second, previous=first)
+    monkeypatch.setattr(tool, 'checksum', original)
+    # Unchanged evidence is not read again from the recording disk.
+    from_source = [name for name in reread if '/source/' in name]
+    assert any(new_segment.parent.name in name for name in from_source)  # the check is not vacuous
+    assert not any((old_segment.parent.name in name and name.endswith('.ndjson.gz'))
+                   or name.endswith(('model.json', 'closed.sqlite3')) for name in from_source)
+    manifest = json.loads((second/'backup-manifest.json').read_text())
+    relative = lambda path: path.relative_to(source).as_posix()
+    files = manifest['files']
+    assert files[relative(old_segment)]['reused'] and files['versions/model.json']['reused']
+    assert files['topbot-worker-evidence-v1/owner/closed.sqlite3']['reused']
+    assert not files['live.sqlite3'].get('reused') and not files[relative(new_segment)].get('reused')
+    assert manifest['incremental']['previous'] == 'first' and manifest['incremental']['reused_files'] == 4
+    assert not (second/relative(old_segment)).exists() and (second/relative(new_segment)).exists()
+
+    receipt = tool.pack(second, tmp_path/'second.tar')
+    assert receipt['reused'] == 4
+    with tarfile.open(tmp_path/'second.tar') as archive:
+        assert relative(old_segment) not in archive.getnames() and relative(new_segment) in archive.getnames()
+    offsite_second = tmp_path/'offsite'/'second'
+    verified = runner.unpack_backup(tmp_path/'second.tar', offsite_second, max_bytes=10**7, previous=offsite_first)
+    assert set(verified['files']) == set(files)
+    assert all((offsite_second/name).is_file() for name in files)
+    assert (offsite_second/relative(old_segment)).read_bytes() == old_segment.read_bytes()
+    tool.verify(offsite_second)  # strict: every member present and matching
+    with closing(sqlite3.connect(offsite_second/'live.sqlite3')) as db:
+        assert db.execute('SELECT count(*) FROM rows').fetchone()[0] == 2
+    # A third, chained snapshot still restores completely from the latest verified copy.
+    third = tmp_path/'staging'/'third'
+    tool.backup(source, third, previous=second)
+    tool.pack(third, tmp_path/'third.tar')
+    runner.unpack_backup(tmp_path/'third.tar', tmp_path/'offsite'/'third', max_bytes=10**7, previous=offsite_second)
+    assert (tmp_path/'offsite'/'third'/relative(old_segment)).read_bytes() == old_segment.read_bytes()
+    assert old_segment.exists()  # nothing removed from the source
+
+
+def test_changed_capture_is_snapshotted_again(tmp_path, monkeypatch):
+    tool, _ = incremental_tools(monkeypatch)
+    source, _, capture = cache(tmp_path)
+    first = tmp_path/'first'
+    tool.backup(source, first)
+    with closing(sqlite3.connect(capture)) as db:
+        db.execute('INSERT INTO rows VALUES(2)'); db.commit()
+    second = tmp_path/'second'
+    tool.backup(source, second, previous=first)
+    entry = json.loads((second/'backup-manifest.json').read_text())['files']['topbot-worker-evidence-v1/owner/closed.sqlite3']
+    assert not entry.get('reused')
+    with closing(sqlite3.connect(second/'topbot-worker-evidence-v1/owner/closed.sqlite3')) as db:
+        assert db.execute('SELECT count(*) FROM rows').fetchone()[0] == 2
+
+
+def test_incremental_restore_refuses_a_missing_or_altered_previous_backup(tmp_path, monkeypatch):
+    import shutil
+    tool, runner = incremental_tools(monkeypatch)
+    source, old_segment, _ = cache(tmp_path)
+    first, second = tmp_path/'first', tmp_path/'second'
+    tool.backup(source, first)
+    tool.backup(source, second, previous=first)
+    tool.pack(second, tmp_path/'second.tar')
+    with pytest.raises(ValueError, match='previous verified backup'):
+        runner.unpack_backup(tmp_path/'second.tar', tmp_path/'no-previous', max_bytes=10**7)
+    altered = tmp_path/'altered'
+    shutil.copytree(first, altered)
+    (altered/old_segment.relative_to(source)).write_bytes(b'not the recorded segment')
+    with pytest.raises(ValueError, match='checksum mismatch'):
+        runner.unpack_backup(tmp_path/'second.tar', tmp_path/'from-altered', max_bytes=10**7, previous=altered)
+
+
+def test_snapshot_without_a_previous_manifest_is_a_full_copy(tmp_path, monkeypatch):
+    tool, _ = incremental_tools(monkeypatch)
+    source, _, _ = cache(tmp_path)
+    output = tmp_path/'full'
+    tool.backup(source, output, previous=tmp_path/'absent')
+    manifest = json.loads((output/'backup-manifest.json').read_text())
+    assert manifest['incremental']['reused_files'] == 0 and manifest['incremental']['previous'] is None
+    tool.verify(output)
+
+
+def test_snapshot_deadline_grows_with_database_size(monkeypatch):
+    tool, _ = incremental_tools(monkeypatch)
+    assert tool.snapshot_deadline(0) == 900
+    assert tool.snapshot_deadline(2_792_503_072) > 3500  # the capture that stopped every attempt
+
+
+def test_failed_snapshot_leaves_its_reason_beside_the_staging_directory(tmp_path):
+    import subprocess, sys
+    source = tmp_path/'source'; source.mkdir()
+    (source/'file.txt').write_text('x')
+    output = tmp_path/'staging'/'attempt'
+    output.mkdir(parents=True)  # already exists: the snapshot must refuse it
+    completed = subprocess.run([sys.executable, '-B', str(Path(__file__).parents[1]/'tools/backup_market_cache.py'),
+                                '--source', str(source), '--output', str(output)], capture_output=True, text=True, timeout=30)
+    assert completed.returncode != 0
+    receipt = json.loads((tmp_path/'staging'/'attempt.failure.json').read_text())
+    assert receipt['type'] == 'FileExistsError' and receipt['message'] is None
+
+
+def test_capacity_counts_hard_linked_members_once(tmp_path, monkeypatch):
+    import os
+    _, runner = incremental_tools(monkeypatch)
+    (tmp_path/'a').mkdir(); (tmp_path/'b').mkdir()
+    (tmp_path/'a'/'segment').write_bytes(b'x'*1000)
+    try:
+        os.link(tmp_path/'a'/'segment', tmp_path/'b'/'segment')
+    except OSError:
+        pytest.skip('hard links unavailable')
+    assert runner.unique_bytes(tmp_path) == 1000
+
+
+def runner_config(tmp_path, destination):
+    return dict(destination=str(destination), state_file=str(tmp_path/'state.json'), remote_source='D:/s',
+                remote_staging='D:/stage', remote_python='py', remote_helper='helper.py', ssh_host='h', ssh_key='k',
+                remote_receipt='D:/r.json')
+
+
+def test_runner_refuses_to_overlap_a_running_snapshot_and_records_the_stage(tmp_path, monkeypatch):
+    _, runner = incremental_tools(monkeypatch)
+    destination = tmp_path/'offsite'; destination.mkdir()
+    calls = []
+
+    def remote(config, script, *, timeout=None):
+        calls.append((script, timeout))
+        if 'ConvertTo-Json' in script: return '1000'
+        if 'Get-CimInstance' in script: return '2'
+        return ''
+
+    monkeypatch.setattr(runner, 'remote', remote)
+    with pytest.raises(RuntimeError):
+        runner.execute(runner_config(tmp_path, destination), sleep=lambda seconds: None)
+    status = json.loads((tmp_path/'state.json').read_text())
+    assert status['last_failure']['stage'] == 'overlap_check' and status['last_failure']['type'] == 'RuntimeError'
+    assert calls[0][1] == 900  # the size estimate is no longer cut off after 60 seconds
+    assert not any('--source' in script for script, _ in calls)
+
+
+def test_runner_requests_reuse_only_against_its_own_verified_backup(tmp_path, monkeypatch):
+    _, runner = incremental_tools(monkeypatch)
+    destination = tmp_path/'offsite'
+    verified = destination/'backups'/'20261104T180605Z-a89f27f7'
+    verified.mkdir(parents=True)
+    (verified/'backup-manifest.json').write_text(json.dumps(dict(files={})))
+    scripts = []
+
+    def remote(config, script, *, timeout=None):
+        scripts.append(script)
+        if 'ConvertTo-Json' in script: return '1000'
+        if 'Get-CimInstance' in script: return '0'
+        if '--source' in script: raise RuntimeError('stop after the snapshot command')
+        return ''
+
+    monkeypatch.setattr(runner, 'remote', remote)
+    config = runner_config(tmp_path, destination)
+    previous = dict(status='failed', last_verified_at='2026-11-04T20:52:13+00:00', destination=str(verified))
+    with pytest.raises(RuntimeError, match='stop after'):
+        runner.attempt(config, previous=previous)
+    assert "--previous 'D:/stage/20261104T180605Z-a89f27f7'" in scripts[-1]
+    scripts.clear()
+    with pytest.raises(RuntimeError, match='stop after'):
+        runner.attempt(config, previous=dict(previous, destination=str(tmp_path/'elsewhere')))
+    assert '--previous' not in scripts[-1]
