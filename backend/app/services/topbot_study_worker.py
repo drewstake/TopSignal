@@ -49,6 +49,13 @@ def _now():
     return datetime.now(timezone.utc)
 
 
+def _capture_id(request):
+    evidence = request.get("entryEvidence") or {}
+    ref = (evidence.get("pre_submit") or evidence.get("signal") or {}).get("evidence") or {}
+    value = ref.get("capture_id", "")
+    return value if isinstance(value, str) and len(value) == 32 and all(c in "0123456789abcdef" for c in value) else None
+
+
 def backoff(consecutive_failures):
     return min(MAX_RETRY_SECONDS, RETRY_SECONDS*2**min(max(consecutive_failures, 1)-1, 16))
 
@@ -102,6 +109,8 @@ class StudyRecorder:
         self.pressure_seen = 0
         self.holds = {}  # (owner, entry) -> monotonic time; only if the job store cannot be written.
         self.enrolled = {}
+        self.scope_turns = {}
+        self.turn = 0
 
     def start(self):
         if os.getenv("TOPSIGNAL_BOT_WORKER_ENABLED", "false").lower() != "true": return
@@ -341,6 +350,18 @@ class StudyRecorder:
         states = {}
         for owner in {c[1] for c in candidates}:
             states.update({(owner,)+k: v for k, v in jobs.jobs(owner).items()})
+        # Entries share physical recordings. Retrying a different entry from a
+        # stalled capture immediately repeats the same IO and can keep every
+        # other account waiting. Reuse durable failure cooldowns across that
+        # owner/capture, including after a worker restart. Successful index
+        # slices have no failure count and must remain immediately resumable.
+        cooling_captures = set()
+        for _, owner, account, _, request, entry, _ in candidates:
+            state = states.get((owner, account, entry["entry_id"], EXPERIMENT_ID), {})
+            capture = _capture_id(request)
+            due = state.get("next_attempt_at")
+            if capture and due and state.get("consecutive_failures") and utc(due) > now:
+                cooling_captures.add((owner, capture))
         for cutoff, owner, account, contract, request, entry, enrollment in sorted(candidates, key=lambda c: (c[0], c[5]["entry_id"])):
             state = states.get((owner, account, entry["entry_id"], EXPERIMENT_ID), {})
             if state.get("consecutive_failures"):
@@ -349,6 +370,8 @@ class StudyRecorder:
             if self.job and self.job["owner"] == owner and self.job["entry_id"] == entry["entry_id"]:
                 continue
             if due and utc(due) > now:
+                continue
+            if (owner, _capture_id(request)) in cooling_captures:
                 continue
             if self.holds.get((owner, entry["entry_id"]), 0) > monotonic():
                 continue
@@ -362,11 +385,16 @@ class StudyRecorder:
             HEALTH["pressure"] = {**pressure, "at": now.isoformat()}
             result["state"] = "paused_recording_pressure"
             return result
-        owner, account, contract, request, entry, enrollment = eligible[0]
-        evidence = request.get("entryEvidence") or {}
-        ref = (evidence.get("pre_submit") or evidence.get("signal") or {}).get("evidence") or {}
-        capture_id = ref.get("capture_id", "")
-        if len(capture_id) != 32 or any(c not in "0123456789abcdef" for c in capture_id):
+        # One resumable slice per account turn. A healthy but large historical
+        # capture must not consume every slice ahead of a newer active account.
+        scopes = {(c[0], c[1]) for c in eligible}
+        self.scope_turns = {k: v for k, v in self.scope_turns.items() if k in scopes}
+        owner, account, contract, request, entry, enrollment = min(
+            eligible, key=lambda c: self.scope_turns.get((c[0], c[1]), 0))
+        self.turn += 1
+        self.scope_turns[(owner, account)] = self.turn
+        capture_id = _capture_id(request)
+        if capture_id is None:
             from .topbot_study import simulate
             result_row = simulate(entry, [], gap_reason="missing_capture_reference")
             result_row.update(enrollment or {})
