@@ -8,6 +8,24 @@ does not stop the host. The host must remain powered on and connected.
 On the viewing PC, open <http://127.0.0.1:4173/bot> and sign in to TopSignal.
 Port 5174 is the development workspace, not the hosted dashboard.
 
+## November 12, 2026 sign-in repair
+
+Release `20261111-research-heatmap-82` served a frontend built without either
+Supabase configuration or `VITE_LOCAL_AUTH_ENABLED=true`. It skipped the sign-in
+gate and sent anonymous requests, producing `missing_bearer_token` on Expenses
+and other authenticated pages. Production builds without a Supabase URL now
+default to local sign-in; configured cloud builds retain their previous default.
+
+The deployed release's frontend was rebuilt with only this source change and
+published without restarting the backend. Existing assets remain available to
+open tabs. The prior index and `localAuth.ts` are retained at
+`C:\ProgramData\TopSignal\runtime\auth-repair-20261112-rollback`; that directory
+also records the applied file hashes. Restoring its index restores the prior UI.
+Verified the served HTML/JavaScript against the rebuilt files, trusted-device
+session issuance, session verification, and authenticated `GET /api/expenses`
+(all HTTP 200); the diagnostic session was then revoked. Refresh an open tab
+and choose **Continue on this device** if prompted.
+
 The per-user `TopSignal Host Connection` task starts at Windows sign-in and
 maintains the existing private SSH connection over Tailscale. It forwards only
 local loopback ports 4173 and 8000 to the corresponding host loopback ports.

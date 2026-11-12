@@ -3,7 +3,10 @@ import type { Session } from "@supabase/supabase-js";
 const KEY = "topsignal.local-session.v1";
 const MODE_KEY = "topsignal.auth-mode";
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
-export const localAuthConfigured = import.meta.env.VITE_LOCAL_AUTH_ENABLED === "true";
+// A production bundle without cloud configuration still requires a local
+// session. Otherwise AccountAccess skips sign-in and sends anonymous API calls.
+export const localAuthConfigured = import.meta.env.VITE_LOCAL_AUTH_ENABLED === "true"
+  || (import.meta.env.PROD && !import.meta.env.VITE_SUPABASE_URL?.trim());
 const listeners = new Set<(session: Session | null) => void>();
 let session: Session | null = null;
 let expiryTimer: ReturnType<typeof setTimeout> | undefined;

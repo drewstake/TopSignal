@@ -153,6 +153,12 @@ under `D:/TopSignal/data/databento`. The new cache contains MNQ 1m, 5m, 15m, 1h,
 remain on both PCs. No candle series were written to Supabase. This restores
 available history; it does not certify every provider gap has been filled.
 
+November 11, 2026: the Databento cache was retired on the host (backtesting is
+no longer used). Its data ended October 23, and the chart had already stopped
+joining it to live bars after November 6. The Bot chart no longer depends on
+it: every timeframe, including 1D, loads the bot contract's own history from
+ProjectX. History stitched across earlier contract months is no longer shown.
+
 ## Practice auto-resume deployment
 
 Release `20261031-auto-resume-26` enables the saved opt-in for practice account

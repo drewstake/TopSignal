@@ -61,27 +61,23 @@ const mount = () => render(<BotSignalChart bot={bot} authenticatedCacheScope="se
   lastEvaluation={null} refreshToken={0} />);
 const settle = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(5_000); }); };
 
-it("uses continuous history for daily and intraday monitor charts", async () => {
-  const history = vi.spyOn(api, "requestJson").mockResolvedValue({ timeframe: "1d", aggregate_size: 1, candles: [
-    { time: Date.parse("2025-09-01T22:00:00Z") / 1000, end_time: Date.parse("2025-09-02T22:00:00Z") / 1000,
-      open: 100, high: 110, low: 95, close: 105, volume: 1000, contract: "MNQU5", count: 1 },
-  ] });
+it("loads every monitor chart timeframe, including 1D, from ProjectX without the Databento archive", async () => {
+  const archive = vi.spyOn(api, "requestJson");
   const snapshot = vi.fn();
-  render(<BotSignalChart monitorOnly bot={bot} authenticatedCacheScope="continuous-test" activity={null}
+  render(<BotSignalChart monitorOnly bot={bot} authenticatedCacheScope="projectx-monitor" activity={null}
     lastEvaluation={null} refreshToken={0} onMarketData={snapshot} />);
   await settle();
-  vi.mocked(api.botsApi.getCandles).mockClear();
-  fireEvent.click(screen.getByRole("button", { name: "Show 1D candles" }));
-  await settle();
-  expect(history).toHaveBeenCalledWith("/api/market-data/databento/candles", expect.objectContaining({ query: expect.objectContaining({ timeframe: "1d" }) }));
-  expect(screen.getByLabelText("Continuous MNQ daily candlestick and volume chart")).not.toBeNull();
-  expect(api.botsApi.getCandles).not.toHaveBeenCalled();
-  expect(snapshot).toHaveBeenLastCalledWith(null);
-  fireEvent.click(screen.getByRole("button", { name: "Show 1H candles" }));
-  await settle();
-  expect(screen.getByRole("region", { name: "MNQ continuous / 1H candlestick and volume chart" })).not.toBeNull();
-  expect(history).toHaveBeenCalledWith("/api/market-data/databento/candles", expect.objectContaining({ query: expect.objectContaining({ timeframe: "5m" }) }));
-  expect(vi.mocked(api.botsApi.getCandles).mock.calls.every(([query]) => query.contractId === bot.contract_id && query.unit === "hour")).toBe(true);
+  expect(screen.getByRole("region", { name: "MNQU26 / 5m candlestick and volume chart" })).not.toBeNull();
+  for (const [label, unit] of [["1D", "day"], ["1H", "hour"]] as const) {
+    vi.mocked(api.botsApi.getCandles).mockClear();
+    fireEvent.click(screen.getByRole("button", { name: `Show ${label} candles` }));
+    await settle();
+    const calls = vi.mocked(api.botsApi.getCandles).mock.calls.map(([query]) => query);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((query) => query.contractId === bot.contract_id && query.unit === unit)).toBe(true);
+    expect(screen.getByRole("region", { name: `MNQU26 / ${label} chart / 5m bot candlestick and volume chart` })).not.toBeNull();
+  }
+  expect(archive.mock.calls.some(([path]) => String(path).includes("databento"))).toBe(false);
 });
 
 it("keeps the monitor chart free of drawing tools and redundant timeframe warming", async () => {
@@ -494,7 +490,7 @@ it("keeps a healthy stream live through quiet tape and slows the redundant REST 
   expect(polls() - pollsBefore).toBeLessThanOrEqual(4);
 });
 
-it("keeps the monitor chart's quote fallback working when the continuous archive is missing", async () => {
+it("keeps the monitor chart's quote fallback working with the Databento archive gone", async () => {
   vi.setSystemTime(new Date("2026-09-08T14:01:00Z"));
   vi.spyOn(api, "requestJson").mockRejectedValue(new api.ApiError("databento_chart_history_missing", 404, null, null));
   vi.mocked(api.botsApi.getCandles).mockImplementation(async (query) => query.includePartialBar ? [{
@@ -507,6 +503,7 @@ it("keeps the monitor chart's quote fallback working when the continuous archive
     query.includePartialBar && query.contractId === bot.contract_id)).toBe(true);
   expect(screen.getByText("Delayed / polling")).not.toBeNull();
   expect(screen.getByText("Delayed 20,010.50")).not.toBeNull();
+  expect(vi.mocked(api.requestJson).mock.calls.some(([path]) => String(path).includes("databento"))).toBe(false);
 });
 
 it("shows Reconnecting after a drop, keeps the last trade, and reports stale only after the grace", async () => {

@@ -9,6 +9,30 @@ describe("local authentication", () => {
   beforeEach(() => { vi.resetModules(); sessionStorage.clear(); vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
+  it("requires local sign-in in a production build without cloud configuration", async () => {
+    vi.stubEnv("PROD", true);
+    vi.stubEnv("VITE_LOCAL_AUTH_ENABLED", "false");
+    vi.stubEnv("VITE_SUPABASE_URL", "");
+    const local = await import("./localAuth");
+    expect(local.localAuthConfigured).toBe(true);
+    expect(local.usesLocalAuth()).toBe(true);
+    expect(await local.restoreLocalSession()).toBeNull();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(nextSession())));
+    vi.stubGlobal("fetch", fetchMock);
+    await local.continueOnThisDevice();
+    const auth = await import("./supabase");
+    expect(await auth.getAccessToken()).toBe(token);
+  });
+
+  it("preserves Google as the default when a production cloud project is configured", async () => {
+    vi.stubEnv("PROD", true);
+    vi.stubEnv("VITE_LOCAL_AUTH_ENABLED", "false");
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    const local = await import("./localAuth");
+    expect(local.localAuthConfigured).toBe(false);
+    expect(local.usesLocalAuth()).toBe(false);
+  });
+
   it("exchanges only the trusted connection for a session, then restores and logs out", async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(nextSession()))));
     vi.stubGlobal("fetch", fetchMock);

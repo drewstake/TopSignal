@@ -24,9 +24,6 @@ import {
 } from "lightweight-charts";
 
 import { Button } from "../../components/ui/Button";
-import { ContinuousMnqDailyChart } from "./ContinuousMnqDailyChart";
-import { loadContinuousMnqIntraday } from "./continuousMnqIntraday";
-import { sameMnqDelivery } from "./continuousMnqDaily";
 import { APP_SCALE_CHANGED_EVENT, getAppScale } from "../../lib/appScale";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import {
@@ -208,14 +205,6 @@ function requestExactContractCandles(
   );
 }
 
-function requestContinuousCandles(scope: string, query: CandleQuery, priority: RequestPriority, signal?: AbortSignal) {
-  return candleRequestScheduler.schedule(
-    buildUserScopedProjectXCandleRequestKey(scope, query),
-    sharedSignal => loadContinuousMnqIntraday(scope, query, sharedSignal),
-    { priority, signal },
-  );
-}
-
 const lastLoadedFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: EASTERN_TIME_ZONE,
   hour: "2-digit",
@@ -351,28 +340,9 @@ interface LiquidityDragState {
   pointerId: number;
 }
 
-export function BotSignalChart(props: BotSignalChartProps) {
-  const market = props.bot ?? props.market;
-  return props.monitorOnly && !props.demoMode && /(?:^|\.)MNQ(?:\.|$)/i.test(market?.contract_id ?? "")
-    ? <MonitorChart key={`${props.authenticatedCacheScope}:${market?.contract_id}:${market?.id}`} {...props} />
-    : <BotSignalChartCore {...props} />;
-}
-
-function MonitorChart(props: BotSignalChartProps) {
-  const [timeframe, setTimeframe] = useState(() => defaultChartTimeframeIdForBot(props.bot ?? props.market ?? null));
-  const market = (props.bot ?? props.market)!;
-  if (timeframe === "1d") return <ContinuousMnqDailyChart market={market} scope={props.authenticatedCacheScope}
-    onTimeframeChange={setTimeframe} onMarketData={props.onMarketData} />;
-  return <BotSignalChartCore key="latest" {...props} continuousHistory
-    authenticatedCacheScope={props.authenticatedCacheScope ? `${props.authenticatedCacheScope}:mnq-continuous-v1:latest` : null}
-    initialTimeframeId={timeframe} onTimeframeSelected={setTimeframe} onContinuousDaily={() => setTimeframe("1d")} />;
-}
-
-function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMode = false, authenticatedCacheScope, activity, lastEvaluation, refreshToken, onMarketData, initialTimeframeId, onContinuousDaily, continuousHistory = false, onTimeframeSelected }: BotSignalChartProps & {
-  initialTimeframeId?: BotChartTimeframeId; onContinuousDaily?: () => void; continuousHistory?: boolean;
-  onTimeframeSelected?: (timeframe: BotChartTimeframeId) => void;
-}) {
-  const requestProjectXCandles = continuousHistory ? requestContinuousCandles : requestExactContractCandles;
+// Every chart, including the MNQ monitor, reads its exact contract's history
+// from ProjectX. The retired Databento archive is not a chart dependency.
+export function BotSignalChart({ monitorOnly = false, bot: savedBot, market, demoMode = false, authenticatedCacheScope, activity, lastEvaluation, refreshToken, onMarketData }: BotSignalChartProps) {
   const pageVisible = usePageVisibility();
   // Streams survive brief tab switches; polling still pauses immediately.
   const streamsEnabled = useStreamVisibility();
@@ -473,7 +443,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
   const botTimeframeSelectionKey = buildBotTimeframeSelectionKey(bot);
   const [timeframeSelection, setTimeframeSelection] = useState<ChartTimeframeSelection>(() => ({
     key: buildBotTimeframeSelectionKey(bot),
-    id: initialTimeframeId ?? defaultChartTimeframeIdForBot(bot),
+    id: defaultChartTimeframeIdForBot(bot),
   }));
   const selectedTimeframeId =
     timeframeSelection.key === botTimeframeSelectionKey ? timeframeSelection.id : defaultChartTimeframeIdForBot(bot);
@@ -816,13 +786,12 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
         unit: config.timeframe_unit,
         unitNumber: config.timeframe_unit_number,
         strategyType: config.strategy_type,
-        candles: mergeLiveCandle(candlesRef.current, liveCandleRef.current).filter(row =>
-          !continuousHistory || row.contract_id === config.contract_id || sameMnqDelivery(row.contract_id, config.contract_id)),
+        candles: mergeLiveCandle(candlesRef.current, liveCandleRef.current),
         lastPrice: livePriceRef.current,
         updatedAt: chartNow(demoMode).toISOString(),
       });
     }, MARKET_SNAPSHOT_THROTTLE_MS);
-  }, [chartConfig, continuousHistory, demoMode, onMarketData, pageVisible, visibleCandles]);
+  }, [chartConfig, demoMode, onMarketData, pageVisible, visibleCandles]);
 
   useEffect(() => {
     return () => {
@@ -1133,7 +1102,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
           chartBackgroundControllerRef.current = null;
           return;
         }
-        void requestProjectXCandles(authenticatedCacheScope, query, "background", controller.signal)
+        void requestExactContractCandles(authenticatedCacheScope, query, "background", controller.signal)
           .then((rows) => {
             commitCandleFetch({
               cacheKey,
@@ -1161,7 +1130,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
           });
       }
     },
-    [authenticatedCacheScope, commitCandleFetch, requestProjectXCandles],
+    [authenticatedCacheScope, commitCandleFetch],
   );
 
   const loadCandles = useCallback(
@@ -1299,7 +1268,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
           if (pendingTiming?.contextKey === chartViewportKey) {
             pendingTiming.requestCount += 1;
           }
-          const fetchedRows = await requestProjectXCandles(
+          const fetchedRows = await requestExactContractCandles(
             authenticatedCacheScope,
             {
               ...candleQueryForFetchRequest(chartConfig, fetchRequest),
@@ -1362,7 +1331,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
         }
       }
     },
-    [authenticatedCacheScope, chartConfig, chartViewportKey, commitCandleFetch, demoMode, requestProjectXCandles, scheduleBackgroundCandleFetches],
+    [authenticatedCacheScope, chartConfig, chartViewportKey, commitCandleFetch, demoMode, scheduleBackgroundCandleFetches],
   );
 
   const loadLivePrice = useCallback(async ({ force = false, allowClosedSession = false }: LoadLivePriceOptions = {}) => {
@@ -1524,7 +1493,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
       if (!authenticatedCacheScope) {
         return;
       }
-      const fetchedRows = await requestProjectXCandles(authenticatedCacheScope, {
+      const fetchedRows = await requestExactContractCandles(authenticatedCacheScope, {
         contractId: config.contract_id,
         symbol: config.symbol ?? undefined,
         start: queryWindow.start,
@@ -1587,7 +1556,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
         setHistoryLoading(false);
       }
     }
-  }, [authenticatedCacheScope, commitCandleFetch, requestProjectXCandles]);
+  }, [authenticatedCacheScope, commitCandleFetch]);
 
   const repairDataGaps = useCallback(async () => {
     if (document.hidden) return;
@@ -1620,7 +1589,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
     try {
       const repairedRows: ProjectXMarketCandle[] = [];
       for (const window_ of windows) {
-        const fetchedRows = await requestProjectXCandles(cacheScope, {
+        const fetchedRows = await requestExactContractCandles(cacheScope, {
           contractId: config.contract_id,
           symbol: config.symbol ?? undefined,
           start: window_.start,
@@ -1696,7 +1665,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
         setRepairVersion((current) => current + 1);
       }
     }
-  }, [authenticatedCacheScope, queueViewportRestore, requestProjectXCandles]);
+  }, [authenticatedCacheScope, queueViewportRestore]);
 
   const applyLiveStreamPrice = useCallback(
     (price: ProjectXMarketPrice) => {
@@ -2949,7 +2918,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
         for (const fetchRequest of plan.requests) {
           queuedCount += 1;
           const query = candleQueryForFetchRequest(config, fetchRequest);
-          void requestProjectXCandles(authenticatedCacheScope, query, "background", controller.signal)
+          void requestExactContractCandles(authenticatedCacheScope, query, "background", controller.signal)
             .then((rows) => {
               commitCandleFetch({
                 cacheKey,
@@ -2987,7 +2956,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
         warmTimeframesControllerRef.current = null;
       }
     };
-  }, [authenticatedCacheScope, commitCandleFetch, demoMode, monitorOnly, pageVisible, requestProjectXCandles, warmContractKey]);
+  }, [authenticatedCacheScope, commitCandleFetch, demoMode, monitorOnly, pageVisible, warmContractKey]);
 
   useEffect(() => {
     if (
@@ -3191,7 +3160,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
   }, [bot, demoMode, loadLivePrice, pageVisible]);
 
   const subtitle = bot
-    ? continuousHistory ? `MNQ continuous / ${chartTimeframe.label}` : buildChartSubtitle(bot, chartTimeframe)
+    ? buildChartSubtitle(bot, chartTimeframe)
     : "No bot selected";
   const toggleChartLayer = useCallback((layer: ChartLayerId) => {
     setVisibleChartLayers((current) => ({
@@ -3392,7 +3361,7 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
               </span>
             ) : null}
             {!demoMode && bot && confirmedEmptyGapCount > 0 ? (
-              <span className="text-xs text-app-muted" title={`${continuousHistory ? "The data sources" : "ProjectX"} returned no missing candles for ${confirmedEmptyGapCount} checked gap(s).`}>
+              <span className="text-xs text-app-muted" title={`ProjectX returned no missing candles for ${confirmedEmptyGapCount} checked gap(s).`}>
                 {confirmedEmptyGapCount} gap{confirmedEmptyGapCount === 1 ? "" : "s"} unavailable
               </span>
             ) : null}
@@ -3422,8 +3391,6 @@ function BotSignalChartCore({ monitorOnly = false, bot: savedBot, market, demoMo
                     aria-label={`Show ${option.label} candles`}
                     onClick={() => {
                       if (active) return;
-                      if (option.id === "1d" && onContinuousDaily) { onContinuousDaily(); return; }
-                      onTimeframeSelected?.(option.id);
                       const range = chartHandlesRef.current?.chart.timeScale().getVisibleRange();
                       timeframeViewportRef.current = range
                         ? { key: `${warmContractKey}:${option.id}`, range: { ...range } }
