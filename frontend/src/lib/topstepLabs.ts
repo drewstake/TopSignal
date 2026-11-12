@@ -1,10 +1,14 @@
 import type { ExpenseCreateInput } from "./types";
 
-// One-time prices supplied for the October 2026 Lab Drops. Keep drop identities
+// One-time prices supplied for the November 2026 Lab Drops. Keep drop identities
 // separate from standard combine plan sizes (especially the two $3K challenges).
 export const TOPSTEP_LAB_DROPS = [
   { id: "001", name: "$25K Static", kind: "Trading Combine", feeCents: 7_500 },
   { id: "006", name: "$50K Static", kind: "Trading Combine", feeCents: 14_900 },
+  { id: "012", name: "$100K Static", kind: "Trading Combine", feeCents: 19_900 },
+  { id: "013", name: "$150K Static", kind: "Trading Combine", feeCents: 27_900 },
+  { id: "010", name: "$50K Daily Payouts EOD", kind: "Trading Combine", feeCents: 11_900 },
+  { id: "011", name: "$50K Static Daily Payouts", kind: "Trading Combine", feeCents: 14_900 },
   { id: "007", name: "The $1.5K Challenge", kind: "Challenge", feeCents: 9_900 },
   { id: "002", name: "$250K Freedom", kind: "Trading Combine", feeCents: 49_900 },
   { id: "008", name: "The $3K Challenge - Return", kind: "Challenge", feeCents: 19_900 },
@@ -12,6 +16,13 @@ export const TOPSTEP_LAB_DROPS = [
 ] as const;
 
 export type TopstepLabDropId = typeof TOPSTEP_LAB_DROPS[number]["id"];
+
+// Lab fees are inferred by the backend on provider refresh. Never let the
+// browser's standard-combine tracker price a Lab as an ordinary 50/100/150K.
+// Unknown Lab variants must also stay out of standard pricing.
+export function isTopstepLabsAccountName(name: string): boolean {
+  return /\b(?:LABS?|DROP|STATIC|FREEDOM|CHALLENGE|DAILY[\s_-]+PAYOUTS)\b/i.test(name.replaceAll("_", " "));
+}
 
 export function buildTopstepLabsExpense(input: {
   dropId: TopstepLabDropId;

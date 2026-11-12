@@ -81,6 +81,24 @@ function purchase(
 }
 
 describe("decideExpenseReconciliation", () => {
+  it("retains backend Lab fees and lets linked manual Lab fees take precedence", () => {
+    const labAccount = account({ provider_name: "50KTC-STATIC-101" });
+    const auto = expense({
+      amount_cents: 14900, account_type: null, plan_size: null,
+      tags: ["combine_tracker", "auto", "topstep_labs", "lab_drop_006", "one_time_fee"],
+    });
+    expect(buildCombineExpenseReconciliationPlan([labAccount], [auto], [])).toEqual({
+      expenseIdsToDelete: [], expensesToCreate: [],
+    });
+    const manual = expense({
+      id: 2, amount_cents: 12000, account_type: null, plan_size: null,
+      tags: ["topstep_labs", "lab_drop_006", "one_time_fee"],
+    });
+    expect(buildCombineExpenseReconciliationPlan([labAccount], [auto, manual], [])).toEqual({
+      expenseIdsToDelete: [1], expensesToCreate: [],
+    });
+  });
+
   it("requires an explicit confirmation", () => {
     expect(decideExpenseReconciliation(false, false)).toEqual({ allowed: false, reason: "cancelled" });
     expect(decideExpenseReconciliation(false, true)).toEqual({ allowed: true });

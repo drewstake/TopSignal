@@ -93,15 +93,20 @@ export function AccountAccess({ children }: { children: ReactNode }) {
           <p className="text-sm text-app-muted">Access your connected worker and trading workspace.</p>
           {error ? <p className="text-sm text-app-negative">{error}</p> : null}
           <LocalSignIn />
-          <button
-            type="button"
-            className="w-full rounded-lg border border-app-border px-4 py-2 text-sm font-medium transition hover:bg-app-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/35"
-            onClick={() => {
-              void signInWithGoogle().catch((err) => setError(formatGoogleSignInError(err)));
-            }}
-          >
-            Continue with Google
-          </button>
+          {hasSupabaseConfig ? (
+            <>
+              {localAuthConfigured ? <div className="border-t border-app-border pt-3 text-center text-xs text-app-muted">Or use your Google account</div> : null}
+              <button
+                type="button"
+                className="w-full rounded-lg border border-app-border px-4 py-2 text-sm font-medium transition hover:bg-app-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/35"
+                onClick={() => {
+                  void signInWithGoogle().catch((err) => setError(formatGoogleSignInError(err)));
+                }}
+              >
+                Continue with Google
+              </button>
+            </>
+          ) : null}
           {canOpenOfflineWorkspace ? (
             <div className="space-y-2">
               <a

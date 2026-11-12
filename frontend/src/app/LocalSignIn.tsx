@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { continueOnThisDevice, localAuthStatus, signInLocally, type LocalAuthStatus } from "../lib/localAuth";
+import { canAutoSignInOnThisDevice, continueOnThisDevice, localAuthStatus, signInLocally, type LocalAuthStatus } from "../lib/localAuth";
 
 export function LocalSignIn() {
   const [status, setStatus] = useState<LocalAuthStatus | null>(null);
@@ -11,8 +11,16 @@ export function LocalSignIn() {
   const [retry, setRetry] = useState(0);
   useEffect(() => {
     let active = true;
-    void localAuthStatus().then((next) => { if (active) { setStatus(next); setError(""); } })
-      .catch((err: unknown) => { if (active) setError(err instanceof Error ? err.message : "Local sign-in unavailable"); });
+    void localAuthStatus().then(async (next) => {
+      if (!active) return;
+      setStatus(next); setError("");
+      if (next.enabled && next.mode === "trusted_device" && canAutoSignInOnThisDevice()) {
+        setBusy(true);
+        await continueOnThisDevice();
+      }
+    })
+      .catch((err: unknown) => { if (active) setError(err instanceof Error ? err.message : "Local sign-in unavailable"); })
+      .finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
   }, [retry]);
   if (status?.enabled === false) return null;
@@ -28,7 +36,6 @@ export function LocalSignIn() {
         .finally(() => setBusy(false));
     }}>{busy ? "Connecting…" : "Continue on this device"}</button>
     <p className="text-xs leading-5 text-app-muted">Your session survives refreshes for up to 12 hours. Signing out does not stop TopBot.</p>
-    <div className="border-t border-app-border pt-3 text-center text-xs text-app-muted">Or use your Google account</div>
   </div>;
   const setup = status.needs_setup;
   const inputClass = "mt-1 w-full rounded-lg border border-app-border bg-app-bg px-3 py-2 text-app-text focus:outline-none focus:ring-2 focus:ring-app-accent/40";
@@ -51,6 +58,5 @@ export function LocalSignIn() {
     {error && <p role="alert" className="text-sm text-app-negative">{error}</p>}
     <button type="submit" disabled={busy} className="w-full rounded-lg bg-app-accent px-4 py-2 text-sm font-medium text-app-accent-contrast disabled:opacity-50">{busy ? "Signing in…" : setup ? "Create password and sign in" : "Sign in locally"}</button>
     <p className="text-xs leading-5 text-app-muted">This tab stays signed in for up to 12 hours, including page refreshes. Signing out does not stop TopBot.</p>
-    <div className="border-t border-app-border pt-3 text-center text-xs text-app-muted">Or use your Google account</div>
   </form>;
 }

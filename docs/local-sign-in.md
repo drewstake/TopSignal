@@ -3,16 +3,21 @@
 Local sign-in is an optional second authentication provider for the existing
 owner. It does not enable demo/offline mode, change account ownership, create a
 cloud user, disable API authentication, or alter worker routing or strategy.
-Google remains available. Account data and credentials still use the configured
-application database; this feature does not remove a Supabase quota restriction.
+Google is offered only when Supabase authentication is configured. Account data
+and credentials still use the configured application database; this feature
+does not remove a Supabase quota restriction.
 
 ## Continue on this device
 
 For a single-owner worker reached only through loopback and an authenticated SSH
 tunnel, set `TOPSIGNAL_LOCAL_AUTH_MODE=trusted_device` in its protected environment
 file. Keep the existing `TOPSIGNAL_LOCAL_AUTH_DB`, `AUTH_REQUIRED=true` and frontend
-`VITE_LOCAL_AUTH_ENABLED=true`. The page then shows **Continue on this device**
-instead of password/setup fields. No password or setup-code entry is required.
+`VITE_LOCAL_AUTH_ENABLED=true`. The page automatically signs in through the
+trusted worker connection instead of showing password/setup fields. No click,
+password, or setup-code entry is required. If the connection fails, use
+**Continue on this device** to retry. Explicit sign-out pauses automatic sign-in
+in that tab, including across refreshes, until you continue manually or close
+the tab.
 
 The trust boundary is access to the local machine/tunnel, not a hardware device
 fingerprint. Anyone or any process with access to that trusted connection can
@@ -26,7 +31,7 @@ allowed loopback browser Origin, and a custom request header. It rejects browser
 supplied owner IDs. The issued JWT retains the same owner, expiry and server-side
 revocation checks as password login; API requests using it also enforce the local
 connection boundary. The worker records the sign-in without logging the token.
-Google remains optional, and signing out does not stop the worker.
+Supabase-free deployments show only local sign-in. Signing out does not stop the worker.
 
 Password/setup endpoints are disabled in trusted-device mode. Existing password
 hashes and audit records are preserved. Setting the mode back to `password`

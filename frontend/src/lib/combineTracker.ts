@@ -1,5 +1,6 @@
 import type { ExpenseAccountType, ExpenseCategory, ExpensePlanSize } from "./types";
 import { getScopedStorageKey } from "./storageScope";
+import { isTopstepLabsAccountName } from "./topstepLabs";
 
 export type CombinePlanSize = Extract<ExpensePlanSize, "50k" | "100k" | "150k">;
 
@@ -118,6 +119,7 @@ function getProviderBackedAccountName(account: Pick<CombineTrackerAccount, "name
 }
 
 export function getCombinePlanSizeFromAccountName(name: string): CombinePlanSize | null {
+  if (isTopstepLabsAccountName(name)) return null;
   const normalized = name.trim().toUpperCase();
   if (normalized.startsWith(COMBINE_PREFIX_BY_PLAN["50k"])) {
     return "50k";

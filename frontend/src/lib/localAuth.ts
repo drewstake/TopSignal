@@ -2,6 +2,7 @@ import type { Session } from "@supabase/supabase-js";
 
 const KEY = "topsignal.local-session.v1";
 const MODE_KEY = "topsignal.auth-mode";
+const SIGNED_OUT_KEY = "topsignal.local-signed-out";
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 // A production bundle without cloud configuration still requires a local
 // session. Otherwise AccountAccess skips sign-in and sends anonymous API calls.
@@ -10,11 +11,16 @@ export const localAuthConfigured = import.meta.env.VITE_LOCAL_AUTH_ENABLED === "
 const listeners = new Set<(session: Session | null) => void>();
 let session: Session | null = null;
 let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+let deviceSignIn: Promise<Session> | null = null;
 
 export function usesLocalAuth(): boolean {
   if (typeof sessionStorage === "undefined") return false;
   const mode = sessionStorage.getItem(MODE_KEY);
   return mode === "local" || (mode === null && localAuthConfigured);
+}
+
+export function canAutoSignInOnThisDevice(): boolean {
+  return usesLocalAuth() && sessionStorage.getItem(SIGNED_OUT_KEY) !== "true";
 }
 
 function publish(next: Session | null): void {
@@ -80,15 +86,25 @@ export async function signInLocally(password: string, setupCode?: string): Promi
   }
   const next = await response.json() as Session;
   sessionStorage.setItem(MODE_KEY, "local");
+  sessionStorage.removeItem(SIGNED_OUT_KEY);
   publish(next);
   return next;
 }
 
-export async function continueOnThisDevice(): Promise<Session> {
+export function continueOnThisDevice(): Promise<Session> {
+  // Share a pending exchange across remounts and manual retries.
+  if (!deviceSignIn) {
+    deviceSignIn = createDeviceSession().finally(() => { deviceSignIn = null; });
+  }
+  return deviceSignIn;
+}
+
+async function createDeviceSession(): Promise<Session> {
   const response = await request("device", {});
   if (!response.ok) throw new Error("Could not connect. Open the app through your local worker connection and try again.");
   const next = await response.json() as Session;
   sessionStorage.setItem(MODE_KEY, "local");
+  sessionStorage.removeItem(SIGNED_OUT_KEY);
   publish(next);
   return next;
 }
@@ -99,6 +115,7 @@ export async function signOutLocally(): Promise<void> {
     const response = await request("logout", {}, token);
     if (!response.ok && response.status !== 401) throw new Error("Could not revoke the local session. Try again.");
   }
+  sessionStorage.setItem(SIGNED_OUT_KEY, "true");
   publish(null);
 }
 

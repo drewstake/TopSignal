@@ -8,6 +8,7 @@ from app.db import Base
 from app.models import Account, Expense, ExpenseSuppression
 from app.services.combine_expenses import add_missing_combine_expenses
 from app.services.projectx_accounts import serialize_account_main_mutation, sync_projectx_accounts
+from app.services.topstep_labs import LAB_DROPS
 
 USER = "00000000-0000-0000-0000-000000000001"
 OTHER = "00000000-0000-0000-0000-000000000002"
@@ -91,3 +92,70 @@ def test_uses_provider_name_and_backfills_missing_fee_on_next_discovery(db):
     assert add_missing_combine_expenses(db, rows, user_id=USER, observed_at=NOW) == 1
     db.commit()
     assert db.query(Expense).one().amount_cents == 19900
+
+
+@pytest.mark.parametrize("name,drop_id,cents", [
+    ("25KTC-STATIC-123", "001", 7500),
+    ("50KTC-STATIC-123", "006", 14900),
+    ("100KTC-STATIC-123", "012", 19900),
+    ("150KTC-STATIC-DLL-123", "013", 27900),
+    ("250KTC-FREEDOM-123", "002", 49900),
+    ("50KTC_DAILY_PAYOUTS_EOD_123", "010", 11900),
+    ("50KTC-STATIC-DAILY-PAYOUTS-123", "011", 14900),
+    ("Topstep Labs The $1.5K Challenge - 123", "007", 9900),
+])
+def test_lab_product_discovery_tracks_one_time_fee_once(db, name, drop_id, cents):
+    assert discover(db, {1: name, 2: name}) == 2
+    assert discover(db, {1: name, 2: name}, now=datetime(2026, 12, 1, tzinfo=timezone.utc)) == 0
+    rows = db.query(Expense).all()
+    assert len(rows) == 2
+    assert {row.source_id for row in rows} == {"topstep_labs:account:1", "topstep_labs:account:2"}
+    for row in rows:
+        assert row.amount_cents == cents
+        assert row.plan_size is None and row.account_type is None
+        assert row.expense_date == date(2026, 9, 20)
+        assert row.tags == ["combine_tracker", "auto", "topstep_labs", f"lab_drop_{drop_id}", "one_time_fee", "quantity_1"]
+        assert f"Drop #{drop_id}" in row.description
+
+
+@pytest.mark.parametrize("drop", list(LAB_DROPS.values()), ids=list(LAB_DROPS))
+def test_explicit_lab_drop_ids_and_display_names(db, drop):
+    assert discover(db, {1: f"Topstep Labs Drop #{drop.id} - 123", 2: drop.name}) == 2
+    assert all(row.amount_cents == drop.fee_cents for row in db.query(Expense))
+
+
+@pytest.mark.parametrize("name", [
+    "50KTC-LABS-UNKNOWN-123", "50KTC-DROP-999-123", "50KTC-DAILY-PAYOUTS-123",
+    "Topstep Labs Drop #010 Drop #011", "Topstep Labs $3K Challenge",
+    "XFA-50K-STATIC-123", "50KXFA-STATIC-123", "PRACTICE-LAB-DROP-001-123",
+    "EXPRESS-LABS-DROP-012-123", "LFA-LABS-DROP-013-123", "LIVE-250K-FREEDOM-123",
+    "50KTC-FUNDED-STATIC-123", "Account 123", "50KTC-LAB-DROP-999-$50K Static",
+])
+def test_ambiguous_and_non_purchase_lab_accounts_never_get_standard_fees(db, name):
+    assert discover(db, {1: name}) == 0
+    assert db.query(Expense).count() == 0
+
+
+def test_lab_discovery_preserves_paid_amounts_suppression_and_user_isolation(db):
+    db.add(Expense(user_id=USER, account_id=1, expense_date=date(2026, 9, 1),
+                   category="evaluation_fee", amount_cents=10000,
+                   tags=["topstep_labs", "lab_drop_010"]))
+    db.add(ExpenseSuppression(user_id=USER, source="combine_tracker", account_id=2))
+    db.commit()
+    names = {1: "Topstep Labs Drop #010", 2: "Topstep Labs Drop #011"}
+    assert discover(db, names) == 0
+    assert db.query(Expense).one().amount_cents == 10000
+    assert discover(db, names, user=OTHER) == 2
+
+
+@pytest.mark.parametrize("attrs", [
+    {"trade_data_source": "csv_import"}, {"archived_at": NOW},
+    {"account_state": "HIDDEN"}, {"account_state": "MISSING"}, {"user_id": OTHER},
+])
+def test_lab_expenses_obey_account_eligibility(db, attrs):
+    values = dict(user_id=USER, external_id="1", provider="projectx", name="Topstep Labs Drop #012",
+                  trade_data_source="projectx", account_state="ACTIVE")
+    values.update(attrs)
+    db.add(Account(**values))
+    db.flush()
+    assert add_missing_combine_expenses(db, db.query(Account).all(), user_id=USER, observed_at=NOW) == 0

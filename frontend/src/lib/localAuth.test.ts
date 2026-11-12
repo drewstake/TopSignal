@@ -112,5 +112,38 @@ describe("local authentication", () => {
     await local.signInLocally("my long passphrase");
     await expect(local.signOutLocally()).rejects.toThrow("Could not revoke");
     expect(local.localSessionSync()?.access_token).toBe(token);
+    expect(local.canAutoSignInOnThisDevice()).toBe(true);
+  });
+
+  it("keeps explicit sign-out across refreshes until manually reconnecting", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_ENABLED", "true");
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(nextSession())))));
+    let local = await import("./localAuth");
+    expect(local.canAutoSignInOnThisDevice()).toBe(true);
+    await local.continueOnThisDevice();
+    await local.signOutLocally();
+    expect(local.canAutoSignInOnThisDevice()).toBe(false);
+    vi.resetModules();
+    local = await import("./localAuth");
+    expect(local.canAutoSignInOnThisDevice()).toBe(false);
+    expect(await local.restoreLocalSession()).toBeNull();
+    await local.continueOnThisDevice();
+    expect(local.canAutoSignInOnThisDevice()).toBe(true);
+    local.selectGoogleAuth();
+    expect(local.canAutoSignInOnThisDevice()).toBe(false);
+  });
+
+  it("shares concurrent device exchanges and permits retry after failure", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response("{}", { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(nextSession())));
+    vi.stubGlobal("fetch", fetchMock);
+    const local = await import("./localAuth");
+    const first = local.continueOnThisDevice();
+    const second = local.continueOnThisDevice();
+    expect(first).toBe(second);
+    await expect(first).rejects.toThrow("Could not connect");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((await local.continueOnThisDevice()).access_token).toBe(token);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

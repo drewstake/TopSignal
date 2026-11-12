@@ -1359,7 +1359,8 @@ export function ExpensesPage() {
                   <option key={drop.id} value={drop.id}>Drop #{drop.id} - {drop.name} - {formatCurrency(drop.feeCents / 100)}</option>
                 ))}
               </Select>
-              <p className="mt-2 text-xs text-app-muted">One-time purchase fee. Max 5 of each drop per trader, per month.</p>
+              <p className="mt-2 text-xs text-app-muted">One-time purchase fee. {addState.labDropId === "010" || addState.labDropId === "011" ? "Max 5 per trader." : "Max 5 of each drop per trader, per month."}</p>
+              <p className="mt-2 text-xs text-app-muted">Recognized Lab accounts are added automatically after account refresh. Check existing expenses before adding a purchase manually; link its Account ID to prevent automatic duplicates.</p>
             </div>
             <div>
               <label htmlFor="expense-labs-quantity" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Quantity</label>

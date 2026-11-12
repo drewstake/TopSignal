@@ -693,6 +693,10 @@ describe("Topstep Labs expenses", () => {
   it.each([
     ["001", "$25K Static", "75.00", 7500],
     ["006", "$50K Static", "149.00", 14900],
+    ["012", "$100K Static", "199.00", 19900],
+    ["013", "$150K Static", "279.00", 27900],
+    ["010", "$50K Daily Payouts EOD", "119.00", 11900],
+    ["011", "$50K Static Daily Payouts", "149.00", 14900],
     ["007", "The $1.5K Challenge", "99.00", 9900],
     ["002", "$250K Freedom", "499.00", 49900],
     ["008", "The $3K Challenge - Return", "199.00", 19900],
@@ -706,6 +710,9 @@ describe("Topstep Labs expenses", () => {
     await user.selectOptions(screen.getByLabelText("Entry type"), "labs");
     await user.selectOptions(screen.getByLabelText("Lab Drop"), id);
     expect((screen.getByLabelText("Unit Fee (USD)") as HTMLInputElement).value).toBe(fee);
+    expect(screen.getByText(id === "010" || id === "011"
+      ? "One-time purchase fee. Max 5 per trader."
+      : "One-time purchase fee. Max 5 of each drop per trader, per month.")).not.toBeNull();
     await user.click(screen.getByRole("button", { name: "Save Expense" }));
     await waitFor(() => expect(create).toHaveBeenCalledOnce());
     const payload = create.mock.calls[0][0];

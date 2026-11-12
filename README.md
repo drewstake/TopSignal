@@ -584,6 +584,18 @@ costs, not billing receipts. Existing account-linked evaluation fees and deleted
 suppressions are preserved. Repeat refreshes do not create additional fees, and
 cached or failed provider reads do not generate expenses. Payout entry remains manual.
 
+Topstep Labs uses the same discovery flow with separate one-time fees. The November
+2026 catalog includes Drops #001, #002, #006, #007, and #010–#013; older #008/#009
+remain available for historical entries. A provider account name must identify a
+known drop number or product (for example, `100KTC-STATIC` or `Lab Drop #012`).
+Actual Lab provider naming has not yet been verified against a purchased account.
+Unknown Lab names are skipped rather than priced as standard Combines. Funded and
+practice Lab accounts do not create purchase fees. Lab rows carry their drop ID and
+one-time tags, with no standard plan size or activation fee. The Expenses page also
+offers these presets for manual entry; link an individual purchase to its Account ID
+to prevent discovery from adding it again. Unlinked or bulk manual entries cannot be
+matched automatically to provider accounts.
+
 The optional combine reconciliation helper is separate from automatic discovery:
 
 - it lives in browser storage

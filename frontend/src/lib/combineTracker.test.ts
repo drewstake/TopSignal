@@ -36,6 +36,18 @@ describe("getCombinePlanSizeFromAccountName", () => {
 });
 
 describe("getCombinePriceCentsFromAccountName", () => {
+  it.each([
+    "50KTC-STATIC-123", "100KTC-STATIC-123", "150KTC-LAB-DROP-013-123",
+    "50KTC_DAILY_PAYOUTS_EOD_123", "50KTC-DROP-999-123", "50KTC-LABS-UNKNOWN-123",
+  ])("does not infer ordinary combine fees for Lab account %s", (name) => {
+    expect(getCombinePlanSizeFromAccountName(name)).toBeNull();
+    expect(getCombinePriceCentsFromAccountName(name)).toBeNull();
+    const ledger = evolveCombineSpendLedger(createEmptyCombineSpendLedger(), [
+      { id: 123, name, status: "ACTIVE" },
+    ]);
+    expect(ledger.purchasesByAccountId).toEqual({});
+  });
+
   it("uses standard prices for regular combine account names", () => {
     expect(getCombinePriceCentsFromAccountName("50KTC-12345")).toBe(4_900);
     expect(getCombinePriceCentsFromAccountName("100KTC-12345")).toBe(9_900);
