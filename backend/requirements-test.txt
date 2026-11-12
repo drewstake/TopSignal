@@ -1,4 +1,6 @@
 -r requirements.txt
+-r requirements-discord.txt
+Pillow==13.0.0
 # Starlette's HTTP test client; not installed on the trading worker.
 httpx2==2.0.0
 # Parallel offline suite; never required by the trading runtime.

@@ -1,8 +1,13 @@
 import json
+import contextlib
+import importlib.util
+import io
+import runpy
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import requests
 
@@ -23,6 +28,9 @@ def trade(closed=False):
 
 class ReporterTests(unittest.TestCase):
     def setUp(self):
+        self.clock = patch('tools.discord_topbot.time.time', return_value=1000)
+        self.clock.start()
+        self.addCleanup(self.clock.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.path = Path(self.temp.name)/'delivery.sqlite3'
         self.db = state_db(self.path)
@@ -55,17 +63,93 @@ class ReporterTests(unittest.TestCase):
         for private in ('PRIVATE', 'DO_NOT_PUBLISH', 'account_id', 'entry_fill_id'):
             self.assertNotIn(private, encoded)
         self.assertIn('PRACTICE', encoded)
-        self.assertIn('$+48.78', encoded)
-        self.assertIn('configured round-turn schedule', encoded)
+        self.assertEqual(output['_receipt']['net'], '+$48.78')
+        self.assertTrue(output['_receipt']['estimated_fees'])
+        self.assertNotIn('take profit', encoded)
+        self.assertNotIn('take_profit', encoded)
+        self.assertNotIn('exit_reason', encoded)
+        self.assertNotIn('Trade complete. P&L', encoded)
+        self.assertNotIn('configured round-turn schedule', encoded)
         self.assertEqual(output['allowed_mentions'], {'parse': []})
+
+    def test_timeline_waits_for_verified_result_and_stops_animating(self):
+        row = trade()
+        opened = payload(row)
+        self.assertTrue(opened['attachments'][0]['filename'].endswith('.gif'))
+        self.assertEqual(opened['embeds'], [])
+        self.assertEqual(opened['_receipt']['color'], 0xF0B232)
+        row['runner']['stats_status'] = 'awaiting_exit_fill'
+        pending = payload(row)
+        self.assertEqual(pending['_receipt']['state'], 'reconciling')
+        self.assertNotEqual(pending['attachments'], opened['attachments'])
+        self.assertTrue(payload(trade(True))['attachments'][0]['filename'].endswith('.png'))
+        snapshot = payload(trade(), snapshot=True)
+        self.assertTrue(snapshot['attachments'][0]['filename'].endswith('.png'))
+        self.assertTrue(snapshot['_receipt']['snapshot'])
+
+    def test_animation_needs_no_poll_edits_and_close_keeps_original_message(self):
+        with patch('tools.discord_topbot.time.time', return_value=150):
+            deliver(self.db, self.discord, trade())
+        with patch('tools.discord_topbot.time.time', return_value=155):
+            deliver(self.db, self.discord, trade())
+        self.assertEqual(self.discord.send.call_count, 1)
+        with patch('tools.discord_topbot.time.time', return_value=165):
+            deliver(self.db, self.discord, trade())
+        self.assertEqual(self.discord.send.call_count, 1)
+        with patch('tools.discord_topbot.time.time', return_value=166):
+            deliver(self.db, self.discord, trade(True))
+        self.assertEqual(self.discord.send.call_count, 2)
+        self.assertEqual(self.discord.send.call_args.args[1], '12345')
+
+    def test_attachments_replace_previous_image_and_use_multipart(self):
+        client = Discord('https://discord.com/api/webhooks/1/SECRET', '42')
+        client.session = Mock()
+        client.session.request.return_value.status_code = 200
+        client.session.request.return_value.json.return_value = {'id': '12345', 'channel_id': '42'}
+        for row, extension in [(trade(), '.gif'), (trade(True), '.png')]:
+            client.send(payload(row), '12345')
+            call = client.session.request.call_args
+            self.assertEqual(call.args[0], 'PATCH')
+            self.assertNotIn('json', call.kwargs)
+            body = json.loads(call.kwargs['data']['payload_json'])
+            self.assertNotIn('_receipt', body)
+            self.assertEqual(len(body['attachments']), 1)
+            filename, content, mime = call.kwargs['files']['files[0]']
+            self.assertTrue(filename.endswith(extension))
+            self.assertEqual(body['embeds'], [])
+            self.assertLess(len(content), 2000000)
+            from PIL import Image
+            with Image.open(io.BytesIO(content)) as image:
+                self.assertEqual(image.size, (1000, 720))
+                self.assertEqual(image.n_frames, 32 if extension == '.gif' else 1)
+
+    def test_attachment_paths_are_allowlisted(self):
+        from tools.discord_topbot_media import attachment_files
+        with self.assertRaises(ValueError):
+            attachment_files({'attachments': [{'id': 0, 'filename': '../config.json'}]})
+
+    def test_buttons_only_for_interactive_transport_and_no_trade_actions(self):
+        self.assertNotIn('components', payload(trade()))
+        buttons = payload(trade(), interactive=True)['components'][0]['components']
+        self.assertEqual([b['label'] for b in buttons], ['View trade', 'Refresh status'])
+        self.assertEqual([b['custom_id'] for b in buttons], ['topbot:view:101', 'topbot:refresh:101'])
 
     def test_short_and_unverified_account_are_not_mislabeled(self):
         row = trade()
         row['side'], row['provider_simulated'] = 'SELL', None
-        title = payload(row)['embeds'][0]['title']
-        self.assertIn('SHORT', title)
-        self.assertIn('ACCOUNT TYPE UNVERIFIED', title)
-        self.assertNotIn('LIVE', title)
+        model = payload(row)['_receipt']
+        self.assertEqual(model['side'], 'SHORT')
+        self.assertEqual(model['mode'], 'ACCOUNT TYPE UNVERIFIED')
+
+    def test_receipt_loss_color_and_overnight_times_without_exit_reason(self):
+        from tools.discord_topbot_receipt import clock
+        row = trade(True)
+        row['runner'].update(gross_pnl_usd=-50, net_pnl_usd=-51.22, exit_reason='stop_loss')
+        data = payload(row)
+        self.assertEqual(data['_receipt']['color'], 0xE74C3C)
+        self.assertEqual(data['_receipt']['net'], '-$51.22')
+        self.assertNotIn('stop_loss', json.dumps(data))
+        self.assertEqual(clock('2026-11-13T05:10:00Z', '2026-11-13T04:50:00Z'), '11/13 12:10 AM')
 
     def test_only_verified_fills_get_posted(self):
         for change in ('dry_run', 'no_fill', 'ambiguous'):
@@ -162,6 +246,16 @@ class ReporterTests(unittest.TestCase):
         response.json.return_value = {'retry_after': 2.5}
         with self.assertRaises(DeliveryError) as caught: client.send(payload(trade()))
         self.assertEqual(caught.exception.retry_after, 2.5)
+
+    def test_standalone_entrypoint_shares_transport_exception_classes(self):
+        tools_dir = Path(__file__).parents[1] / 'tools'
+        with patch.dict(sys.modules), patch.object(sys, 'path', [str(tools_dir), *sys.path]), patch('argparse.ArgumentParser.parse_args', side_effect=RuntimeError), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                runpy.run_path(str(tools_dir / 'discord_topbot.py'), run_name='__main__')
+            spec = importlib.util.spec_from_file_location('standalone_buttons', tools_dir / 'discord_topbot_buttons.py')
+            companion = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(companion)
+            self.assertIs(companion.DeliveryError, sys.modules['discord_topbot'].DeliveryError)
 
 
 if __name__ == '__main__':

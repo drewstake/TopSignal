@@ -1,0 +1,2 @@
+# Optional reporter-only dependency; not required by the trading application.
+discord.py==2.7.1

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import sys
 import time
 from urllib.parse import urlsplit
 
@@ -18,6 +19,13 @@ import requests
 from dotenv import dotenv_values
 from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import make_url
+
+if __package__:
+    from .discord_topbot_media import attachment_files
+    from .discord_topbot_receipt import receipt_attachment
+else:
+    from discord_topbot_media import attachment_files
+    from discord_topbot_receipt import receipt_attachment
 
 
 def now():
@@ -33,14 +41,14 @@ def number(value):
     return value
 
 
-def timestamp(value):
+def timestamp(value, style='f'):
     value = datetime.fromisoformat(value.replace('Z', '+00:00'))
     if value.tzinfo is None:
         raise ValueError('Trade timestamp needs timezone')
-    return f'<t:{int(value.timestamp())}:f>'
+    return f'<t:{int(value.timestamp())}:{style}>'
 
 
-def payload(row):
+def payload(row, *, interactive=False, snapshot=False):
     """Only verified fills are public; use the runner's reconciled net P&L."""
     runner = row.get('runner') or {}
     if row['execution_mode'] != 'live' or not runner.get('entry_at'):
@@ -57,43 +65,47 @@ def payload(row):
     symbol = row.get('symbol') or row['contract_id']
     # Contract/symbol is displayed as plain text, never a mention or URL.
     symbol = re.sub(r'[^A-Za-z0-9. _-]', '', symbol)[:80]
-    fields = [
-        {'name': 'Entry', 'value': f"{number(runner['entry_price']):,.2f}", 'inline': True},
-        {'name': 'Contracts', 'value': f'{quantity:g}', 'inline': True},
-        {'name': 'Entered', 'value': timestamp(runner['entry_at']), 'inline': True},
-    ]
-    for key, label in [('confirmed_stop', 'Verified stop'), ('confirmed_target', 'Verified target')]:
+    # Validate timestamps before the image renderer can see them.
+    timestamp(runner['entry_at'])
+    color = 0xF0B232
+    model = dict(id=int(row['id']), symbol=symbol, side=side, mode=mode,
+                 status='CLOSED' if closed else 'OPEN', quantity=f'{quantity:g}',
+                 entry=f"{number(runner['entry_price']):,.2f}", entry_at=runner['entry_at'],
+                 snapshot=snapshot)
+    for key, label in [('confirmed_stop', 'stop'), ('confirmed_target', 'target')]:
         if runner.get(key) is not None:
-            fields.append({'name': label, 'value': f'{number(runner[key]):,.2f}', 'inline': True})
-    color = 0x3498DB
-    description = 'Entry fill verified. Waiting for the completed trade result.'
+            model[label] = f'{number(runner[key]):,.2f}'
     if closed:
         if not runner.get('exit_fill_id'):
             raise ValueError('Missing verified exit')
         gross, fees, net = [number(runner[k]) for k in ('gross_pnl_usd', 'fees_usd', 'net_pnl_usd')]
         if fees < 0 or abs(gross-fees-net) > 0.011:
             raise ValueError('Inconsistent trade P&L')
+        timestamp(runner['exit_at'])
         color = 0x2ECC71 if net >= 0 else 0xE74C3C
-        description = 'Trade complete. P&L is in USD, based on reconciled fills.'
-        fields += [
-            {'name': 'Exit', 'value': f"{number(runner['exit_price']):,.2f}", 'inline': True},
-            {'name': 'Exited', 'value': timestamp(runner['exit_at']), 'inline': True},
-            {'name': 'Gross P&L', 'value': f'${gross:+,.2f}', 'inline': True},
-            {'name': 'Fees + commissions', 'value': f'${fees:,.2f}', 'inline': True},
-            {'name': 'Net P&L', 'value': f'**${net:+,.2f}**', 'inline': True},
-        ]
-        basis = runner.get('commission_basis')
-        if basis == 'configured_round_turn_schedule':
-            description += ' Commission uses the configured round-turn schedule.'
-        reason = re.sub(r'[^A-Za-z0-9 _-]', '', str(runner.get('exit_reason', 'verified exit'))).replace('_', ' ')[:100]
-        fields.append({'name': 'Exit reason', 'value': reason or 'Verified exit', 'inline': True})
-    elif runner.get('stats_status') != 'open':
-        description = 'Entry fill verified; exit reconciliation is pending. Final P&L is not yet available.'
-    return {'allowed_mentions': {'parse': []}, 'embeds': [{
-        'title': f"TopBot | {mode} | {symbol} {side} | {'CLOSED' if closed else 'OPEN'}",
-        'description': description, 'color': color, 'fields': fields,
-        'footer': {'text': f"TopBot trade #{row['id']} | Automatic fill report"},
-    }]}
+        model.update(exit=f"{number(runner['exit_price']):,.2f}", exit_at=runner['exit_at'],
+                     gross=f"{'+' if gross >= 0 else '-'}${abs(gross):,.2f}",
+                     fees=f'${fees:,.2f}', net=f"{'+' if net >= 0 else '-'}${abs(net):,.2f}",
+                     estimated_fees=runner.get('commission_basis') == 'configured_round_turn_schedule')
+    state = 'complete' if closed else 'open' if runner.get('stats_status') == 'open' else 'reconciling'
+    model.update(state=state, color=color)
+    if state == 'reconciling':
+        model['status'] = 'RECONCILING'
+    attachment = receipt_attachment(model)
+    # _receipt is local rendering input, stripped before any REST serialization.
+    # It contains only the verified public values, never raw runner/provider data.
+    # Clear the previous embed on edits. The attachment itself is the card,
+    # avoiding Discord's nested, padded embed image and smaller display size.
+    data = {'allowed_mentions': {'parse': []}, '_receipt': model,
+            'embeds': [], 'attachments': [attachment]}
+    if interactive:
+        data['components'] = [{'type': 1, 'components': [
+            {'type': 2, 'style': 1, 'label': 'View trade',
+             'custom_id': f"topbot:view:{int(row['id'])}"},
+            {'type': 2, 'style': 2, 'label': 'Refresh status',
+             'custom_id': f"topbot:refresh:{int(row['id'])}"},
+        ]}]
+    return data
 
 
 class Source:
@@ -206,8 +218,17 @@ class Discord:
         self.session.headers['User-Agent'] = 'TopSignal-TopBot-Reporter/1.0'
 
     def request(self, method, suffix='', data=None):
+        files = attachment_files(data)
+        data = {k: v for k, v in data.items() if k != '_receipt'} if data is not None else None
+        if files:
+            body = {'data': {'payload_json': json.dumps(data)}, 'files': {
+                f"files[{item['id']}]": (item['filename'], content,
+                    'image/gif' if item['filename'].endswith('.gif') else 'image/png')
+                for item, content in files}}
+        else:
+            body = {'json': data}
         try:
-            result = self.session.request(method, self.url+suffix, json=data, timeout=(10, 20), allow_redirects=False)
+            result = self.session.request(method, self.url+suffix, **body, timeout=(10, 20), allow_redirects=False)
         except requests.RequestException:
             raise DeliveryError('uncertain' if method == 'POST' else 'network') from None
         if result.status_code == 429:
@@ -218,7 +239,8 @@ class Discord:
             raise DeliveryError('rate_limited', delay)
         if not 200 <= result.status_code < 300:
             kind = ('uncertain' if method == 'POST' and result.status_code >= 500 else
-                    'missing_message' if method == 'PATCH' and result.status_code == 404 else
+                    'missing_message' if result.status_code == 404 and
+                    (method == 'PATCH' or (method == 'GET' and '/messages/' in suffix)) else
                     'authentication' if result.status_code in (401, 403, 404) else 'http_error')
             raise DeliveryError(kind)
         try:
@@ -243,7 +265,7 @@ class Discord:
         return identity
 
 
-def deliver(db, discord, row):
+def deliver(db, discord, row, *, force=False):
     saved = db.execute('SELECT * FROM deliveries WHERE id=?', (row['id'],)).fetchone()
     if saved['status'] == 'sending':
         db.execute("UPDATE deliveries SET status='uncertain' WHERE id=?", (row['id'],))
@@ -251,14 +273,15 @@ def deliver(db, discord, row):
         return
     if saved['status'] in ('uncertain', 'missing_message'):
         return
-    data = payload(row)
+    # The attached GIF animates client-side; unchanged polls need no Discord edit.
+    data = payload(row, interactive=getattr(discord, 'interactive', False) is True)
     if data is None:
         if (row.get('runner') or {}).get('stats_status') == 'not_filled' or row.get('order_status') in ('blocked', 'rejected', 'error', 'cancelled'):
             db.execute('UPDATE deliveries SET closed=1,changed=? WHERE id=?', (time.time(), row['id']))
             db.commit()
         return
     digest = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
-    if saved['digest'] == digest:
+    if saved['digest'] == digest and not force:
         return
     # Persist before the non-idempotent network operation.
     if not saved['message_id']:
@@ -333,6 +356,16 @@ def main():
     root.mkdir(parents=True, exist_ok=True)
     discord = Discord(Path(config['webhook_file']).read_text(encoding='utf-8-sig').strip(), config['channel_id'])
     discord.verify()
+    buttons = None
+    if config.get('bot_token_file'):
+        if __package__:
+            from .discord_topbot_buttons import BotDiscord, Buttons
+        else:
+            from discord_topbot_buttons import BotDiscord, Buttons
+        discord = BotDiscord(Path(config['bot_token_file']).read_text(encoding='utf-8-sig').strip(),
+                             config['guild_id'], discord)
+        discord.verify()
+        buttons = Buttons(discord)
     recap = None
     if config.get('recap'):
         if __package__:
@@ -346,8 +379,9 @@ def main():
         maximum, active = source.baseline()
         print(json.dumps(dict(channel_verified=True, latest_entry_id=maximum, active_entries=len(active))))
         return
-    with process_lock(root/'reporter.lock'):
+    with process_lock(root/'reporter.lock'), ExitStack() as cleanup:
         db = state_db(root/'delivery.sqlite3')
+        cleanup.callback(db.close)
         if not db.execute("SELECT 1 FROM meta WHERE key='cursor'").fetchone():
             maximum, active = source.baseline()
             with db:
@@ -361,10 +395,17 @@ def main():
                 raise ValueError('Delivery state scope mismatch')
         if recap:
             recap.initialize(db)
+        if buttons:
+            cleanup.callback(buttons.close)
+            buttons.start()
         recap_errors, next_recap = [], 0
         while not (root/'STOP').exists():
             try:
-                errors, delay = cycle(db, source, discord)
+                errors, delay = buttons.drain(db, source) if buttons else ([], 5)
+                if not errors:
+                    errors, delay = cycle(db, source, discord)
+                if buttons and not buttons.ready():
+                    errors.append('buttons_disconnected')
                 if recap and time.monotonic() >= next_recap:
                     try:
                         recap_errors, retry = recap.cycle(db)
@@ -387,10 +428,12 @@ def main():
                     break
                 time.sleep(1)
         status_file(root, dict(state='stopped'))
-        db.close()
 
 
 if __name__ == '__main__':
+    # Standalone scheduled execution and companion imports must share exception
+    # classes; otherwise transport errors bypass deliver/cycle's retry handling.
+    sys.modules['discord_topbot'] = sys.modules[__name__]
     try:
         main()
     except Exception as exc:
