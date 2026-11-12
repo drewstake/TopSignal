@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 import { botsApi } from "../../lib/api";
@@ -23,7 +23,7 @@ it("loads owned research without an active account picker or broker discovery", 
   expect(await screen.findByRole("heading", { name: "TopBot results" })).toBeTruthy();
   expect(screen.getByText("MNQ · Account 12345 · Bot 32")).toBeTruthy();
   expect(botsApi.listConfigsWithCacheScope).toHaveBeenCalledWith(undefined, expect.objectContaining({ signal: expect.any(AbortSignal) }));
-  expect(botsApi.getForwardResults).toHaveBeenCalledWith(32, 30, expect.anything());
+  await waitFor(() => expect(botsApi.getForwardResults).toHaveBeenCalledWith(32, 30, expect.anything()));
   expect(screen.queryByRole("button", { name: /start|buy|sell|flatten/i })).toBeNull();
 });
 
