@@ -46,6 +46,37 @@ function history(patch: Partial<RawHeatmapHistory> = {}): RawHeatmapHistory {
 }
 const fetcherFor = (patch: Partial<RawHeatmapHistory> = {}): HistoryFetcher => vi.fn(async args => history({ tier: args.tier, contract_id: args.contractId, ...patch }));
 
+it("centers a paused history window on its recorded prices, not today's live book or a later summary frame", async () => {
+  const session = Date.parse("2026-11-03T23:00:00Z");
+  const encode = (values: ArrayBufferView) => btoa(String.fromCharCode(...new Uint8Array(values.buffer)));
+  const fetcher: HistoryFetcher = async args => history({
+    tier: args.tier, bucket_ms: [500, 5000, 60000][args.tier], time_origin_ms: session,
+    frames: { count: 2, time: encode(new Uint32Array([120_000, SERVER_NOW - session - 60_000])),
+      level_count: encode(new Uint16Array([2, 2])), bid_count: encode(new Uint16Array([1, 1])),
+      best_bid: encode(new Int32Array([100000, 80000])), best_ask: encode(new Int32Array([100001, 80001])),
+      valid: encode(new Uint16Array([1, 1])), tick: encode(new Int32Array([100000, 100001, 80000, 80001])),
+      qty: encode(new Float32Array([10, 12, 10, 12])), side: encode(new Uint8Array([1, 2, 1, 2])) },
+  });
+  render(<LiquidityHeatmapPanel store={liveStore()} contractId={contractId} tickSize={.25} accountId={7} historyFetcher={fetcher} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  flush();
+  expect(lastInput().lowTick).toBeLessThan(80000);
+  expect(lastInput().highTick).toBeGreaterThan(80000);
+  fireEvent.keyDown(screen.getByLabelText(/Heatmap navigation/), { key: "Home" });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  flush();
+  expect(lastInput().end).toBeLessThan(session + 600_000);
+  expect(lastInput().lowTick).toBeLessThan(100000);
+  expect(lastInput().highTick).toBeGreaterThan(100000);
+  fireEvent.keyDown(screen.getByLabelText(/Heatmap navigation/), { key: "c" });
+  flush();
+  expect(lastInput().highTick).toBeGreaterThan(100000);
+  fireEvent.click(screen.getByRole("button", { name: "Go live" }));
+  flush();
+  expect(lastInput().lowTick).toBeLessThan(80000);
+  expect(lastInput().highTick).toBeGreaterThan(80000);
+});
+
 function liveStore(timestamp = new Date(Date.now() + serverOffset).toISOString()) {
   const store = new OrderBookStore(contractId);
   store.setConnectionState({ contract_id: contractId, state: "connected" });

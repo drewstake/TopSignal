@@ -310,3 +310,31 @@ another API request responsive while history rendering is held, check gzip and
 identity transport, and verify cache reuse for a response exceeding 24 MiB before
 compression. This response correction is prepared until its own release passes
 all checks and activation.
+
+## Release 98 delivery verification and heatmap price-window correction
+
+Release `20261113-local-storage-98` (`315e71f`) completed guarded activation at
+23:32:56 UTC after all six CI jobs (run 43526518816), full local validation,
+fresh six-account flat/zero-order checks and the verified 23:11 recovery bundle.
+The lower full-session response now sends 4,120,804 gzip bytes for the same
+54,562,449-byte JSON, 269,896 raw measurements and zero skipped segments.
+Cold delivery under the full-cache snapshot took 11.985 seconds; immediate reuse
+took 1.250 seconds. Recent-window delivery took 0.562 seconds. All 31 concurrent
+health probes returned 200, with a maximum of 0.860 seconds. Six flat-account
+recorders reported zero BUSY retries, failed commits or discarded callbacks at
+the first post-activation check. This remains closed-market readiness evidence.
+
+The actual served browser rendered the lower chart's 47,865 observations and
+explicit quality gaps. Switching from 29593203 to 29672001 updated the URL,
+selector and recording status together. No console errors were observed. The
+browser was closed after verification; no native Computer Use helper remained.
+
+The upper heatmap delivered valid historical tiles in 0.062–0.125 seconds, but
+its paused price axis stayed near 27,920 while session-open recorded bids were
+28,393.50–28,477.50. Its price selection preferred the current live book and the
+summary's final frame even when inspecting an earlier window. A regression
+reproduces the resulting off-screen historical data. The prepared correction
+uses valid recorded observations inside the paused window, retains live-price
+following when returning live, and preserves manual price pan/zoom. The three
+affected heatmap test files pass. This correction still requires its own
+immutable release and served visual check.
