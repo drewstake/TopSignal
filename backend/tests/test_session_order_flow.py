@@ -178,3 +178,55 @@ def test_remote_source_requires_explicit_installation_and_checks_scope(tmp_path,
     assert json.loads(calls[0][1]['input'])['owner_hash'] == service.scope_hash('owner')
     assert 'StrictHostKeyChecking=yes' in calls[0][0]
     assert not calls[0][1].get('shell')
+
+
+def test_cold_inventory_deadline_preserves_progress_and_warm_refresh_skips_old_scan(tmp_path, monkeypatch):
+    import tools.read_session_flow as reader
+    import tools.depth_heatmap as heatmap
+    for minute in (1, 2, 3):
+        write(tmp_path, [(minute, 'trade', dict(type=0, price=100, volume=10)), (30.1, 'quote', {})])
+    reader._inventory = None
+    clock, opened = [0], []
+    original = heatmap.read_manifest
+    def slow(*args, **kwargs):
+        result = original(*args, **kwargs)
+        opened.append(args[0])
+        clock[0] += 1
+        return result
+    monkeypatch.setattr(reader.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(heatmap, 'read_manifest', slow)
+    with pytest.raises(RuntimeError, match='preparing'):
+        read(tmp_path, max_seconds=1)
+    assert len(opened) == 1
+    read(tmp_path, max_seconds=100)
+    assert len(opened) == 3
+    monkeypatch.setattr(heatmap, 'read_manifest', lambda *a, **k: pytest.fail('Old inventory reread'))
+    assert read(tmp_path)['coverage']['pending_segments'] == 0
+
+
+def test_cached_inventory_rechecks_selected_owner_and_child_integrity(tmp_path):
+    write(tmp_path, [(1, 'trade', dict(type=0, price=100, volume=10)), (30.1, 'quote', {})])
+    assert read(tmp_path)['session']['buy'] == 10
+    marker = next(tmp_path.glob('*/*/*.segment.json'))
+    manifest = json.loads(marker.read_text())
+    manifest['owner_hash'] = 'b'*64
+    marker.write_text(json.dumps(manifest))
+    assert read(tmp_path)['session']['buy'] == 0
+    assert read(tmp_path)['session']['buy'] == 0
+
+
+def test_read_deadline_stops_optional_processing_and_exposes_pending(tmp_path, monkeypatch):
+    import tools.read_session_flow as reader
+    for minute in (1, 2, 3):
+        write(tmp_path, [(minute, 'trade', dict(type=0, price=100, volume=10)), (30.1, 'quote', {})])
+    clock = [0]
+    original = reader.verified_rows
+    def slow(*args, **kwargs):
+        clock[0] += 2
+        return original(*args, **kwargs)
+    monkeypatch.setattr(reader.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(reader, 'verified_rows', slow)
+    result = read(tmp_path, max_seconds=1)
+    assert result['coverage']['status'] == 'building'
+    assert result['coverage']['processed_segments'] == 1
+    assert result['coverage']['pending_segments'] == 2

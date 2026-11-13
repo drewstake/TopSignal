@@ -625,6 +625,7 @@ class Inventory:
         self.errors = 0
 
     def scan(self, *, since_ms: int | None = None, should_stop=None):
+        examined = sum(len(known) for _, known in self.runs.values())
         def checkpoint():
             if should_stop is not None and should_stop():
                 raise InventoryPaused()
@@ -657,6 +658,9 @@ class Inventory:
                                     yield Path(entry.path), entry.stat(follow_symlinks=False)
                     for marker, info in markers():
                         checkpoint()
+                        examined += 1
+                        if examined > 50000:
+                            raise ValueError('Recording inventory exceeds 50,000 manifests; storage review required')
                         known[marker.name] = None
                         try:
                             m = read_manifest(marker, root, validated_parent=run, file_info=info)

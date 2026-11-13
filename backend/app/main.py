@@ -3859,7 +3859,7 @@ def get_session_order_flow(
     try:
         return account_session_flow(user_id=user_id, contract_id=contract_id, data_live=data_live)
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "5", "Cache-Control": "no-store"}) from exc
 
 
 @app.get("/api/accounts/{account_id}/order-book-history")

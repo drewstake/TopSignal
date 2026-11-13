@@ -52,8 +52,8 @@ def read_manifest(marker, root, *, validated_parent=None, file_info=None):
     elif marker.parent != validated_parent or not re.fullmatch(r'\d{8}\.segment\.json', marker.name):
         raise ValueError('Invalid manifest under verified run directory.')
     # Inventory validates the run's ancestors once, then supplies fresh Windows
-    # enumeration metadata for each immediate child. Selected source receipts
-    # and data still pass the complete path check before returning observations.
+    # enumeration metadata for each immediate child. Every request rechecks
+    # selected run ancestry and each selected child identity/reparse flags.
     info = file_info or marker.stat(follow_symlinks=False)
     if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
         raise ValueError('Recording reparse points are unsupported.')
@@ -193,6 +193,17 @@ def safe_path(path, root):
         if part.is_symlink() or (hasattr(part, 'is_junction') and part.is_junction()):
             raise ValueError('Recording reparse points are unsupported.')
     return path
+
+
+def child_signature(path, parent):
+    """Fresh file identity after this request checked the run's ancestry."""
+    if path.parent != parent or not re.fullmatch(r'\d{8}\.ndjson\.gz', path.name):
+        raise ValueError('Invalid recording child')
+    info = path.stat(follow_symlinks=False)
+    if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+        raise ValueError('Recording reparse points are unsupported.')
+    return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
 
 
 def verified_rows(marker, manifest, root, *, raw_events=False):
@@ -351,13 +362,17 @@ def _read_history(root, query, *, deadline=None, index=None):
     buckets, previous = {}, {}
     quality_counts, excluded_counts = Counter(), Counter()
     raw_count = flagged_count = 0
+    validated_runs = set()
     for first, last, marker, m in manifests:
         check_deadline(deadline)
         if last < start or first >= end:
             continue
         try:
             # An index is a locator, never authority for ownership or integrity.
-            current = read_manifest(marker, root)
+            if marker.parent not in validated_runs:
+                safe_path(marker.parent, root)
+                validated_runs.add(marker.parent)
+            current = read_manifest(marker, root, validated_parent=marker.parent)
             if current != m:
                 if index is not None:
                     index.invalidate_run(marker.parent)
@@ -367,7 +382,8 @@ def _read_history(root, query, *, deadline=None, index=None):
             raw_bytes += m['uncompressed_bytes']
             if raw_bytes > (MAX_SESSION_RAW_BYTES if overview else MAX_RAW_BYTES):
                 raise OverflowError('Choose a shorter time range to read this recording.')
-            segment_points = segment_measurements(marker, m, root, scope, index=index, deadline=deadline)
+            segment_points = segment_measurements(marker, m, root, scope, index=index,
+                deadline=deadline, validated_parent=marker.parent)
             for point in segment_points:
                 if not start.timestamp() <= point['time'] < end.timestamp():
                     continue
@@ -403,12 +419,13 @@ def _read_history(root, query, *, deadline=None, index=None):
                 generated_at=datetime.now(timezone.utc).isoformat())
 
 
-def segment_measurements(marker, manifest, root, scope, *, index=None, deadline=None):
+def segment_measurements(marker, manifest, root, scope, *, index=None, deadline=None, validated_parent=None):
     name = manifest['file']
     if not re.fullmatch(r'\d{8}\.ndjson\.gz', name):
         raise ValueError('Invalid segment filename.')
-    path = safe_path(marker.parent / name, root)
-    before = signature(path)
+    path = marker.parent / name
+    before = (child_signature(path, validated_parent) if validated_parent is not None
+              else signature(safe_path(path, root)))
     identity = json.dumps([before, manifest], sort_keys=True)
     if index is not None:
         cached = index.load_points(marker, scope, identity)

@@ -165,3 +165,29 @@ A full-cache backup started 22:17 UTC at 8 MiB/s under the unchanged capacity
 and deadlines; it is still in progress and does not yet replace the stale
 November 4 full-cache receipt. The current Discord helper restarted with a
 minimal local-only environment and reported `watching`, PID 15304, at 22:23 UTC.
+
+## Follow-up history delivery findings
+
+The first served history check on release 91 returned recent lower history in
+7.718 seconds, the full-session lower view as bounded HTTP 503 at 20.032 seconds,
+and the complete-session heatmap summary in 0.125 seconds (7 coverage intervals,
+463 explicit quality/coverage gaps). No HTTP 500 occurred. Session order flow
+still exceeded a 40-second client deadline: its separate reader performed a
+fresh raw archive walk despite caching derived summaries.
+
+A follow-up changes session-flow inventory to bounded, resumable incremental
+metadata scans and rechecks selected manifest ownership/file identities before
+using summaries. The selected lower-history path validates each run's ancestry
+once per request and every child for reparse points and fresh identity, avoiding
+repeated ancestor opens per segment. Compressed/uncompressed source checksums
+remain mandatory on cache misses, and changed cached content stays rejected.
+No storage budget or strategy changes are included. New tests cover interrupted
+cold scans, warm reuse, changed ownership, child reparse metadata and bounded
+processing with explicit pending coverage. These are prepared changes until a
+new immutable release is accepted.
+
+Candidate 92 was not packaged: its backend suite passed 3,425 tests plus eight
+subtests, but one unrelated frontend CSV-import test timed out awaiting its
+confirmation dialog. The unchanged six-test CSV-import file passed immediately
+in isolation. The next complete candidate must pass all release checks anew;
+the failed validation directory is retained.

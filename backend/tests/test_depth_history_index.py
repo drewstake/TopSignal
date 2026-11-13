@@ -121,3 +121,18 @@ def test_inventory_fast_path_rejects_reparse_metadata(tmp_path):
     info = SimpleNamespace(st_mode=stat.S_IFREG, st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT)
     with pytest.raises(ValueError, match='reparse'):
         reader.read_manifest(marker, tmp_path, validated_parent=tmp_path, file_info=info)
+
+
+def test_warm_points_recheck_raw_child_reparse_metadata(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import stat
+    capture(tmp_path)
+    assert read(tmp_path)['points']
+    original = Path.stat
+    def altered(path, *args, **kwargs):
+        if path.name.endswith('.ndjson.gz'):
+            return SimpleNamespace(st_mode=stat.S_IFREG, st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT)
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'stat', altered)
+    result = read(tmp_path)
+    assert result['points'] == [] and result['skipped_segments'] == 1
