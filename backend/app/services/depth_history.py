@@ -1,5 +1,6 @@
 """Authenticated caller selects an owner; transport configuration is server-owned."""
 import json
+import gzip
 from collections import OrderedDict
 from concurrent.futures import Future, TimeoutError
 import os
@@ -23,8 +24,17 @@ def history_source_path():
     return Path(__file__).resolve().parents[2] / 'storage/depth-history-source.json'
 
 
-def account_history(*, user_id, start=None, end=None, scope='all', window='latest'):
-    # Share duplicate tab requests. Cache only bounded response JSON in memory,
+def _deliver(payload, representation):
+    if representation == 'gzip':
+        return payload
+    raw = gzip.decompress(payload)
+    return raw if representation == 'json' else json.loads(raw)
+
+
+def account_history(*, user_id, start=None, end=None, scope='all', window='latest', representation='object'):
+    if representation not in {'object', 'json', 'gzip'}:
+        raise ValueError('Invalid history response representation')
+    # Share duplicate tab requests. Cache only bounded compressed JSON in memory,
     # scoped to the authenticated owner and server-controlled source revision.
     config = history_source_path()
     revision = (config.stat().st_mtime_ns, config.stat().st_size) if config.exists() else None
@@ -33,26 +43,27 @@ def account_history(*, user_id, start=None, end=None, scope='all', window='lates
         cached = _cache.get(key)
         if cached and monotonic() - cached[0] < 30:
             _cache.move_to_end(key)
-            return json.loads(cached[1])
+            return _deliver(cached[1], representation)
         future = _pending.get(key)
         leader = future is None
         if leader:
             future = _pending[key] = Future()
     if not leader:
         try:
-            return json.loads(future.result(timeout=READ_SECONDS + 7))
+            return _deliver(future.result(timeout=READ_SECONDS + 7), representation)
         except TimeoutError as exc:
             raise RuntimeError('History is still preparing. Retry shortly or choose a shorter range.') from exc
     try:
         result = _read_account_history(user_id=user_id, start=start, end=end, scope=scope, window=window)
-        payload = json.dumps(result, separators=(',', ':'), allow_nan=False)
+        payload = gzip.compress(json.dumps(result, separators=(',', ':'), allow_nan=False).encode(),
+                                compresslevel=1)
         with _cache_lock:
             _cache[key] = (monotonic(), payload)
             _cache.move_to_end(key)
             while len(_cache) > 4 or sum(len(item[1]) for item in _cache.values()) > 24 * 1024**2:
                 _cache.popitem(last=False)
         future.set_result(payload)
-        return result
+        return _deliver(payload, representation)
     except Exception as exc:
         future.set_exception(exc)
         raise

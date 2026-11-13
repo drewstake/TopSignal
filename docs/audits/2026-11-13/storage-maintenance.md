@@ -253,3 +253,60 @@ seconds and hit the bounded retry. These are direct helper measurements, not
 served API acceptance under backup load. Session flow now returns partial HTTP
 200 with explicit `building` status and pending segment counts; partial response
 does not imply complete session coverage.
+
+
+## Release 94, development-PC isolation and response serialization
+
+Release `20261113-local-storage-94` (`8196fca`) completed activation at
+23:00:50 UTC after exact-commit CI and full local validation. Its grouped writer
+reported no BUSY retries, failed commits or discarded callbacks through the
+23:16 backup-load check. Six flat-account heartbeats remained fresh. Its served
+full-session lower history returned 200 in 18.672/17.782 seconds, with 269,896
+raw measurements and zero skipped segments; upper summary returned in 1.032
+seconds. These successful responses still left a delivery-performance problem.
+
+The host blocked both directions over both configured development-PC Tailscale
+addresses from 23:05:54 to 23:10:56 UTC (301.699 seconds). SSH probes from the
+PC timed out. An autonomous host observer retained 67 samples, including 60
+inside isolation: all six account heartbeats stayed below 1.116 seconds, local
+API health/readiness stayed 200, and depth PID 17264/capture
+`1624b5417a294a7e8d4775dd2727e306` persisted with errors unchanged at eight.
+Depth status age stayed below 5.709 seconds. The market was closed and raw event
+count did not advance during isolation, so this proves runtime independence and
+readiness rather than new trade/depth-event capture. The ordinary test cleanup
+restored access; both narrow firewall rules and both temporary tasks were removed
+at 23:11:43 UTC. Scripts, rules, task XML and observations are preserved under
+`independence-verification-20261113` on the host and `tmp/remediation-20261113/independence-receipts`
+off device. The local connection task automatically reconnected afterward.
+
+A fresh release-94 PostgreSQL/auth backup created 23:11:48 UTC restored off device
+at 23:13:12 UTC, matching 38 tables/13,078 rows, credential decryption, absent
+execution authority and network-blocked local auth issuance/restart/revocation.
+Its dump SHA-256 is
+`1c4071101020d8692605b5a6f72668dbca250033d807c756b4681be092682e96`.
+
+Backup helper bundle 97 (`05348c8`) passed the complete local validation and all
+six CI jobs (run 43524691401). The immutable `backup-remediation-v3` helper and
+recovery-PC `scheduled-tools-v19` carry the pacing correction. Config v20 started
+a fresh full-cache run at 23:14:15 UTC, retaining the 8 MiB/s cap, 250 GB capacity,
+existing deadlines and every failed stage. Its 20,118,361,467-byte capacity
+estimate completed in 26 seconds. The full-cache restore remains pending.
+Candidate 95 failed an existing pagination fixture immediately after the 18:00
+New York rollover; candidate 96 failed an archive fixture that assumed open
+market minutes on Friday evening. The fixtures now use the requested trading-day
+window and a fixed open-session collection time respectively; 177 affected tests
+pass without changing production calendar or risk logic.
+
+The actual served browser exposed status timeouts during full-history delivery.
+A read-only live stack profile found `jsonable_encoder`/`serialize_response` on
+the API main event loop. A 54,562,449-byte response took 17.25 seconds; it exceeded
+the existing 24 MiB response cache and was immediately evicted, so repeated
+requests still rebuilt and traversed the whole response. The prepared correction
+encodes/compresses JSON in the synchronous worker, stores compressed bytes under
+the same cache limit, and returns those bytes directly with negotiated gzip and
+`Cache-Control: no-store`. The JSON schema, owner isolation, checksums, bounded
+reader, point limits and history contents are unchanged. Regression tests keep
+another API request responsive while history rendering is held, check gzip and
+identity transport, and verify cache reuse for a response exceeding 24 MiB before
+compression. This response correction is prepared until its own release passes
+all checks and activation.

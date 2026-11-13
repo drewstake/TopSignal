@@ -3871,6 +3871,7 @@ def get_order_book_history(
     scope: Literal["all", "1", "5", "10", "20", "50", "100"] = "all",
     window: Literal["latest", "session"] = "latest",
     db: Session = Depends(get_db),
+    request: Request = None,
 ):
     from .services.depth_history import account_history
     user_id = get_authenticated_user_id()
@@ -3882,8 +3883,17 @@ def get_order_book_history(
     )) or (window == "session" and start):
         raise HTTPException(status_code=422, detail="Choose a timezone-aware range of up to 24 hours, or the current session.")
     try:
-        return account_history(user_id=user_id, start=start.isoformat() if start else None,
-                               end=end.isoformat() if end else None, scope=scope, window=window)
+        compressed = request is not None and "gzip" in request.headers.get("accept-encoding", "").lower()
+        payload = account_history(user_id=user_id, start=start.isoformat() if start else None,
+                                  end=end.isoformat() if end else None, scope=scope, window=window,
+                                  representation='gzip' if compressed else 'json')
+        # Already-normalized history can exceed 50 MB. Encode in this synchronous
+        # worker, not FastAPI's event-loop response traversal; keep status/health
+        # requests responsive while delivering full-session charts.
+        headers = {"Cache-Control": "no-store", "Vary": "Accept-Encoding"}
+        if compressed:
+            headers["Content-Encoding"] = "gzip"
+        return Response(content=payload, media_type="application/json", headers=headers)
     except (ValueError, OverflowError) as exc:
         raise HTTPException(status_code=422, detail="History exceeds the bounded session reader; choose a shorter range.") from exc
     except RuntimeError as exc:
