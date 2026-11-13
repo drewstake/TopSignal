@@ -38,6 +38,25 @@ def ready(owner="owner", account=1):
     return engine
 
 
+def test_status_distinguishes_flat_stale_and_scoped_positions(local, monkeypatch):
+    monkeypatch.setattr(store, 'now', lambda: T)
+    monkeypatch.setattr(store, 'verify_destination', lambda: dict(free_bytes=store.FLOOR, files={}))
+    assert store.status('owner', 1)['recording_state'] == 'not_enrolled'
+    with store.connect(write=True) as db:
+        db.execute('INSERT INTO trade_progress_scopes VALUES(?,?,?,?,?)', ('owner',1,1,T,None))
+    assert store.status('owner', 1)['recording_state'] == 'recording_flat'
+    foreign = ready('other', 1)
+    foreign.position(pos(), T)
+    foreign.flush()
+    assert store.status('owner', 1)['open_positions'] == 0
+    engine = ready()
+    engine.position(pos(), T)
+    engine.flush()
+    assert store.status('owner', 1)['recording_state'] == 'recording'
+    monkeypatch.setattr(store, 'now', lambda: T+31)
+    assert store.status('owner', 1)['recording_state'] == 'heartbeat_stale'
+
+
 def test_future_clock_fill_is_preserved_with_timing_uncertainty(local):
     engine=ready()
     engine.fill(dict(id=99,accountId=1,contractId=C,creationTimestamp=iso(T+.02),
@@ -47,6 +66,34 @@ def test_future_clock_fill_is_preserved_with_timing_uncertainty(local):
         row=json.loads(db.execute('select payload from trade_progress_fills').fetchone()[0])
     assert row['ts']==T+.02
     assert row['clock_issue']=='provider_timestamp_after_receipt'
+
+
+def test_reconnected_fill_clock_metadata_does_not_create_a_broker_correction(local):
+    engine=ready()
+    fill=dict(id=99,accountId=1,contractId=C,creationTimestamp=iso(T+.02),profitAndLoss=10,size=1,price=105)
+    engine.fill(fill,T); engine.flush()
+    engine.fill(fill,T+1); engine.flush()
+    with store.connect() as db:
+        assert db.execute('select count(*) from trade_progress_fill_revisions').fetchone()[0]==1
+        head=json.loads(db.execute('select payload from trade_progress_fills').fetchone()[0])
+    assert head['realized_dollars']==10 and not head.get('revision_conflict')
+    assert head['clock_issue']=='provider_timestamp_after_receipt'
+
+
+def test_policy_manages_only_its_enrollments_and_retains_audited_optouts(local, monkeypatch):
+    monkeypatch.setattr(store,'verify_destination',lambda: {})
+    store.enroll('owner',1,True)
+    assert store.reconcile_policy('owner',[2],2)
+    assert store.scopes()==[('owner',1),('owner',2)]
+    assert store.reconcile_policy('owner',[3],2)
+    assert store.scopes()==[('owner',1),('owner',3)]
+    store.enroll('owner',3,False)
+    assert store.reconcile_policy('owner',[3],2)
+    assert store.scopes()==[('owner',1)]
+    assert not store.reconcile_policy('owner',[4,5],2)
+    assert store.scopes()==[('owner',1)]
+    with store.connect() as db:
+        assert db.execute('select count(*) from trade_progress_enrollment_changes where account=3').fetchone()[0]==2
 
 
 def test_snapshot_can_replace_receipt_only_identity_without_false_continuity(local):
@@ -413,6 +460,22 @@ def test_mirror_rejects_feature_even_if_a_table_were_registered(local):
     with pytest.raises(ValueError,match="Unregistered mirror table"):
         _apply_row(ForbiddenTarget(),"trade_progress_samples","INSERT",{"id":1,"points":3},
                    {"trade_progress_samples":["id"]})
+
+
+def test_replayed_legacy_fill_digest_does_not_manufacture_a_revision(local):
+    from hashlib import sha256
+    engine=ready()
+    fill=dict(id=12,accountId=1,contractId=C,creationTimestamp=iso(T),size=1,price=100,profitAndLoss=10)
+    engine.fill(fill,T+1);engine.flush()
+    with store.connect(write=True) as db:
+        row=db.execute('SELECT payload FROM trade_progress_fill_revisions').fetchone()
+        legacy_digest=sha256(row['payload'].encode()).hexdigest()
+        db.execute('UPDATE trade_progress_fill_revisions SET digest=?',(legacy_digest,))
+    engine.fill(fill,T+2);engine.flush()
+    with store.connect() as db:
+        assert db.execute('SELECT count(*) FROM trade_progress_fill_revisions').fetchone()[0]==1
+        payload=json.loads(db.execute('SELECT payload FROM trade_progress_fills').fetchone()[0])
+        assert payload['realized_dollars']==10 and not payload.get('revision_conflict')
 
 
 def test_writer_rechecks_runner_connection_after_queued_stale_state(local,monkeypatch):

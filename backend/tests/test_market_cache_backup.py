@@ -334,10 +334,11 @@ def test_snapshot_without_a_previous_manifest_is_a_full_copy(tmp_path, monkeypat
     tool.verify(output)
 
 
-def test_derived_heatmap_cache_is_rebuilt_not_archived(tmp_path, monkeypatch):
+@pytest.mark.parametrize('cache_name', ['depth-heatmap-v1', 'depth-history-cache-v1'])
+def test_derived_heatmap_cache_is_rebuilt_not_archived(tmp_path, monkeypatch, cache_name):
     tool, _ = incremental_tools(monkeypatch)
     source, segment, _ = cache(tmp_path)
-    derived = source/'depth-heatmap-v1'/('a'*64)/'sessions'/'2026-11-03.sqlite3'
+    derived = source/cache_name/('a'*64)/'sessions'/'2026-11-03.sqlite3'
     derived.parent.mkdir(parents=True)
     with closing(sqlite3.connect(derived)) as db:
         db.execute('PRAGMA journal_mode=WAL')
@@ -346,7 +347,7 @@ def test_derived_heatmap_cache_is_rebuilt_not_archived(tmp_path, monkeypatch):
         output = tmp_path/'full'
         tool.backup(source, output, previous=tmp_path/'absent')
     files = json.loads((output/'backup-manifest.json').read_text())['files']
-    assert not any(name.startswith('depth-heatmap-v1/') for name in files)
+    assert not any(name.startswith(cache_name+'/') for name in files)
     # Raw segments (the source of the derived cache) and other stores are still archived.
     assert any(name.endswith(segment.name) for name in files)
     assert 'live.sqlite3' in files
@@ -406,7 +407,8 @@ def test_runner_refuses_to_overlap_a_running_snapshot_and_records_the_stage(tmp_
         runner.execute(runner_config(tmp_path, destination), sleep=lambda seconds: None)
     status = json.loads((tmp_path/'state.json').read_text())
     assert status['last_failure']['stage'] == 'overlap_check' and status['last_failure']['type'] == 'RuntimeError'
-    assert calls[0][1] == 900  # the size estimate is no longer cut off after 60 seconds
+    assert calls[0][1] == 120  # refuse overlap before a potentially expensive capacity walk
+    assert not any('ConvertTo-Json' in script for script, _ in calls)
     assert not any('--source' in script for script, _ in calls)
 
 

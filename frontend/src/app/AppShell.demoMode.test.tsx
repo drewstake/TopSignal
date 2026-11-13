@@ -4,6 +4,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../lib/localAuth", () => ({ localAuthConfigured: true }));
+
 import type { AccountInfo } from "../lib/types";
 
 const {
@@ -14,7 +16,7 @@ const {
   refreshTradesMock,
   reloadPageMock,
   replacePagePathMock,
-  signOutSupabaseMock,
+  signOutMock,
   hasActiveLiveMutationRequestsMock,
 } = vi.hoisted(() => ({
   getAccessTokenSyncMock: vi.fn(() => "real-access-token" as string | null),
@@ -24,7 +26,7 @@ const {
   refreshTradesMock: vi.fn(),
   reloadPageMock: vi.fn(),
   replacePagePathMock: vi.fn(),
-  signOutSupabaseMock: vi.fn(async () => undefined),
+  signOutMock: vi.fn(async () => undefined),
   hasActiveLiveMutationRequestsMock: vi.fn(() => false),
 }));
 
@@ -34,11 +36,11 @@ vi.mock("../lib/appShellApi", () => ({
   refreshTrades: refreshTradesMock,
 }));
 
-vi.mock("../lib/supabase", () => ({
+vi.mock("../lib/auth", () => ({
   getAccessTokenSync: getAccessTokenSyncMock,
   getCurrentUserEmailSync: getCurrentUserEmailSyncMock,
   hasSupabaseConfig: true,
-  signOutSupabase: signOutSupabaseMock,
+  signOut: signOutMock,
 }));
 
 vi.mock("./pageNavigation", () => ({
@@ -140,16 +142,16 @@ describe("AppShell Demo Mode policy", () => {
     expect(confirmMock).toHaveBeenCalledWith(
       "This signs out your real TopSignal session. Demo data itself is not an account. Continue?",
     );
-    expect(signOutSupabaseMock).not.toHaveBeenCalled();
+    expect(signOutMock).not.toHaveBeenCalled();
 
     confirmMock.mockReturnValue(true);
     fireEvent.click(signOut);
-    await waitFor(() => expect(signOutSupabaseMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(signOutMock).toHaveBeenCalledTimes(1));
   });
 
   it("keeps the session visibly active and reports a sign-out failure", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    signOutSupabaseMock.mockRejectedValueOnce(new Error("Auth service unavailable"));
+    signOutMock.mockRejectedValueOnce(new Error("Auth service unavailable"));
     renderDemoShell();
 
     fireEvent.click(await screen.findByRole("button", { name: "Sign out live session" }));
@@ -159,7 +161,7 @@ describe("AppShell Demo Mode policy", () => {
     );
     const retryButton = screen.getByRole("button", { name: "Sign out live session" });
     expect((retryButton as HTMLButtonElement).disabled).toBe(false);
-    expect(signOutSupabaseMock).toHaveBeenCalledTimes(1);
+    expect(signOutMock).toHaveBeenCalledTimes(1);
   });
 
   it("composes Demo Mode with the dashboard-only compact shell", async () => {

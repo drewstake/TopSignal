@@ -91,6 +91,14 @@ the example release name or bot ID is still current.
 }
 ```
 
+For the reviewed local-only transition, the private host config can include
+`"retire_cloud_configuration": true`. It removes only obsolete cloud/Journal
+bindings from the **new** candidate before its integrity receipt, verifies the
+existing local-authority/trusted-device profile, and preserves all other values.
+It does not retire database mirroring, revoke credentials or restart helpers.
+Follow [the separate storage transition](supabase-retirement.md), including its
+post-activation graceful stop and recovery/authority gates.
+
 The credential helper must return only a `PSCredential` for the existing limited
 service identity. No password or broker credential belongs in this JSON. Host-key
 checking remains mandatory. The current command supports the existing task name

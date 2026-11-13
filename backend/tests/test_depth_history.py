@@ -166,3 +166,40 @@ def test_duplicate_tabs_share_bounded_owner_scoped_reads(tmp_path, monkeypatch):
     monkeypatch.setattr(service,'monotonic',lambda:float('inf'))
     service.account_history(user_id='a',window='session')
     assert calls==['a','b','a']
+
+
+def test_timed_out_waiter_does_not_release_the_active_disk_slot(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, BoundedSemaphore
+    monkeypatch.setattr(service, 'history_source_path', lambda: tmp_path/'source.json')
+    monkeypatch.setattr(service, 'cache_root', lambda: tmp_path)
+    monkeypatch.setattr(service, '_slots', BoundedSemaphore(1))
+    monkeypatch.setattr(service, 'READ_SECONDS', -6.98)  # 20ms follower wait; disk call remains blocked.
+    started, release = Event(), Event()
+    def blocked(*args, **kwargs):
+        started.set()
+        assert release.wait(3)
+        return {'points':[]}
+    monkeypatch.setattr(service, 'read_history', blocked)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        leader=pool.submit(service.account_history,user_id='bounded-leader')
+        assert started.wait(2)
+        try:
+            with pytest.raises(RuntimeError,match='still preparing'):
+                service.account_history(user_id='bounded-leader')
+            with pytest.raises(RuntimeError,match='busy'):
+                service.account_history(user_id='other-owner')
+        finally:
+            release.set()
+        assert leader.result()['points']==[]
+    assert service.account_history(user_id='other-owner')['points']==[]
+
+
+def test_history_deadline_returns_recoverable_503(monkeypatch):
+    import app.main as main
+    monkeypatch.setattr(main,'get_authenticated_user_id',lambda:'owner')
+    monkeypatch.setattr(main,'_require_owned_projectx_account',lambda *a,**k:None)
+    monkeypatch.setattr(service,'account_history',lambda **k:(_ for _ in ()).throw(RuntimeError('History is still preparing')))
+    with pytest.raises(HTTPException) as caught:
+        main.get_order_book_history(123,Response(),db=SimpleNamespace(rollback=lambda:None))
+    assert caught.value.status_code==503 and caught.value.headers=={'Retry-After':'5','Cache-Control':'no-store'}

@@ -1,8 +1,17 @@
 # Local-first storage migration
 
-Deployed on peteamdpc as `20261103-local-execution-45` on November 3, 2026.
-Local PostgreSQL is the execution authority; Supabase is fenced against stale
-execution writers. See the [verified deployment evidence](audits/2026-11-02/local-first-storage.md).
+The November 3 execution cutover used `20261103-local-execution-45`; that release
+is historical. The [November 13 live audit](audits/2026-11-13/peteamdpc-health.md)
+found `20261112-auto-signin-87`, PostgreSQL at loopback port 5433/database
+`topsignal`, and the same active local execution authority. Supabase is
+**partially retired**. Preserve cloud writer fences and the
+[original migration evidence](audits/2026-11-02/local-first-storage.md).
+
+The [prepared retirement procedure](supabase-retirement.md) covers local-only
+recorder permissions, auth, Journal recovery, mirror fencing and current-release
+backup selection. It has not been activated; the deployed boundaries below are
+the November 13 baseline. Current archive/restore and candidate test receipts are
+in [storage remediation](audits/2026-11-13/storage-remediation.md).
 
 ## Storage boundaries
 
@@ -15,10 +24,14 @@ execution writers. See the [verified deployment evidence](audits/2026-11-02/loca
   archives and forward-result ledgers retain their existing filesystem layout.
 - Execution state uses one PostgreSQL authority. Authentication remains separate
   and ownership, risk, order-idempotency and worker-lease checks still apply.
-- Supabase remains the authentication provider, journal object-storage provider
-  and asynchronous compact-record mirror. It is never an automatic execution
-  fallback. A cloud outage can still prevent new sign-in/token refresh or access
-  to remotely stored journal images.
+- Hosted sign-in uses local `trusted_device` authentication and protected SQLite
+  state at `C:/ProgramData/TopSignal/runtime/local-auth/auth.sqlite3`. Supabase
+  Auth/JWKS and the frontend cloud client remain configured for alternative cloud
+  sign-in; local sessions do not refresh through Supabase.
+- Supabase remains the configured journal object-storage provider and active
+  asynchronous compact-record mirror. It is never an execution fallback. Cloud
+  outages still affect cloud sign-in/token refresh, remote journal images and
+  mirror catch-up independently of local authentication.
 
 On peteamdpc the preserved independent recorder currently loads its configuration
 and provider credentials from the cloud read-only at process startup, then closes
@@ -125,6 +138,15 @@ replicated. New mirrored tables require an explicit registration/migration.
 
 ## Recovery and rollback
 
+At the November 13 inspection, the development-PC off-device archive task was
+**disabled**. The last full-cache off-device verification/restore receipt is
+November 4. The November 12 execution snapshot is verified on the host and awaits
+off-device transport. A November 13 focused restore protects progress/study
+stores and an execution export, not the full raw cache or a full PostgreSQL
+restore. Check the [scoped backup inventory](audits/2026-11-13/peteamdpc-health.md)
+before making recovery promises. Heavy catch-up requires a separately authorized
+operating window.
+
 Retain previous releases and backups. After local execution begins, a code
 rollback must still use the current local PostgreSQL authority and current D:
 store. Repointing at the cloud copy is a separate, fenced reverse migration,
@@ -172,7 +194,8 @@ events, oldest event, queue bytes, last acknowledgement and sanitized retry
 errors. Stopping sync must not stop trading or the recorder. Provisioning
 functions require a transaction; authority activation is a separate step.
 
-Schema changes require coordinated migrations on both databases. Incompatible
+While the mirror is active, mirrored schema changes require coordinated
+migrations on both databases. Incompatible
 schemas or uniqueness conflicts, including conflicts with logically deleted
 cloud rows, retain the queue and fail synchronization. Resolve them deliberately
 without deleting user data or skipping events.

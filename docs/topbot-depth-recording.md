@@ -1,13 +1,25 @@
 # Continuous TopBot depth recording
 
+The [November 13 live audit](audits/2026-11-13/peteamdpc-health.md) verified this
+independent task writing MNQ Z26 raw depth and totals without a browser, but also
+found overnight coverage holes. Continuous collection is an objective, not a
+losslessness guarantee. The boot-started recorder has no 6 p.m.–4 p.m. timer;
+charts use a 6 p.m.–5 p.m. New York session with the market halt excluded. Bot
+entry/flatten cutoffs do not stop this recorder.
+
+Its pinned `dashboard-18` environment still reads Supabase PostgreSQL at startup.
+The main application's local execution cutover did not migrate this dependency.
+Preserve that environment until a separately validated recorder migration.
+
 The standalone research workspace was retired on November 10, 2026. Shared
 read-only depth helpers, derived-feature tools, and the recorder remain in use
 by Bot. Retiring the pages does not remove recorded segments or change host tasks.
 
 Deployed on peteamdpc (`DESKTOP-6EUPDU1`) on October 30, 2026. The independent
 `TopSignal Depth Recorder` Windows scheduled task records the active MNQ delivery
-contract from the existing owner's ProjectX credentials. TopBot remains in paper
-mode. This recorder does not supply model inputs or place orders.
+contract from the existing owner's ProjectX credentials. Its preserved dry-run
+configuration is separate from the active practice bot's execution settings.
+This recorder does not supply model inputs or place orders.
 
 The [deployment audit](audits/2026-10-30/topbot-level2-recording.md) contains the
 observed Level 2 verification, preservation checks and backup evidence.
@@ -151,10 +163,13 @@ TopSignal runtime's STOP file for recorder maintenance.
 
 ## Off-device backup
 
-The existing `TopSignal Off-device Archive Backup` task now includes only completed
-depth segments present at its snapshot boundary. It still runs at 18:15 Eastern
-on the development PC, requiring that PC to be on, the user signed in, and private
-SSH available. Recording itself has no development-PC dependency.
+The existing `TopSignal Off-device Archive Backup` task includes completed depth
+segments present at its snapshot boundary. Its configured 18:15 Eastern schedule
+was **disabled** at the November 13 inspection; the latest full verified
+off-device copy/restore was November 4. When authorized and enabled, it requires
+the development PC to be on, the user signed in and private SSH available.
+Recording itself has no development-PC dependency. Focused progress backups do
+not protect later raw depth/worker archives.
 
 The host helper is the recorder bundle's `backup_market_cache.py`. The installed
 development tools remain under

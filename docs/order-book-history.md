@@ -1,5 +1,12 @@
 # Recorded liquidity in Bot
 
+At the [November 13 audit](audits/2026-11-13/peteamdpc-health.md), live depth and
+independent raw/totals recording advanced while this chart displayed `Failed to
+fetch`. The deployed totals reader's shared request wait timed out after 125 s,
+producing HTTP 500; later requests returned 200. Heatmap derivation is separate.
+A blank chart cannot by itself establish missing provider data. Browser live
+samples exist only while the tab is visible; durable history comes from the host.
+
 The standalone Order book history tab was retired on November 10, 2026.
 The shared history chart remains embedded in Bot's “What TopBot sees” panel,
 alongside live depth. Its account-scoped history API and local recording tools
@@ -31,8 +38,10 @@ host or command. Responses use `Cache-Control: no-store`.
 By default the reader uses
 `TOPSIGNAL_DATABENTO_CACHE_DIR/depth-recordings-v1/totals`. It reads only committed
 summary gzip files, checks compressed/raw SHA-256 and receipt/scope metadata, and
-skips partial files. At most one hour, 20,000 points and 64 MiB of decompressed
-segments can be read per request. Inventory is capped at 50,000 manifests; larger
+skips partial files. Requests support explicit windows up to 24 hours or the
+current session, up to 100,000 returned points, 64 MiB of decompressed segments
+for ordinary reads and 2 GiB for wide/session reads. Inventory is capped at
+50,000 manifests; larger
 inventories require archival review. Corrupt files are skipped with a visible
 warning. Two concurrent history reads are allowed per backend process.
 
@@ -48,7 +57,7 @@ restart. Source files stay on the host and no history is written to Supabase.
 
 Each request sends only the authenticated owner's hash and bounded time/scope
 query over SSH. Existing key/host-key trust is reused with batch mode, strict
-host-key checking, forwarding disabled, and a 25-second process timeout. OAuth
+host-key checking, forwarding disabled, and a 25-second process timeout (120 seconds for wide/session reads). OAuth
 tokens and brokerage credentials are not sent to the reader. An unavailable
 host produces a visible error, not a silent fallback to stale local data.
 

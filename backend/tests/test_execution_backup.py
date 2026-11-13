@@ -32,14 +32,18 @@ def test_encrypted_restore_preserves_content_sequences_and_requires_fresh_author
     url = make_url(os.environ['TOPSIGNAL_TEST_POSTGRES_URL'])
     assert url.database.startswith('topsignal_audit_')
     names = ['topsignal_audit_backup_' + uuid4().hex[:12] for _ in range(2)]
+    policy_role = 'topsignal_audit_restore_' + uuid4().hex[:12]
     parameters = dict(host=url.host, port=url.port, user=url.username, password=url.password)
     binary = Path(os.environ['TOPSIGNAL_TEST_PG_BIN'])
     with psycopg.connect(dbname='postgres', autocommit=True, **parameters) as admin:
         admin.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(names[0])))
+        admin.execute(sql.SQL('CREATE ROLE {} NOLOGIN').format(sql.Identifier(policy_role)))
     try:
         with psycopg.connect(dbname=names[0], **parameters) as src:
             src.execute('CREATE TABLE accounts(id bigserial PRIMARY KEY, payload jsonb, amount numeric(24,8))')
             src.execute('CREATE TABLE market_observations(id bigint PRIMARY KEY)')
+            src.execute('ALTER TABLE accounts ENABLE ROW LEVEL SECURITY')
+            src.execute(sql.SQL('CREATE POLICY recovery_owner ON accounts FOR SELECT TO {} USING(true)').format(sql.Identifier(policy_role)))
             install_source(src, source_id=uuid4())
             src.execute('UPDATE topsignal_local.authority SET active=true')
             src.execute('INSERT INTO accounts(payload,amount) VALUES(%s::jsonb,123.12345678)', ('{"private":"test-only-record"}',))
@@ -76,10 +80,17 @@ def test_encrypted_restore_preserves_content_sequences_and_requires_fresh_author
             archive = Path(published['directory'])
             assert all(path.suffix in {'.fernet', '.json'} for path in archive.iterdir())
             assert decrypt_backup(archive, key)[0]['authority_excluded'] is True
+        # Simulate a different recovery machine lacking a new recorder policy role.
+        with psycopg.connect(dbname=names[0], autocommit=True, **parameters) as src:
+            src.execute('ALTER POLICY recovery_owner ON accounts TO PUBLIC')
+            src.execute(sql.SQL('DROP ROLE {}').format(sql.Identifier(policy_role)))
         result = restore(url=url.render_as_string(hide_password=False), pg_bin=binary,
                          directory=archive, key=key, database=names[1])
         assert result['verified']
         with psycopg.connect(dbname=names[1], autocommit=True, **parameters) as dst:
+            assert dst.execute('SELECT rolcanlogin,rolsuper,rolcreaterole,rolbypassrls FROM pg_roles WHERE rolname=%s',
+                               (policy_role,)).fetchone() == (False,False,False,False)
+            assert dst.execute("SELECT roles FROM pg_policies WHERE policyname='recovery_owner'").fetchone()[0] == [policy_role]
             assert dst.execute('SHOW timezone').fetchone()[0] == 'UTC'
             assert dst.execute('SELECT count(*) FROM topsignal_local.authority').fetchone()[0] == 0
             assert dst.execute('SELECT count(*) FROM topsignal_local.outbox').fetchone()[0] == 1
@@ -98,3 +109,4 @@ def test_encrypted_restore_preserves_content_sequences_and_requires_fresh_author
         with psycopg.connect(dbname='postgres', autocommit=True, **parameters) as admin:
             for name in names:
                 admin.execute(sql.SQL('DROP DATABASE IF EXISTS {} WITH (FORCE)').format(sql.Identifier(name)))
+            admin.execute(sql.SQL('DROP ROLE IF EXISTS {}').format(sql.Identifier(policy_role)))

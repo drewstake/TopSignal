@@ -76,6 +76,37 @@ afterEach(() => {
 });
 
 describe("AppShell account lifecycle reconciliation", () => {
+  it.each(["9999", "", "bad", "7101&account=7102"])("does not fall back under an unavailable or invalid account URL: %s", async query => {
+    Element.prototype.scrollIntoView = vi.fn();
+    const available = account(7101, "Available", "csv_import", true);
+    getSelectableAccountsLocalFirstMock.mockResolvedValue([available]);
+    const router = createMemoryRouter([{
+      path: "/", element: <AppShell />,
+      children: [{ path: "bot", element: <div>Scoped content</div> }],
+    }], { initialEntries: [`/bot?view=logs&account=${query}`] });
+    render(<RouterProvider router={router} />);
+    await screen.findByText("Account link unavailable");
+    expect(screen.queryByText("Scoped content")).toBeNull();
+    const select = screen.getByRole("combobox", { name: "Active Account" }) as HTMLSelectElement;
+    expect(select.value).toBe("");
+    expect(router.state.location.search).toBe(`?view=logs&account=${query}`);
+    fireEvent.change(select, { target: { value: "7101" } });
+    await screen.findByText("Scoped content");
+    expect(router.state.location.search).toBe("?view=logs&account=7101");
+    expect(select.value).toBe("7101");
+  });
+
+  it("writes the chosen default into a URL without an account", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    getSelectableAccountsLocalFirstMock.mockResolvedValue([account(7101, "Default", "csv_import", true)]);
+    const router = createMemoryRouter([{
+      path: "/", element: <AppShell />, children: [{ index: true, element: <div>Content</div> }],
+    }], { initialEntries: ["/?view=logs#saved"] });
+    render(<RouterProvider router={router} />);
+    await waitFor(() => expect(router.state.location.search).toBe("?view=logs&account=7101"));
+    expect(router.state.location.hash).toBe("#saved");
+  });
+
   it("discovers local accounts on opening with an empty snapshot, once across selection and navigation", async () => {
     Element.prototype.scrollIntoView = vi.fn();
     vi.stubEnv("VITE_LOCAL_PROJECTX", "true");

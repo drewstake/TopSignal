@@ -44,7 +44,7 @@ import { hasActiveLiveMutationRequests } from "../lib/liveMutationState";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../lib/tradeSyncEvents";
 import { requestTradeImportFilePicker } from "../lib/tradeImportEvents";
 import type { AccountInfo } from "../lib/types";
-import { getCurrentUserEmailSync, hasSupabaseConfig, signOutSupabase } from "../lib/supabase";
+import { getCurrentUserEmailSync, signOut } from "../lib/auth";
 import { localAuthConfigured } from "../lib/localAuth";
 import { useLatestRequestGuard } from "../lib/latestRequest";
 import { reloadPage, replacePagePath } from "./pageNavigation";
@@ -233,7 +233,9 @@ export function AppShell() {
     };
   }, [accountsReloadVersion, beginAccountsRequest, navigate]);
 
-  const queryAccountId = parseAccountId(new URLSearchParams(location.search).get(ACCOUNT_QUERY_PARAM));
+  const accountQueryValues = new URLSearchParams(location.search).getAll(ACCOUNT_QUERY_PARAM);
+  const hasAccountQuery = accountQueryValues.length > 0;
+  const queryAccountId = accountQueryValues.length === 1 ? parseAccountId(accountQueryValues[0]) : null;
   const freshnessAwareAccounts = useAccountProviderFreshness(accounts);
   const orderedAccounts = useMemo(
     () => sortAccountsForActiveSelection(freshnessAwareAccounts),
@@ -243,8 +245,11 @@ export function AppShell() {
   const mainAccountId = readStoredMainAccountId();
   const storedActiveAccountId = readStoredAccountId();
   const selectedAccountValue = useMemo(() => {
-    if (queryAccountId && orderedAccounts.some((account) => account.id === queryAccountId)) {
-      return String(queryAccountId);
+    // An explicit link is a scope boundary, including when it is invalid or
+    // no longer selectable. Never issue requests for a fallback under that URL.
+    if (hasAccountQuery) {
+      return queryAccountId && orderedAccounts.some((account) => account.id === queryAccountId)
+        ? String(queryAccountId) : "";
     }
     if (storedActiveAccountId && orderedAccounts.some((account) => account.id === storedActiveAccountId)) {
       return String(storedActiveAccountId);
@@ -259,11 +264,19 @@ export function AppShell() {
       return String(orderedAccounts[0].id);
     }
     return "";
-  }, [mainAccountId, orderedAccounts, persistedMainAccountId, queryAccountId, storedActiveAccountId]);
+  }, [hasAccountQuery, mainAccountId, orderedAccounts, persistedMainAccountId, queryAccountId, storedActiveAccountId]);
   const selectedAccountId = parseAccountId(selectedAccountValue);
+  const unavailableAccountLink = hasAccountQuery && selectedAccountId === null;
   activeLifecycleAccountIdRef.current = selectedAccountId;
   const selectedAccount = orderedAccounts.find((account) => account.id === selectedAccountId) ?? null;
   const selectedAccountIsLocalOnly = selectedAccount?.trade_data_source === "csv_import";
+
+  useEffect(() => {
+    if (hasAccountQuery || accountsLoading || accountsError || selectedAccountId === null) return;
+    const next = new URLSearchParams(location.search);
+    next.set(ACCOUNT_QUERY_PARAM, String(selectedAccountId));
+    navigate({ pathname: location.pathname, search: `?${next}`, hash: location.hash }, { replace: true });
+  }, [hasAccountQuery, accountsLoading, accountsError, selectedAccountId, location.pathname, location.search, location.hash, navigate]);
 
   useLayoutEffect(() => {
     if (demoMode.enabled) {
@@ -485,7 +498,7 @@ export function AppShell() {
     setSignOutPending(true);
     setSignOutError(null);
     try {
-      await signOutSupabase();
+      await signOut();
       clearLiveModeReturnSnapshot();
     } catch (error) {
       const detail = error instanceof Error && error.message ? ` ${error.message}` : "";
@@ -522,7 +535,7 @@ export function AppShell() {
           />
         <div className="workspace-sidebar-bottom">
           <div className="workspace-connection"><span className="workspace-status-dot" /><span>{demoMode.enabled ? "Demo workspace" : `${orderedAccounts.length} connected account${orderedAccounts.length === 1 ? "" : "s"}`}</span></div>
-                {hasSupabaseConfig || localAuthConfigured ? (
+                {localAuthConfigured ? (
                   <div className="workspace-identity flex min-h-11 w-full min-w-0 max-w-full items-center gap-2 self-end rounded-lg border border-app-border bg-app-surface/60 px-2.5 text-xs text-app-muted sm:h-9 sm:min-h-0 sm:w-auto sm:max-w-[340px] xl:w-[260px] xl:flex-none">
                     <span className="min-w-0 flex-1 truncate" title={sessionIdentityDisplay}>
                       {sessionIdentityDisplay}
@@ -574,6 +587,7 @@ export function AppShell() {
                     onChange={(event) => handleAccountChange(event.target.value)}
                     disabled={accountsLoading || orderedAccounts.length === 0}
                   >
+                    {!accountsLoading && unavailableAccountLink ? <option value="">Choose an available account</option> : null}
                     {accountsLoading ? <option>Loading accounts...</option> : null}
                     {!accountsLoading && orderedAccounts.length === 0 ? <option>No accounts</option> : null}
                     {orderedAccounts.map((account) => (
@@ -706,7 +720,17 @@ export function AppShell() {
           </div>
         ) : null}
         <Suspense fallback={<AppShellRouteFallback />}>
-          <Outlet context={outletContext} />
+          {unavailableAccountLink ? accountsLoading ? <AppShellRouteFallback /> : (
+            <div className="space-y-3 rounded-xl border border-app-warning/40 p-6" role="alert">
+              <h1 className="text-lg font-semibold">Account link unavailable</h1>
+              <p>{accountsError
+                ? "Account access could not be checked. Retry loading accounts or choose an available account."
+                : queryAccountId === null
+                  ? "This link has an invalid account. Choose an available account using Active Account."
+                  : "This account is unavailable, hidden, archived, or not accessible to this sign-in. Choose an available account using Active Account."}</p>
+              <Button onClick={() => setAccountsReloadVersion(version => version + 1)}>Retry accounts</Button>
+            </div>
+          ) : <Outlet context={outletContext} />}
         </Suspense>
       </main>
     </div>

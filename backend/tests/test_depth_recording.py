@@ -104,9 +104,17 @@ def test_os_lock_releases_without_deleting_lock_file(tmp_path):
 
 
 @pytest.mark.parametrize('record_totals', [False, True])
-def test_reconnect_resubscribes_and_preserves_disconnect_boundary(tmp_path,monkeypatch,record_totals):
+@pytest.mark.parametrize('health_read_locked', [False, True])
+def test_reconnect_resubscribes_and_preserves_disconnect_boundary(tmp_path,monkeypatch,record_totals,health_read_locked):
     import app.services.projectx_hubs as hubs
     import tools.record_market_depth as service
+    if health_read_locked:
+        original = service.atomic_json
+        def blocked_health(path, value):
+            if Path(path).name == 'recording-health.json':
+                raise PermissionError(13, 'fixture locked health reader')
+            return original(path, value)
+        monkeypatch.setattr(service, 'atomic_json', blocked_health)
     runtime=tmp_path/'runtime';runtime.mkdir()
     config=dict(runtime_root=str(runtime),max_bytes=100*1024**2,reserve_bytes=0,review_after_days=30,segment_seconds=60,
                 record_contract_totals=record_totals)
@@ -139,13 +147,15 @@ def test_reconnect_resubscribes_and_preserves_disconnect_boundary(tmp_path,monke
     status=json.loads((runtime/'status.json').read_text())
     assert status['reconnects']==1 and status['broker_mutation_calls']==0
     assert status['recording']['counts']['depth']==2
+    assert bool(status['status_publication']['failures']) is health_read_locked
     if record_totals:
         assert status['recording']['contract_totals']['enabled'] is True
         assert verify_segments(tmp_path/'data'/'totals')['verified_events'] >= 5
-        health=json.loads((tmp_path/'data'/'recording-health.json').read_text())
-        assert health['last_totals_write_at']
-        assert health['pending_measurements']==0
-        assert health['recorded_measurements']==health['durable_measurement_index']
+        if not health_read_locked:
+            health=json.loads((tmp_path/'data'/'recording-health.json').read_text())
+            assert health['last_totals_write_at']
+            assert health['pending_measurements']==0
+            assert health['recorded_measurements']==health['durable_measurement_index']
     assert 'fixture-token' not in (runtime/'status.json').read_text()
 
 
@@ -231,6 +241,6 @@ def test_live_environment_is_rejected_before_credential_database_access(tmp_path
     monkeypatch.setenv('TOPSIGNAL_LIVE_EXECUTION_ENABLED','false')
     monkeypatch.setenv('TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION','false')
     monkeypatch.delenv('PYTHON_DOTENV_DISABLED',raising=False)
-    (tmp_path/'.env').write_text('TOPSIGNAL_LIVE_EXECUTION_ENABLED=true\n')
+    (tmp_path/'recorder.env').write_text('TOPSIGNAL_LIVE_EXECUTION_ENABLED=true\n')
     with pytest.raises(RuntimeError,match='Paper-only environment'):
-        load_context(dict(backend_root=str(tmp_path)))
+        load_context(dict(backend_root=str(tmp_path), credential_env_file=str(tmp_path/'recorder.env')))

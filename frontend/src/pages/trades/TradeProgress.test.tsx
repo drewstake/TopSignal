@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import { TradeProgressChart, TradeProgressReview, type ProgressSample, type ProgressTimeline } from "./TradeProgress";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { ProgressRecorderStatus, TradeProgressChart, TradeProgressReview, type ProgressSample, type ProgressTimeline } from "./TradeProgress";
 import { chartSegments } from "./tradeProgressModel";
 import type { AccountTrade } from "../../lib/types";
 import { requestJson } from "../../lib/api";
@@ -17,6 +17,31 @@ const timeline = (samples: ProgressSample[]): ProgressTimeline => ({ source: "li
     reasons: ["market_disconnected"], best: sample(15,{ kind:"best", points:9 }), worst: sample(35,{ kind:"worst", points:-2 }) }, samples, fills: [], fills_truncated: false });
 
 describe("trade progress", () => {
+  it("aborts old status and enrollment requests and rejects their results after an account switch", async () => {
+    const requests: { path: string; signal?: AbortSignal; resolve: (value: unknown) => void }[] = [];
+    vi.mocked(requestJson).mockImplementation((path, options) => new Promise(resolve => {
+      requests.push({ path, signal: options?.signal, resolve: resolve as (value: unknown) => void });
+    }));
+    const view = render(<ProgressRecorderStatus account={1} />);
+    await act(async () => requests[0].resolve({ enrolled: false, healthy: false, heartbeat: null, error: null }));
+    fireEvent.click(screen.getByRole("button", { name: "Enable recording" }));
+    expect(requests[1].path).toContain("/1/trade-progress/enrollment");
+    view.rerender(<ProgressRecorderStatus account={2} />);
+    expect(requests[0].signal?.aborted).toBe(true);
+    expect(requests[1].signal?.aborted).toBe(true);
+    expect(screen.getByText(/Checking recorder/)).toBeTruthy();
+    await act(async () => requests[1].resolve({ enrolled: true, healthy: true, heartbeat: 1, error: null }));
+    expect(screen.queryByText("Trade progress · Recording")).toBeNull();
+    await act(async () => requests[2].resolve({ enrolled: true, healthy: true, open_positions: 0, heartbeat: 1, error: null }));
+    expect(screen.getByText("Trade progress · Recording · account flat")).toBeTruthy();
+  });
+
+  it("labels a stale heartbeat independently of enrollment", async () => {
+    vi.mocked(requestJson).mockResolvedValue({ enrolled: true, healthy: false, recording_state: "heartbeat_stale", heartbeat: 1, error: null });
+    render(<ProgressRecorderStatus account={1} />);
+    await screen.findByText("Trade progress · Stale heartbeat");
+  });
+
   it("breaks the path for gaps, null prices and entry-basis changes", () => {
     const points=[sample(10),sample(11),sample(12,{ points:null,issue:"stale_price" }),sample(13),sample(14,{ average_entry:102 }),sample(17,{ average_entry:102 })];
     expect(chartSegments(points).map(part=>part.map(s=>s.ts))).toEqual([[10,11],[13],[14],[17]]);

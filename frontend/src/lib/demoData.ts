@@ -1,49 +1,5 @@
 import { DEMO_AS_OF_DATE, DEMO_AS_OF_ISO, DEMO_SCENARIO_VERSION } from "./demoScenario";
-import type {
-  AccountInfo,
-  AccountLastTradeInfo,
-  AccountPnlCalendarDay,
-  AccountSizingBenchmark,
-  AccountSummary,
-  AccountSummaryWithPointBases,
-  AccountTrade,
-  AuthMe,
-  BehaviorMetrics,
-  BotActivity,
-  BotConfig,
-  BotConfigListResponse,
-  BotDecision,
-  BotOrderAttempt,
-  BotRiskEvent,
-  BotRun,
-  DayPnlPoint,
-  ExpenseCategory,
-  ExpenseListResponse,
-  ExpenseMonthlySummary,
-  ExpenseRange,
-  ExpenseRecord,
-  ExpenseTotals,
-  FinancialSummary,
-  FinancialSummaryRange,
-  HourPnlPoint,
-  JournalDaysResponse,
-  JournalEntriesResponse,
-  JournalEntry,
-  JournalMood,
-  PayoutListResponse,
-  PayoutMonthlySummary,
-  PayoutRecord,
-  PayoutTotals,
-  PointsBasis,
-  ProjectXContract,
-  ProjectXCredentialsStatus,
-  ProjectXMarketCandle,
-  SizingBenchmarkLabel,
-  StreakMetrics,
-  SummaryMetrics,
-  SymbolPnlPoint,
-  TradeRecord,
-} from "./types";
+import type { AccountInfo, AccountLastTradeInfo, AccountPnlCalendarDay, AccountSizingBenchmark, AccountSummary, AccountSummaryWithPointBases, AccountTrade, AuthMe, BehaviorMetrics, BotActivity, BotConfig, BotConfigListResponse, BotDecision, BotOrderAttempt, BotRiskEvent, BotRun, DayPnlPoint, ExpenseCategory, ExpenseListResponse, ExpenseMonthlySummary, ExpenseRange, ExpenseRecord, ExpenseTotals, FinancialSummary, FinancialSummaryRange, HourPnlPoint, PayoutListResponse, PayoutMonthlySummary, PayoutRecord, PayoutTotals, PointsBasis, ProjectXContract, ProjectXCredentialsStatus, ProjectXMarketCandle, SizingBenchmarkLabel, StreakMetrics, SummaryMetrics, SymbolPnlPoint, TradeRecord } from "./types";
 
 export { DEMO_AS_OF_DATE, DEMO_AS_OF_ISO, DEMO_AS_OF_LABEL, DEMO_SCENARIO_VERSION } from "./demoScenario";
 
@@ -69,14 +25,6 @@ interface DemoTradeSpec {
   mfePoints: number;
   maePoints: number;
   ruleBreakType?: string;
-}
-
-interface JournalNote {
-  day: string;
-  title: string;
-  mood: JournalMood;
-  tags: string[];
-  body: string;
 }
 
 interface DrawdownEpisode {
@@ -940,181 +888,6 @@ function buildSummaryWithPointBases(
   };
 }
 
-const JOURNAL_NOTES_BY_ACCOUNT_ID = new Map<number, JournalNote[]>([
-  [
-    PRIMARY_ACCOUNT_ID,
-    [
-      {
-        day: "2026-07-10",
-        title: "Stopped trading after the second mistake",
-        mood: "Frustrated",
-        tags: ["rule-break", "risk", "reset"],
-        body: "I moved the first stop, then took the next setup too quickly. I shut the platform down after trade two instead of trying to earn it back. Tomorrow's rule is one full five-minute pause after every loss.",
-      },
-      {
-        day: "2026-07-17",
-        title: "Opening pullback, planned size",
-        mood: "Confident",
-        tags: ["A-setup", "patience", "MNQ"],
-        body: "The opening push held above the premarket level, so I waited for the first orderly pullback. Size and stop matched the plan, and I did not add after the move accelerated.",
-      },
-      {
-        day: "2026-07-24",
-        title: "Strong morning, protected the week",
-        mood: "Focused",
-        tags: ["weekly-review", "discipline", "mixed-session"],
-        body: "The MNQ morning trade did the work. The later MES attempt failed cleanly, and I accepted the planned loss without a third trade. Good finish to a week built on fewer, clearer setups.",
-      },
-    ],
-  ],
-  [
-    FOLLOWER_ACCOUNT_ID,
-    [
-      {
-        day: "2026-07-09",
-        title: "Follower slippage stayed inside tolerance",
-        mood: "Neutral",
-        tags: ["copy-trade", "slippage", "review"],
-        body: "The follower entered one point behind the main account but exited within the expected band. Reduced size kept the dollar result proportional without pretending every fill was identical.",
-      },
-      {
-        day: "2026-07-20",
-        title: "Did not override the copier after the loss",
-        mood: "Focused",
-        tags: ["copy-trade", "discipline", "MES"],
-        body: "The morning MNQ copy worked and the midday MES copy did not. I left allocation unchanged and avoided a manual make-up trade, which is the behavior this account is meant to test.",
-      },
-      {
-        day: "2026-07-24",
-        title: "Conservative allocation behaved as designed",
-        mood: "Confident",
-        tags: ["copy-trade", "allocation", "weekly-review"],
-        body: "Fills were slightly worse than the main account, but the smaller allocation kept risk controlled. The account closed the week with the same directional story and appropriately smaller P&L.",
-      },
-    ],
-  ],
-  [
-    SWING_ACCOUNT_ID,
-    [
-      {
-        day: "2026-07-13",
-        title: "Held the thesis, not the noise",
-        mood: "Confident",
-        tags: ["swing", "MES", "overnight"],
-        body: "The multi-session MES position stayed above invalidation through the weekend reopen. I exited into the first clean extension instead of converting the trade into an indefinite hold.",
-      },
-      {
-        day: "2026-07-21",
-        title: "News hold was outside the playbook",
-        mood: "Frustrated",
-        tags: ["rule-break", "MGC", "news"],
-        body: "I kept the MGC position through a scheduled release even though the plan called for flattening. The loss was manageable, but the process was not. New entries are locked; the MES position opened before the review remains under its original stop and target.",
-      },
-      {
-        day: "2026-07-24",
-        title: "Patient exit after two-session hold",
-        mood: "Focused",
-        tags: ["swing", "MES", "recovery"],
-        body: "The MES long recovered without requiring extra size. I used the planned target and documented the trade, but the account stays locked until the earlier news-rule review is complete.",
-      },
-    ],
-  ],
-  [
-    PRACTICE_ACCOUNT_ID,
-    [
-      {
-        day: "2026-07-08",
-        title: "Tested two instruments at minimum size",
-        mood: "Neutral",
-        tags: ["practice", "MES", "MNQ"],
-        body: "The MES setup worked and the MNQ follow-up did not. Keeping both at minimum size made the comparison useful without turning an experiment into a performance target.",
-      },
-      {
-        day: "2026-07-16",
-        title: "Cleaner short trigger in the lab",
-        mood: "Focused",
-        tags: ["practice", "trigger", "MNQ"],
-        body: "I waited for the lower high instead of anticipating it. The short was small, quick, and consistent with the exact trigger I am testing before it reaches a live allocation.",
-      },
-      {
-        day: "2026-07-24",
-        title: "A useful failed experiment",
-        mood: "Neutral",
-        tags: ["practice", "review", "failed-setup"],
-        body: "The late-morning continuation failed. The entry met the experimental rule, so the planned loss is useful data; no changes move to the main account until the sample is larger.",
-      },
-    ],
-  ],
-]);
-
-function buildJournalEntries(accountId: number): JournalEntry[] {
-  const notes = JOURNAL_NOTES_BY_ACCOUNT_ID.get(accountId) ?? [];
-  return notes.map((note, index) => {
-    const trades = getAccountTrades(accountId).filter((trade) => getTradeDay(trade) === note.day);
-    const grossValues = trades.map((trade) => trade.pnl ?? 0);
-    const netValues = trades.map(tradeNetPnl);
-    const wins = netValues.filter((value) => value > 0);
-    const losses = netValues.filter((value) => value < 0);
-    const fees = sum(trades.map((trade) => Math.abs(trade.fees)));
-    const gross = sum(grossValues);
-    const net = sum(netValues);
-    const snapshotAt = `${note.day}T19:30:00.000Z`;
-    return {
-      id: accountId * 10 + index + 1,
-      account_id: accountId,
-      entry_date: note.day,
-      title: note.title,
-      mood: note.mood,
-      tags: note.tags,
-      body: note.body,
-      version: 1,
-      stats_source: `demo:${DEMO_SCENARIO_VERSION}`,
-      stats_json: {
-        snapshot_version: 1,
-        trade_count: trades.length,
-        total_pnl: round(gross),
-        total_fees: round(fees),
-        win_rate: trades.length === 0 ? 0 : round((wins.length / trades.length) * 100),
-        avg_win: round(average(wins)),
-        avg_loss: round(average(losses)),
-        largest_win: wins.length === 0 ? 0 : round(Math.max(...wins)),
-        largest_loss: losses.length === 0 ? 0 : round(Math.min(...losses)),
-        largest_position_size: trades.length === 0 ? 0 : Math.max(...trades.map((trade) => trade.size)),
-        gross: round(gross),
-        net: round(net),
-        net_realized_pnl: round(net),
-      },
-      stats_pulled_at: snapshotAt,
-      is_archived: false,
-      created_at: snapshotAt,
-      updated_at: snapshotAt,
-    };
-  });
-}
-
-const DEMO_JOURNALS_BY_ACCOUNT_ID = new Map<number, JournalEntry[]>(
-  DEMO_ACCOUNTS.map((account) => [account.id, buildJournalEntries(account.id)]),
-);
-
-function filterJournalEntries(
-  accountId: number,
-  query: Record<string, DemoQueryValue> | undefined,
-): JournalEntriesResponse {
-  let entries = filterByDateRange(DEMO_JOURNALS_BY_ACCOUNT_ID.get(accountId) ?? [], query);
-  const mood = readStringQuery(query, "mood");
-  const search = readStringQuery(query, "q").trim().toLowerCase();
-  const includeArchived = readBooleanQuery(query, "include_archived");
-  if (!includeArchived) entries = entries.filter((entry) => !entry.is_archived);
-  if (mood) entries = entries.filter((entry) => entry.mood === mood);
-  if (search) {
-    entries = entries.filter((entry) =>
-      `${entry.title} ${entry.body} ${entry.tags.join(" ")}`.toLowerCase().includes(search),
-    );
-  }
-  entries = [...entries].sort((left, right) => right.entry_date.localeCompare(left.entry_date));
-  return { items: limitAndOffset(entries, query, 20), total: entries.length };
-}
-
 function isoDateFromMs(milliseconds: number) {
   return new Date(milliseconds).toISOString().slice(0, 10);
 }
@@ -1861,21 +1634,6 @@ export function getDemoApiResponse<T>(
   if (/^\/api\/accounts\/\d+\/pnl-calendar$/.test(path) && accountId !== null) {
     const trades = filterTrades(accountId, { ...query, limit: 10_000, offset: 0 });
     return handled<AccountPnlCalendarDay[]>(buildCalendarDays(trades)) as DemoApiResponse<T>;
-  }
-
-  if (/^\/api\/accounts\/\d+\/journal\/days$/.test(path) && accountId !== null) {
-    const includeArchived = readBooleanQuery(query, "include_archived");
-    const entries = filterByDateRange(DEMO_JOURNALS_BY_ACCOUNT_ID.get(accountId) ?? [], query)
-      .filter((entry) => includeArchived || !entry.is_archived);
-    return handled<JournalDaysResponse>({ days: entries.map((entry) => entry.entry_date).sort() }) as DemoApiResponse<T>;
-  }
-
-  if (/^\/api\/accounts\/\d+\/journal\/\d+\/images$/.test(path)) {
-    return handled([]) as DemoApiResponse<T>;
-  }
-
-  if (/^\/api\/accounts\/\d+\/journal$/.test(path) && accountId !== null) {
-    return handled<JournalEntriesResponse>(filterJournalEntries(accountId, query)) as DemoApiResponse<T>;
   }
 
   if (path === "/api/expenses/financial-summary") {

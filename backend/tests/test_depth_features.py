@@ -134,4 +134,4 @@ def test_backfill_is_idempotent_and_cached_features_are_owner_scoped(tmp_path,mo
     result=read_research(tmp_path/'depth-recordings-v1',dict(owner_hash=OWNER,start=BASE.isoformat(),end=(BASE+timedelta(seconds=49)).isoformat(),scope='1'))
     assert result['derived_cache_id']==first['data_id'] and 'scopes' not in result['points'][0]
     monkeypatch.setattr(backfill,'DERIVED_BUDGET',1)
-    with pytest.raises(ValueError,match='storage limit'):backfill.backfill(tmp_path,OWNER,BASE.isoformat(),(BASE+timedelta(seconds=48)).isoformat())
+    with pytest.raises(ValueError,match='Derived feature budget reached'):backfill.backfill(tmp_path,OWNER,BASE.isoformat(),(BASE+timedelta(seconds=48)).isoformat())

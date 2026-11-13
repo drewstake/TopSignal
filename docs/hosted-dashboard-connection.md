@@ -1,5 +1,24 @@
 # Hosted dashboard connection
 
+Current state was [verified November 13, 2026](audits/2026-11-13/peteamdpc-health.md):
+release `20261112-auto-signin-87`, local trusted-device sign-in, local PostgreSQL
+execution and filesystem recordings. Supabase remains an active mirror, journal
+storage backend and independent-recorder startup dependency. The dated deployment
+and repair sections below are historical, not proof of current health.
+
+Use the active account selector to confirm scope: a stale URL can name an
+unavailable account while the UI falls back to an available one. The audit saw
+URL account `28278873` with active account `29672001`; only practice `29593203`
+was enrolled for trade-progress recording. Keep the browser on the viewing PC;
+moving it to the host does not fix history API timeouts or recorder gaps.
+
+The prepared release fixes that fallback: an explicit invalid/unavailable account
+link stops scoped rendering and requests; selecting an available account updates
+the URL, selector and recorder status together. Use
+`http://127.0.0.1:4173/bot?account=29593203` for the currently enrolled practice
+account after confirming selection. Candidate behavior is not served until the
+[maintenance procedure](supabase-retirement.md) is completed.
+
 The production backend and frontend run on peteamdpc (`DESKTOP-6EUPDU1`).
 The host's `TopSignal Personal Device` scheduled task starts at boot and
 supervises both processes. Closing the browser or shutting down the viewing PC

@@ -28,12 +28,12 @@ vi.mock("../lib/appShellApi", () => ({
   refreshTrades: vi.fn(),
 }));
 
-vi.mock("../lib/supabase", () => ({
+vi.mock("../lib/auth", () => ({
   getAccessToken: getAccessTokenMock,
   getAccessTokenSync: getAccessTokenSyncMock,
   getCurrentUserEmailSync: vi.fn(() => null),
   hasSupabaseConfig: false,
-  signOutSupabase: vi.fn(async () => undefined),
+  signOut: vi.fn(async () => undefined),
 }));
 
 vi.mock("./pageNavigation", () => ({

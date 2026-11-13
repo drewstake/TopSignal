@@ -85,10 +85,10 @@ describe("demoMode", () => {
     expect(formatDemoPnl(-95, formatSignedCurrency)).toBe("-$95.00");
   });
 
-  it("sanitizes account, journal, trade, and money response fields without changing API ids", () => {
+  it("sanitizes account, trade, and money response fields without changing API ids", () => {
     setDemoModeEnabled(true);
 
-    const response = sanitizeDemoApiResponse("/api/accounts/12345678/journal", {
+    const response = sanitizeDemoApiResponse("/api/accounts/12345678/summary", {
       account: {
         id: 12345678,
         name: "Andrew personal combine",
@@ -96,16 +96,6 @@ describe("demoMode", () => {
         custom_display_name: "My main account",
         balance: 50123.45,
         account_state: "ACTIVE",
-      },
-      entry: {
-        id: 44,
-        account_id: 12345678,
-        entry_date: "2026-06-29",
-        title: "Very personal recap",
-        mood: "Focused",
-        tags: ["personal"],
-        body: "Private journal notes",
-        net_pnl: 728.5,
       },
       trade: {
         order_id: "real-order-123",
@@ -119,9 +109,6 @@ describe("demoMode", () => {
     expect(response.account.provider_name).toContain("Demo Account");
     expect(response.account.custom_display_name).toBeNull();
     expect(response.account.balance).not.toBe(50123.45);
-    expect(response.entry.title).toBe("Demo journal 2026-06-29");
-    expect(response.entry.tags).toEqual(["demo"]);
-    expect(response.entry.body).not.toContain("Private");
     expect(response.trade.order_id).toMatch(/^TRD-/);
     expect(response.trade.source_trade_id).toMatch(/^TRD-/);
     expect(response.trade.net_pnl).not.toBe(728.5);

@@ -10,6 +10,18 @@ from fastapi.testclient import TestClient
 from app import local_auth
 from app.auth import AuthError, AuthUnavailable, authenticate_request_token
 
+
+@pytest.mark.parametrize('key_id,algorithm', [('cloud-key', 'HS256'), (None, 'HS256'), ('topsignal-local-v1', 'HS512')])
+def test_obsolete_cloud_tokens_rejected_without_network(monkeypatch, key_id, algorithm):
+    import socket
+    monkeypatch.setenv('SUPABASE_URL', 'https://obsolete.invalid')
+    monkeypatch.setenv('SUPABASE_JWT_SECRET', 'fixture-' * 12)
+    monkeypatch.setattr(socket, 'create_connection', lambda *a, **kw: pytest.fail('Auth must not use the network'))
+    token = jwt.encode({'sub': '11111111-1111-1111-1111-111111111111', 'exp': 4102444800},
+                       'fixture-' * 12, algorithm=algorithm, headers={'kid': key_id} if key_id else {})
+    with pytest.raises(AuthError, match='unsupported_token_issuer'):
+        authenticate_request_token(token)
+
 OWNER = "31cafcac-77cc-422c-a153-93e572e48c29"
 PASSWORD = "a unique test passphrase 2026"
 

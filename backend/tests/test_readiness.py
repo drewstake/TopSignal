@@ -558,8 +558,6 @@ def test_readiness_accepts_validated_fresh_schema_baseline(monkeypatch):
         ("TOPSIGNAL_LOCAL_PROJECTX", "1"),
         ("TOPSIGNAL_ENV", "production"),
         ("AUTH_REQUIRED", "true"),
-        ("SUPABASE_URL", "https://cloud.invalid"),
-        ("SUPABASE_URL", "http://127.0.0.1:54321"),
         ("TOPSIGNAL_BOT_WORKER_ENABLED", "true"),
         ("TOPSIGNAL_LIVE_EXECUTION_ENABLED", "true"),
         ("TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION", "true"),

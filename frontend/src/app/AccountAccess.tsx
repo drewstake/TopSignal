@@ -1,23 +1,11 @@
 ﻿import { Fragment, useEffect, useState, type ReactNode } from "react";
-import type { Session } from "@supabase/supabase-js";
+import type { Session } from "../lib/localAuth";
 import { LocalSignIn } from "./LocalSignIn";
 import { localAuthConfigured } from "../lib/localAuth";
 import { isDemoModeEnabled } from "../lib/demoMode";
-import { bootstrapSupabaseSession, hasSupabaseConfig, signInWithGoogle, subscribeSupabaseAuthChanges } from "../lib/supabase";
-const hasAuthConfig = hasSupabaseConfig || localAuthConfigured;
+import { bootstrapSession, subscribeAuthChanges } from "../lib/auth";
+const hasAuthConfig = localAuthConfigured;
 
-function formatGoogleSignInError(err: unknown): string {
-  const fallback = "Failed to start Google sign-in";
-  if (!(err instanceof Error)) {
-    return fallback;
-  }
-
-  const normalized = err.message.toLowerCase();
-  if (normalized.includes("unsupported provider") || normalized.includes("provider is not enabled")) {
-    return "Google sign-in is disabled for this Supabase project. Enable Google under Supabase Dashboard > Authentication > Providers.";
-  }
-  return err.message;
-}
 
 export function AccountAccess({ children }: { children: ReactNode }) {
   const [demoModeAtStartup] = useState(isDemoModeEnabled);
@@ -33,9 +21,9 @@ export function AccountAccess({ children }: { children: ReactNode }) {
     }
 
     let mounted = true;
-    // A restricted Google project must not hide the independent local form.
+    // Show retry access if the host is slow to verify a saved session.
     const loadingTimeout = window.setTimeout(() => { if (mounted) setLoading(false); }, 4000);
-    void bootstrapSupabaseSession()
+    void bootstrapSession()
       .then((nextSession) => {
         if (!mounted) {
           return;
@@ -51,7 +39,7 @@ export function AccountAccess({ children }: { children: ReactNode }) {
         setLoading(false);
       });
 
-    const unsubscribe = subscribeSupabaseAuthChanges((nextSession) => {
+    const unsubscribe = subscribeAuthChanges((nextSession) => {
       if (!mounted) {
         return;
       }
@@ -74,7 +62,7 @@ export function AccountAccess({ children }: { children: ReactNode }) {
             ? import.meta.env.VITE_LOCAL_LIVE_ORDERS === "true"
               ? "Local workspace · Topstep API enabled · Live order routing enabled · Saved on this computer"
               : "Local workspace · Topstep API enabled · Dry-run bot enabled · Saved on this computer · Live orders disabled"
-            : "Offline workspace · Saved on this computer · Cloud data and broker connections are unavailable"}
+            : "Offline workspace · Saved on this computer · Broker connections are unavailable"}
         </div>
       ) : null}
       {children}
@@ -93,20 +81,6 @@ export function AccountAccess({ children }: { children: ReactNode }) {
           <p className="text-sm text-app-muted">Access your connected worker and trading workspace.</p>
           {error ? <p className="text-sm text-app-negative">{error}</p> : null}
           <LocalSignIn />
-          {hasSupabaseConfig ? (
-            <>
-              {localAuthConfigured ? <div className="border-t border-app-border pt-3 text-center text-xs text-app-muted">Or use your Google account</div> : null}
-              <button
-                type="button"
-                className="w-full rounded-lg border border-app-border px-4 py-2 text-sm font-medium transition hover:bg-app-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/35"
-                onClick={() => {
-                  void signInWithGoogle().catch((err) => setError(formatGoogleSignInError(err)));
-                }}
-              >
-                Continue with Google
-              </button>
-            </>
-          ) : null}
           {canOpenOfflineWorkspace ? (
             <div className="space-y-2">
               <a
@@ -116,7 +90,7 @@ export function AccountAccess({ children }: { children: ReactNode }) {
                 Continue offline
               </a>
               <p className="text-xs leading-5 text-app-muted">
-                Open your local workspace without Google. Data is saved on this computer and does not automatically sync to the cloud.
+                Open your local workspace through the local service. Data is saved on this computer and does not automatically sync to the cloud.
               </p>
               <details className="text-xs leading-5 text-app-muted">
                 <summary className="cursor-pointer">If the offline workspace isn’t running</summary>

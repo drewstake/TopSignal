@@ -14,6 +14,7 @@ import psycopg
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.local_sync import sync_once
+from app.mirror_retirement import retired
 from tools.backup_execution_database import connection_parameters
 
 
@@ -57,6 +58,10 @@ def run(config, *, once=False):
             with psycopg.connect(**source_parameters, autocommit=True, prepare_threshold=None) as source:
                 source.execute("SET statement_timeout='30s'")
                 source.execute("SET lock_timeout='5s'")
+                if retired(source):
+                    state.update(state='retired')
+                    status_file(receipt, state)
+                    return 0
                 state.update(queue_status(source))
                 with psycopg.connect(**target_parameters, autocommit=True, prepare_threshold=None) as target:
                     target.execute("SET statement_timeout='30s'")

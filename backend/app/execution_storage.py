@@ -26,6 +26,10 @@ def validate_authority(engine):
         row = connection.execute(text('SELECT source_id,active FROM topsignal_local.authority WHERE singleton')).first()
         if row is None or UUID(str(row[0])) != expected or row[1] is not True:
             raise RuntimeError('Local execution authority is absent, inactive or mismatched')
+        retirement_table = connection.execute(text("SELECT to_regclass('topsignal_local.mirror_retirement')")).scalar()
+        mirror_retired = bool(retirement_table and connection.execute(text(
+            'SELECT 1 FROM topsignal_local.mirror_retirement WHERE singleton AND authority_id=:authority'
+        ), {'authority': str(expected)}).first())
         missing = connection.execute(text('''
             SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
             WHERE n.nspname='public' AND c.relkind='r'
@@ -34,7 +38,18 @@ def validate_authority(engine):
                 'decision_research_snapshots','topsignal_schema_baselines','topsignal_schema_migrations')
             AND NOT EXISTS(SELECT 1 FROM pg_trigger t WHERE t.tgrelid=c.oid
                 AND t.tgenabled='O' AND t.tgname=CASE WHEN c.relname='bot_runtime_leases'
-                    THEN 'topsignal_local_authority' ELSE 'topsignal_local_capture' END)
+                    THEN 'topsignal_local_authority' ELSE 'topsignal_local_serialize' END)
         ''')).first()
         if missing:
-            raise RuntimeError('Execution schema has an unfenced or unmirrored table')
+            raise RuntimeError('Execution schema has an unfenced table')
+        # Before retirement, an absent capture trigger is still a failure. After
+        # retirement every capture trigger must be disabled so the outbox cannot grow.
+        capture_errors = connection.execute(text('''
+            SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='public' AND c.relkind='r'
+            AND EXISTS(SELECT 1 FROM pg_trigger t WHERE t.tgrelid=c.oid AND t.tgname='topsignal_local_serialize')
+            AND NOT EXISTS(SELECT 1 FROM pg_trigger t WHERE t.tgrelid=c.oid
+                AND t.tgname='topsignal_local_capture' AND t.tgenabled=:expected)
+        '''), {'expected': 'D' if mirror_retired else 'O'}).first()
+        if capture_errors:
+            raise RuntimeError('Execution schema mirror state is inconsistent')

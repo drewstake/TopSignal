@@ -6,7 +6,7 @@ const { getAccessTokenSyncMock } = vi.hoisted(() => ({
   getAccessTokenSyncMock: vi.fn<() => string | null>(() => null),
 }));
 
-vi.mock("./supabase", () => ({
+vi.mock("./auth", () => ({
   getAccessTokenSync: getAccessTokenSyncMock,
 }));
 

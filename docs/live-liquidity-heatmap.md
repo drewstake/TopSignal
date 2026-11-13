@@ -1,5 +1,13 @@
 # Bot-page liquidity heatmap
 
+The [November 13 audit](audits/2026-11-13/peteamdpc-health.md) verified this feature
+in release `20261112-auto-signin-87`, a running deriver and current-session SQLite
+data on peteamdpc. The November 11 tests below predate deployment. During the
+audit the UI reported a priority pause; the deriver later reported zero pending
+segments and data about 40 seconds old. Catch-up does not erase historical
+source/quality gaps. The lower [Liquidity before the move chart](order-book-history.md)
+uses a separate totals reader that can time out even when heatmap derivation is current.
+
 The Liquidity heatmap on the Bot page shows observed resting depth (heat), best
 bid/ask, and executed prints for the selected MNQ contract across the **current
 New York trading session** (6 p.m. to 5 p.m.). It is display-only: it never
@@ -114,7 +122,8 @@ requires `heatmap_reader_path` (the installed `depth_heatmap.py`) and
 `heatmap_cache_root` in the server-owned `depth-history-source.json` and calls
 `depth_heatmap.py read` over the existing restricted SSH command. Until those are
 installed the UI shows a "History unavailable" badge (the reason appears on
-hover) and live depth still works. No code was uploaded to the host.
+hover) and live depth still works. The original November 11 development check
+uploaded no code; the November 13 hosted deployment reads local derived history.
 
 ## Display
 
@@ -181,7 +190,7 @@ stops and awaited last; and fresh server time on cached responses.
 
 ## Known limitations
 
-- Production needs a backend release on the recording host. The supervised
+- Production runs the deriver on the recording host. The supervised
   deriver uses background CPU/I/O priority on Windows and yields between segments
   while trade replay is active or the worker recorder reports backpressure.
   The page explicitly labels this pause; live depth continues. Catch-up time

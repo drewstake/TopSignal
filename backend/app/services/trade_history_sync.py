@@ -228,8 +228,12 @@ class HistorySynchronizer:
                     db.commit()
                     permitted = {int(a.external_id) for a in db.query(Account).filter(Account.user_id == owner,
                         Account.trade_data_source == 'projectx', Account.archived_at.is_(None)).all() if a.external_id.isdigit()}
-                eligible = [a for a in provider if a['id'] in permitted and a['can_trade'] and a['is_visible']]
+                # Fresh owned visibility determines passive recording eligibility.
+                # A broker's trading permission is independent of observation.
+                eligible = [a for a in provider if a['id'] in permitted and a['is_visible']]
                 capacity = len(eligible) <= policy['max_accounts']
+                if capacity and policy['record_active']:
+                    capacity = progress.reconcile_policy(owner, [a['id'] for a in eligible], policy['max_accounts'])
                 with state(write=True) as db:
                     for a in provider:
                         classification = ('active_supported' if a in eligible else 'not_active_or_visible') if capacity else 'capacity_review_required'
@@ -241,12 +245,6 @@ class HistorySynchronizer:
                 for a in eligible:
                     if self.halt.is_set():
                         return
-                    if policy['record_active']:
-                        # Existing explicit disabled enrollments remain opted out.
-                        with progress.connect() as db:
-                            row = db.execute('SELECT enabled FROM trade_progress_scopes WHERE owner=? AND account=?', (owner,a['id'])).fetchone()
-                        if row is None:
-                            progress.enroll(owner, a['id'], True)
                     for day in due_days(owner,a['id'],policy['start_date'],datetime.now(UTC)):
                         if self.halt.is_set():
                             return

@@ -1,5 +1,21 @@
 # Supabase storage policy and quota recovery
 
+## Current deployment boundary (verified November 13, 2026)
+
+Supabase is **partially retired**. Execution/application records are authoritative
+in local PostgreSQL on peteamdpc; research and recordings stay on its filesystem.
+The compact-record mirror is active, journal object storage remains configured
+in Supabase, and the independent recorder still reads startup credentials from
+cloud PostgreSQL. Hosted sign-in uses local trusted-device authentication;
+cloud Auth remains an alternative. See [live evidence](audits/2026-11-13/peteamdpc-health.md)
+and [recovery guidance](local-first-storage.md). Historical incident sections
+below retain their original dates; they do not describe the current release.
+
+Prepared local-only code and its pending maintenance steps are documented in
+[Supabase retirement](supabase-retirement.md). Journal records/images now also
+have a verified encrypted historical archive on the host and off device. This
+does not authorize source/cloud deletion or imply the old deployed APIs stopped.
+
 ## Permanent storage boundary
 
 Databento backtest history belongs on the backend filesystem, not in Supabase.
@@ -39,13 +55,15 @@ filesystem.
 
 ## Capacity checks before growth
 
-Run [the read-only storage report](../db/diagnostics/storage_usage.sql) in the
-Supabase SQL editor weekly, before a bulk import, before increasing sync
+Inspect local PostgreSQL and C:/D: capacity before local growth. For the active
+cloud mirror, run [the read-only storage report](../db/diagnostics/storage_usage.sql) in the
+Supabase SQL editor weekly, before increasing mirrored volume or sync
 lookback/retention, and before releases that add stored data. Review the
 organization Usage page and project disk metrics as well; a single database
 query does not include every organization project, WAL, or system overhead.
 
-For the current 0.5 GB Free-plan database allowance, use these internal buffers:
+For deployments using the incident's 0.5 GB Free-plan allowance, use these
+internal buffers (the live audit did not reverify billing/plan limits):
 
 - At **350 MB** (decimal), investigate growth and prepare a capacity/archival plan.
 - At **400 MB**, stop optional bulk writes until the plan is reviewed.

@@ -4,7 +4,7 @@ import { streamProjectXMarketTrades } from "./api";
 import { parseMarketTradeBatch } from "./marketTradeTypes";
 import { setDemoModeEnabled } from "./demoMode";
 
-vi.mock("./supabase", () => ({ getAccessToken: vi.fn().mockResolvedValue("test-token") }));
+vi.mock("./auth", () => ({ getAccessToken: vi.fn().mockResolvedValue("test-token") }));
 const contract = "MNQ";
 const batch = { contract_id: contract, dropped: 0, trades: [{ id: "1", timestamp: "2026-11-03T15:00:00Z", price: 20000, volume: 5, side: "buy" }] };
 let close: (() => void) | undefined;

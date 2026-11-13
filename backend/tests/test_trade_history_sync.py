@@ -118,7 +118,7 @@ def test_active_coverage_policy_discovers_accounts_preserves_optouts_and_caps_gr
     sync.configure('a','2026-11-12',record_active=True,max_accounts=2)
     class Client:
         timeout_seconds=30
-        rows=[dict(id=10,can_trade=True,is_visible=True),dict(id=11,can_trade=True,is_visible=True),
+        rows=[dict(id=10,can_trade=True,is_visible=True),dict(id=11,can_trade=False,is_visible=True),
               dict(id=12,can_trade=False,is_visible=False)]
         def list_accounts(self,**kw):return self.rows
     client=Client()

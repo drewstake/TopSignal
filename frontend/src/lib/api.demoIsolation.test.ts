@@ -8,7 +8,7 @@ const { getAccessTokenMock, getDemoApiResponseMock } = vi.hoisted(() => ({
   getDemoApiResponseMock: vi.fn(() => null as { data: unknown } | null),
 }));
 
-vi.mock("./supabase", () => ({
+vi.mock("./auth", () => ({
   getAccessToken: getAccessTokenMock,
 }));
 

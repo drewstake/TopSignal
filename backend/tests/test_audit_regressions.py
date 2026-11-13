@@ -23,10 +23,14 @@ SECRET = "audit-fixture-signing-key-never-use-in-production"
 @pytest.fixture()
 def api(monkeypatch):
     monkeypatch.setenv("AUTH_REQUIRED", "true")
-    monkeypatch.setenv("SUPABASE_JWT_SECRET", SECRET)
-    monkeypatch.setenv("SUPABASE_URL", "http://127.0.0.1:54321")
-    monkeypatch.delenv("SUPABASE_JWT_ISSUER", raising=False)
-    monkeypatch.delenv("SUPABASE_JWT_AUDIENCE", raising=False)
+    from app.auth import AuthenticatedUser, AuthError
+    def verify_fixture(token):
+        try:
+            claims = jwt.decode(token, SECRET, algorithms=["HS256"], issuer="route-isolation-fixture")
+            return AuthenticatedUser(user_id=claims["sub"], email=None, claims=claims)
+        except jwt.PyJWTError as exc:
+            raise AuthError("invalid_fixture_token") from exc
+    monkeypatch.setattr(main, "authenticate_request_token", verify_fixture)
     engine = create_engine("sqlite+pysqlite:///:memory:",
                            connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
@@ -78,7 +82,7 @@ def api(monkeypatch):
 
 def headers(user=USER_A, **claims):
     return {"Authorization": "Bearer " + jwt.encode(
-        {"sub": user, "iss": "http://127.0.0.1:54321/auth/v1", "exp": 4102444800, **claims}, SECRET, algorithm="HS256")}
+        {"sub": user, "iss": "route-isolation-fixture", "exp": 4102444800, **claims}, SECRET, algorithm="HS256")}
 
 
 def expense(**changes):
@@ -90,6 +94,15 @@ def test_expired_and_missing_auth_rejected(api):
     assert api.get("/api/expenses").status_code == 401
     assert api.get("/api/expenses", headers=headers(exp=1)).status_code == 401
     assert api.get("/api/expenses", headers={"Authorization": "Bearer invalid"}).status_code == 401
+
+
+@pytest.mark.parametrize('method,path', [
+    ('get', '/api/accounts/1/journal'), ('post', '/api/accounts/1/journal'),
+    ('get', '/api/accounts/1/journal/2/images/3/content'),
+    ('post', '/projectx/accounts/1/journal/ai-recap'), ('post', '/api/journal/merge'),
+])
+def test_retired_journal_routes_are_absent(api, method, path):
+    assert getattr(api, method)(path, headers=headers()).status_code == 404
 
 
 def test_cross_tenant_expense_read_edit_delete_blocked(api):

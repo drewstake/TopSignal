@@ -92,7 +92,7 @@ def validate(output: Path, workers: int) -> dict:
     ]
     rows = [run_logged(name, command, output, env, cwd) for name, command, cwd in commands]
     # Build exactly the loopback production configuration; no second build at packaging.
-    build_env = dict(os.environ, VITE_API_BASE_URL="http://127.0.0.1:8000", VITE_DEMO_MODE="false")
+    build_env = dict(os.environ, VITE_API_BASE_URL="http://127.0.0.1:8000", VITE_DEMO_MODE="false", VITE_LOCAL_AUTH_ENABLED="true")
     rows.append(run_logged("production-build", [NPM, "--prefix", "frontend", "run", "build"], output, build_env))
     if input_fingerprint() != before:
         raise RuntimeError("Source/build configuration changed during validation; rerun on stable inputs")

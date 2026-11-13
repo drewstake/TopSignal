@@ -24,7 +24,20 @@ import time
 from datetime import datetime, timezone
 
 _BACKGROUND_RESOURCES = False
+_IO_GUARD = None
 SQLITE_SUFFIXES = {'.sqlite3', '.sqlite', '.db'}
+
+
+def io_checkpoint(size=0):
+    if _IO_GUARD is not None:
+        _IO_GUARD.check(size)
+
+
+def paced_copy(source, target):
+    with source.open('rb') as src, target.open('wb') as dst:
+        while block := src.read(1024**2):
+            io_checkpoint(len(block))
+            dst.write(block)
 
 
 def _set_windows_priority(value):
@@ -66,7 +79,13 @@ def filesystem_path(path):
 
 def checksum(path):
     with filesystem_path(path).open('rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').hexdigest()
+        if _IO_GUARD is None:
+            return hashlib.file_digest(stream, 'sha256').hexdigest()
+        digest = hashlib.sha256()
+        while block := stream.read(1024**2):
+            io_checkpoint(len(block))
+            digest.update(block)
+        return digest.hexdigest()
 
 
 def readonly_sqlite_uri(path):
@@ -181,8 +200,10 @@ def _backup_sqlite(source, destination, *, progress=None, timeout_seconds=900):
     if source.in_transaction:
         raise ValueError('Backup requires an idle source connection')
     pinned = source.execute('PRAGMA journal_mode').fetchone()[0].lower() == 'wal'
+    page_size = source.execute('PRAGMA page_size').fetchone()[0]
     started = time.monotonic()
     def step(status, remaining, total):
+        io_checkpoint(256*page_size if status in (sqlite3.SQLITE_OK, sqlite3.SQLITE_DONE) else 0)
         if time.monotonic() - started >= timeout_seconds:
             raise TimeoutError('SQLite snapshot backup deadline exceeded')
         if progress is not None:
@@ -233,6 +254,7 @@ def snapshot_sqlite(path, target, *, scratch=None):
                         if not block:
                             break
                         remaining -= len(block)
+                        io_checkpoint(len(block))
             except FileNotFoundError:
                 if member == path:
                     raise
@@ -242,7 +264,7 @@ def snapshot_sqlite(path, target, *, scratch=None):
         snapshot = owned/'snapshot.sqlite3'
         with closing(sqlite3.connect(readonly_sqlite_uri(path), uri=True)) as src, closing(sqlite3.connect(snapshot)) as dst:
             backup_sqlite(src, dst, timeout_seconds=snapshot_deadline(estimate))
-        shutil.copyfile(snapshot, target)
+        paced_copy(snapshot, target)
         digest = checksum(target)
         if checksum(snapshot) != digest:
             raise ValueError('SQLite snapshot transport checksum mismatch')
@@ -275,6 +297,7 @@ def backup(source, output, *, previous=None, deep_verify=True):
     depth_root = source/'depth-recordings-v1'
     depth_files = set()
     for marker in depth_root.rglob('*.segment.json') if depth_root.exists() else []:
+        io_checkpoint()
         value = json.loads(marker.read_text())
         name = value.get('file', '')
         member = (marker.parent/name).resolve()
@@ -305,6 +328,7 @@ def backup(source, output, *, previous=None, deep_verify=True):
     # its archive commit and spool acknowledgement happen between the copies.
     # Other files are individually consistent, not one global point in time.
     for path in sorted(source.rglob('*'), key=lambda p: (p.name not in {'critical-spool.sqlite3', 'optional-quotes.sqlite3'}, str(p))):
+        io_checkpoint()
         if path.is_symlink() or (hasattr(path, 'is_junction') and path.is_junction()):
             raise ValueError('Reparse/symlink source requires explicit handling')
         if not path.is_file():
@@ -315,7 +339,7 @@ def backup(source, output, *, previous=None, deep_verify=True):
             continue
         if path.is_relative_to(depth_root) and path.resolve() not in depth_files:
             continue  # Preserve all originals on host; do not copy unfinished segments.
-        if path.is_relative_to(source/'depth-heatmap-v1'):
+        if any(path.is_relative_to(source/name) for name in ('depth-heatmap-v1', 'depth-history-cache-v1')):
             # Derived display cache, rebuilt from the backed-up raw segments.
             # Its live SQLite files would otherwise be re-copied in every backup.
             continue
@@ -345,7 +369,7 @@ def backup(source, output, *, previous=None, deep_verify=True):
         if is_sqlite:
             digest = snapshot_sqlite(path, target)
         else:
-            shutil.copyfile(path, target)
+            paced_copy(path, target)
             digest = checksum(target)
             expected = sealed.get(path.resolve())
             if expected is not None:
@@ -413,7 +437,12 @@ def pack(root, output):
         members.append(name)
     with tarfile.open(output, 'x') as archive:
         for name in members:
-            archive.add(root/name, arcname=name, recursive=False)
+            try:
+                from .backup_io import PacedReader
+            except ImportError:
+                from backup_io import PacedReader
+            with (root/name).open('rb') as stream:
+                archive.addfile(archive.gettarinfo(root/name, arcname=name), PacedReader(stream,io_checkpoint))
     return dict(sha256=checksum(output), bytes=output.stat().st_size, members=len(members)-1,
                 reused=len(manifest['files'])-(len(members)-1))
 
@@ -427,7 +456,16 @@ def main():
     parser.add_argument('--previous', type=Path, help='Earlier complete snapshot whose unchanged members are reused')
     parser.add_argument('--receiver-verifies', action='store_true',
                         help='Skip the second full read of staging; the receiver must verify every member')
+    parser.add_argument('--max-mib-per-second', type=float, default=0)
+    parser.add_argument('--recorder-status', type=Path)
     args = parser.parse_args()
+    try:
+        from .backup_io import BackupIO
+    except ImportError:
+        from backup_io import BackupIO
+    global _IO_GUARD
+    _IO_GUARD = BackupIO(args.max_mib_per_second,args.recorder_status)
+    io_checkpoint()
     if os.name == 'nt':
         # Bulk scans/copies yield I/O to live recording. Bounded SQLite steps
         # temporarily retain normal I/O/cache priority and below-normal CPU;

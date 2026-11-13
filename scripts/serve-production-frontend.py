@@ -179,7 +179,7 @@ def main() -> int:
         (
             "default-src 'self'",
             "base-uri 'self'",
-            f"connect-src 'self' {api_http} {api_ws} https://*.supabase.co wss://*.supabase.co",
+            f"connect-src 'self' {api_http} {api_ws}",
             "font-src 'self' data:",
             "form-action 'self'",
             "frame-ancestors 'none'",

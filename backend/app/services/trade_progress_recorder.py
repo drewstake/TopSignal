@@ -6,6 +6,7 @@ own threads and bounded queues; no recording work runs on an execution path.
 import logging
 from queue import Empty, Full, Queue
 import threading
+from time import monotonic
 
 from . import trade_progress_store as store
 from .trade_progress import ProgressEngine
@@ -44,6 +45,13 @@ class AccountRecorder:
         self.overflow = threading.Event()
         self.stop_event = threading.Event()
         self.refresh = threading.Event()
+        self.metrics_lock = threading.Lock()
+        self.metrics = dict(process_started_at=store.now(), queue_overflow_events=0,
+            discarded_after_overflow=0, discarded_after_write_failure=0,
+            snapshot_failures=0, snapshot_successes=0, reconnects=0,
+            commit_failures=0, last_commit_seconds=None, max_commit_seconds=0,
+            last_successful_write=None, last_snapshot_success=None)
+        self.seen_connections = set()
         self.tracker = RecordingTracker(self)
         self.runtime = StreamingRuntime(tracker=self.tracker, runner=ProjectXHubRunner(
             tracker=self.tracker, client_factory=client_factory, user_id=owner, account_id=account,
@@ -58,8 +66,14 @@ class AccountRecorder:
             self.queue.put_nowait((kind, payload, store.now()))
         except Full:
             self.overflow.set()
+            with self.metrics_lock:
+                self.metrics['queue_overflow_events'] += 1
 
     def connection(self, stream, reason):
+        if reason.startswith('connected'):
+            with self.metrics_lock:
+                self.metrics['reconnects'] += stream in self.seen_connections
+                self.seen_connections.add(stream)
         self.submit("connection", (stream, reason.startswith("connected")))
         self.refresh.set()
 
@@ -88,8 +102,13 @@ class AccountRecorder:
             started = store.now()
             try:
                 rows = self.client_factory().search_open_positions(account_id=self.account)
+                with self.metrics_lock:
+                    self.metrics['snapshot_successes'] += 1
+                    self.metrics['last_snapshot_success'] = store.now()
                 self.submit("snapshot", ([row["raw_payload"] for row in rows], started))
             except Exception as exc:
+                with self.metrics_lock:
+                    self.metrics['snapshot_failures'] += 1
                 self.submit("gap", "position_snapshot_failed")
                 logger.warning("trade_progress_snapshot_failed error_type=%s", type(exc).__name__)
             self.refresh.wait(15)
@@ -112,6 +131,8 @@ class AccountRecorder:
                         while True:
                             try:
                                 self.queue.get_nowait()
+                                with self.metrics_lock:
+                                    self.metrics['discarded_after_write_failure'] += 1
                             except Empty:
                                 break
                         self.refresh.set()
@@ -124,6 +145,8 @@ class AccountRecorder:
                     while True:
                         try:
                             self.queue.get_nowait()
+                            with self.metrics_lock:
+                                self.metrics['discarded_after_overflow'] += 1
                         except Empty:
                             break
                     self.refresh.set()
@@ -159,7 +182,26 @@ class AccountRecorder:
                     healthy = all(engine.connected.values()) and engine.reconciled and not self.overflow.is_set()
                     if healthy and any(engine.observation(s, store.now())["issue"] for s in engine.active.values()):
                         healthy = False
-                    engine.flush(error=None if healthy else "stream_or_position_coverage_unavailable")
+                    with self.queue.mutex:
+                        oldest = max(0, store.now()-self.queue.queue[0][2]) if self.queue.queue else 0
+                        queued = len(self.queue.queue)
+                    with self.metrics_lock:
+                        diagnostics = dict(self.metrics, observed_at=store.now(), queued_events=queued,
+                            oldest_queued_seconds=oldest, active_positions=len(engine.active),
+                            positions_without_fresh_mark=sum(bool(engine.observation(s,store.now())['issue']) for s in engine.active.values()),
+                            coverage_ready=healthy)
+                    began = monotonic()
+                    try:
+                        engine.flush(error=None if healthy else "stream_or_position_coverage_unavailable", diagnostics=diagnostics)
+                    except Exception:
+                        with self.metrics_lock:
+                            self.metrics['commit_failures'] += 1
+                        raise
+                    with self.metrics_lock:
+                        elapsed = monotonic()-began
+                        self.metrics.update(last_commit_seconds=elapsed,
+                            max_commit_seconds=max(elapsed,self.metrics['max_commit_seconds']),
+                            last_successful_write=store.now())
                     last_flush = at
                 self.stop_event.wait(.05)
             except Exception as exc:

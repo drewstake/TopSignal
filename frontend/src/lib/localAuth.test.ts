@@ -20,17 +20,17 @@ describe("local authentication", () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(nextSession())));
     vi.stubGlobal("fetch", fetchMock);
     await local.continueOnThisDevice();
-    const auth = await import("./supabase");
+    const auth = await import("./auth");
     expect(await auth.getAccessToken()).toBe(token);
   });
 
-  it("preserves Google as the default when a production cloud project is configured", async () => {
+  it("ignores obsolete cloud configuration and cached auth mode in production", async () => {
     vi.stubEnv("PROD", true);
     vi.stubEnv("VITE_LOCAL_AUTH_ENABLED", "false");
     vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
     const local = await import("./localAuth");
-    expect(local.localAuthConfigured).toBe(false);
-    expect(local.usesLocalAuth()).toBe(false);
+    expect(local.localAuthConfigured).toBe(true);
+    expect(local.usesLocalAuth()).toBe(true);
   });
 
   it("exchanges only the trusted connection for a session, then restores and logs out", async () => {
@@ -41,7 +41,7 @@ describe("local authentication", () => {
     expect(fetchMock.mock.calls[0][0].pathname).toBe("/auth/local/device");
     expect(fetchMock.mock.calls[0][1].headers["X-TopSignal-Local-Access"]).toBe("device");
     expect(fetchMock.mock.calls[0][1].body).toBe("{}");
-    const apiAuth = await import("./supabase");
+    const apiAuth = await import("./auth");
     expect(await apiAuth.getAccessToken()).toBe(token);
     expect((await local.restoreLocalSession())?.user.id).toBe("existing-owner");
     await local.signOutLocally();
@@ -51,9 +51,9 @@ describe("local authentication", () => {
   it("prefers local sign-in on a configured fresh tab without contacting Google", async () => {
     vi.stubEnv("VITE_LOCAL_AUTH_ENABLED", "true");
     const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
-    const auth = await import("./supabase");
-    expect(await auth.bootstrapSupabaseSession()).toBeNull();
-    const unsubscribe = auth.subscribeSupabaseAuthChanges(vi.fn());
+    const auth = await import("./auth");
+    expect(await auth.bootstrapSession()).toBeNull();
+    const unsubscribe = auth.subscribeAuthChanges(vi.fn());
     expect(await auth.getAccessToken()).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
     unsubscribe();
@@ -64,7 +64,7 @@ describe("local authentication", () => {
     vi.stubGlobal("fetch", fetchMock);
     let local = await import("./localAuth");
     await local.signInLocally("my long passphrase", "one-time-code");
-    const apiAuth = await import("./supabase");
+    const apiAuth = await import("./auth");
     expect(await apiAuth.getAccessToken()).toBe(token);
     expect(apiAuth.getAccessTokenSync()).toBe(token);
     expect(apiAuth.getCurrentUserEmailSync()).toBe("owner@example.test");
@@ -80,7 +80,7 @@ describe("local authentication", () => {
     expect(fetchMock.mock.lastCall?.[0].pathname).toBe("/auth/local/logout");
     expect(local.localSessionSync()).toBeNull();
     expect(local.usesLocalAuth()).toBe(true); // Never falls back to a cached Google identity.
-    const freshApiAuth = await import("./supabase");
+    const freshApiAuth = await import("./auth");
     expect(await freshApiAuth.getAccessToken()).toBeNull();
   });
 
@@ -129,8 +129,7 @@ describe("local authentication", () => {
     expect(await local.restoreLocalSession()).toBeNull();
     await local.continueOnThisDevice();
     expect(local.canAutoSignInOnThisDevice()).toBe(true);
-    local.selectGoogleAuth();
-    expect(local.canAutoSignInOnThisDevice()).toBe(false);
+
   });
 
   it("shares concurrent device exchanges and permits retry after failure", async () => {

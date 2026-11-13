@@ -4,7 +4,7 @@ export function tokenIdentity(token: string | null): string | null {
   try {
     const payload = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
     const value = JSON.parse(atob(payload.padEnd(Math.ceil(payload.length / 4) * 4, "=")));
-    if (typeof value.sub === "string") return JSON.stringify([value.iss ?? "supabase", value.sub]);
+    if (typeof value.sub === "string") return JSON.stringify([value.iss ?? "unknown-issuer", value.sub]);
   } catch { /* Opaque tokens remain distinct, in memory only. */ }
   return token;
 }

@@ -32,7 +32,7 @@ test("offline profile overrides cloud credentials, storage and live trading sett
   assert.equal(env.TOPSIGNAL_ENV, "development");
   assert.equal(env.TOPSIGNAL_LIVE_EXECUTION_ENABLED, "false");
   assert.equal(env.TOPSIGNAL_BOT_WORKER_ENABLED, "false");
-  assert.equal(env.JOURNAL_IMAGE_STORAGE_BACKEND, "local");
+  assert.equal(env.JOURNAL_IMAGE_STORAGE_BACKEND, "");
   assert.equal(env.TOPSIGNAL_DATABENTO_CACHE_DIR, original.TOPSIGNAL_DATABENTO_CACHE_DIR);
   assert.equal(original.AUTH_REQUIRED, "true");
 });
@@ -165,10 +165,8 @@ async def request(app, method, path, body=None):
 
 with TemporaryDirectory() as directory:
     os.environ['DATABASE_URL'] = 'sqlite+pysqlite:///' + (Path(directory) / 'test.sqlite3').as_posix()
-    os.environ['JOURNAL_IMAGE_STORAGE_DIR'] = directory
     from app.main import app, app_lifespan
     from app.db import engine
-    from app.services.journal_storage import save_journal_image
     async def verify():
         async with app_lifespan(app):
             assert (await request(app, 'GET', '/ready'))[0] == 200
@@ -177,8 +175,6 @@ with TemporaryDirectory() as directory:
             status, expense = await request(app, 'POST', '/api/expenses', {'expense_date': '2026-09-07', 'amount_cents': 123, 'category': 'other', 'description': 'offline persistence check'})
             assert status == 201, expense
             expense_id = expense['id']
-            save_journal_image(object_key='offline/check.png', file_bytes=b'local-test', mime_type='image/png')
-            assert (Path(directory) / 'offline/check.png').read_bytes() == b'local-test'
         async with app_lifespan(app):
             _, result = await request(app, 'GET', '/api/expenses')
             assert any(row['id'] == expense_id for row in result['items'])

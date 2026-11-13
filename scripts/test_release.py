@@ -29,6 +29,24 @@ class ReleaseTests(unittest.TestCase):
         self.bundle = self.root / "bundle"
         self.bundle.mkdir()
 
+    def test_cloud_retirement_profile_preserves_local_settings_and_handles_multiline_secrets(self):
+        for folder in ('backend','frontend'):
+            (self.root/folder).mkdir()
+        path = self.root/'backend/.env'
+        local = ('DATABASE_URL=postgresql+psycopg://app:fixture@127.0.0.1:5433/topsignal\n'
+                 'TOPSIGNAL_EXECUTION_STORAGE=local_postgres\nAUTH_REQUIRED=true\n'
+                 'TOPSIGNAL_LOCAL_AUTH_MODE=trusted_device\nTOPSIGNAL_LOCAL_AUTH_DB=C:/private/auth.sqlite3\n'
+                 'TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION=false\nCREDENTIALS_ENCRYPTION_KEY="keep$literal"\n')
+        path.write_text(local+'SUPABASE_KEY="first\nsecond"\nJOURNAL_IMAGE_STORAGE_BACKEND=supabase\n')
+        frontend = self.root/'frontend/.env.local'
+        frontend.write_text('VITE_SUPABASE_URL=https://unused.invalid\nVITE_LOCAL_AUTH_ENABLED=true\n')
+        host.retire_cloud_configuration(self.root)
+        self.assertEqual(path.read_text(),local)
+        self.assertEqual(frontend.read_text(),'VITE_LOCAL_AUTH_ENABLED=true\n')
+        path.write_text(local.replace('AUTH_REQUIRED=true','AUTH_REQUIRED=false'))
+        with self.assertRaisesRegex(ValueError,'local authority'):
+            host.retire_cloud_configuration(self.root)
+
     def bundle_fixture(self, source=None):
         source = source or {"backend/app/main.py": b"tested source", "scripts/release.py": b"release command"}
         dist = {"frontend/dist/index.html": b"<html>tested</html>", "frontend/dist/assets/a.js": b"code"}

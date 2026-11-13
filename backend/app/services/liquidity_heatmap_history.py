@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sqlite3
 import sys
 from threading import BoundedSemaphore, Event, Lock, Thread
 from time import monotonic, time
@@ -54,17 +55,17 @@ def account_heatmap(*, user_id, contract_id: str, data_live: bool, start_ms: int
         if cached and monotonic() - cached[0] < 10:
             _cache.move_to_end(key)
             return _with_server_time(cached[1])
-    # Two bounded reads at a time; a short wait absorbs a browser's tile burst.
-    if not _slots.acquire(timeout=15):
+    # Do not spend a client's deadline queued behind another archive read.
+    if not _slots.acquire(blocking=False):
         raise RuntimeError('Heatmap history is busy. Retrying shortly.')
     try:
         if config.exists():
             payload = _remote(config, query)
         else:
-            result = read_heatmap(heatmap_cache_root(), query)
+            result = read_heatmap(heatmap_cache_root(), query, deadline=monotonic() + 20)
             result.pop('server_time_ms', None)
             payload = json.dumps(result, separators=(',', ':'), allow_nan=False).encode()
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError) as exc:
         raise RuntimeError('Heatmap history is unavailable.') from exc
     finally:
         _slots.release()
@@ -103,7 +104,7 @@ def _remote(config_path: Path, query: dict) -> bytes:
         'ssh', '-T', '-i', config['identity_file'], '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
         '-o', 'ConnectTimeout=5', '-o', 'ForwardAgent=no', '-o', 'ClearAllForwardings=yes', config['ssh_target'],
         config['python_path'], '-B', config['heatmap_reader_path'], 'read', '--cache', config['heatmap_cache_root'],
-    ], input=json.dumps(query), text=True, encoding='utf-8', capture_output=True, timeout=40,
+    ], input=json.dumps(query), text=True, encoding='utf-8', capture_output=True, timeout=25,
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
     if completed.returncode or len(completed.stdout) > 48 * 1024**2:
         raise RuntimeError('Heatmap history is unavailable on the recording host.')

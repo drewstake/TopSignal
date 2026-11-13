@@ -42,9 +42,11 @@ import zlib
 if __package__:
     from .depth_book import MarketByPriceBook, _Level
     from .read_depth_history import read_manifest, safe_path, verified_rows
+    from .recording_inventory import directories
 else:  # Standalone host entry point.
     from depth_book import MarketByPriceBook, _Level
     from read_depth_history import read_manifest, safe_path, verified_rows
+    from recording_inventory import directories
 
 SCHEMA = 'liquidity-heatmap-history-v1'
 DERIVED_VERSION = 'depth-heatmap-derived-v1'
@@ -625,27 +627,23 @@ class Inventory:
             return found
         safe_path(root, root)
         live_runs = set()
-        for day in sorted(root.iterdir()):
-            if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', day.name) or not day.is_dir():
-                continue
-            safe_path(day, root)
-            for run in sorted(day.iterdir()):
-                if not re.fullmatch('[a-f0-9]{32}', run.name) or not run.is_dir():
-                    continue
-                safe_path(run, root)
+        for day, _ in directories(root, r'\d{4}-\d{2}-\d{2}'):
+            for run, metadata in directories(day, '[a-f0-9]{32}'):
                 live_runs.add(run)
-                stamp = run.stat().st_mtime_ns
+                stamp = metadata[3]
                 cached = self.runs.get(run)
                 known = cached[1] if cached else {}
                 if cached is None or cached[0] != stamp:
+                    safe_path(run, root)
                     # Only markers not seen before are read; a long capture is not reparsed per segment.
-                    for marker in sorted(run.glob('*.segment.json')):
+                    with os.scandir(run) as entries:
+                        markers = sorted((Path(e.path), e.stat(follow_symlinks=False)) for e in entries if e.name.endswith('.segment.json'))
+                    for marker, info in markers:
                         if marker.name in known:
                             continue
                         known[marker.name] = None
                         try:
-                            safe_path(marker, root)
-                            m = read_manifest(marker, root)
+                            m = read_manifest(marker, root, validated_parent=run, file_info=info)
                             owner = m.get('owner_hash', '')
                             if (not OWNER_RE.fullmatch(owner) or m['schema'] != 'mnq-depth-segment-v1' or m['synthetic'] is not False
                                     or m['source'] != 'projectx' or m['capture_id'] != run.name):
@@ -1025,14 +1023,20 @@ def deriver_status(cache: Path, owner: str) -> dict | None:
         connection.close()
 
 
-def read_heatmap(cache: Path, query: dict, *, now_ms: int | None = None) -> dict:
-    result = _read_heatmap(cache, query, now_ms=now_ms)
+def _read_deadline(deadline):
+    if deadline is not None and time.monotonic() >= deadline:
+        raise RuntimeError('Heatmap history is still preparing. Retry shortly.')
+
+
+def read_heatmap(cache: Path, query: dict, *, now_ms: int | None = None, deadline=None) -> dict:
+    _read_deadline(deadline)
+    result = _read_heatmap(cache, query, now_ms=now_ms, deadline=deadline)
     # Stamped when the response is complete; the browser aligns its live clock to it.
     result['server_time_ms'] = int(time.time() * 1000)
     return result
 
 
-def _read_heatmap(cache: Path, query: dict, *, now_ms: int | None = None) -> dict:
+def _read_heatmap(cache: Path, query: dict, *, now_ms: int | None = None, deadline=None) -> dict:
     cache = Path(cache)
     owner, contract, live = query.get('owner_hash', ''), query.get('contract_id', ''), query.get('data_live', False)
     tier = query.get('tier', 0)
@@ -1064,6 +1068,8 @@ def _read_heatmap(cache: Path, query: dict, *, now_ms: int | None = None) -> dic
     safe_path(path, cache)
     connection = _readonly(path)
     try:
+        if deadline is not None:
+            connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
         if connection.execute("SELECT value FROM meta WHERE key='derived_version'").fetchone() != (DERIVED_VERSION,):
             return dict(result, notes=[[session_start, 'derived_version_mismatch']])
         rows = connection.execute('SELECT id, capture_id, start_ms, end_ms, gaps, notes FROM chunks '
@@ -1072,6 +1078,7 @@ def _read_heatmap(cache: Path, query: dict, *, now_ms: int | None = None) -> dic
         # Overlapping captures would double-count trades: keep the earlier capture.
         accepted, spans, excluded = [], {}, 0
         for row in rows:
+            _read_deadline(deadline)
             chunk_id, capture, chunk_start, chunk_end = row[:4]
             clash = any(other != capture and chunk_start < span[1] - 2_000 and chunk_end > span[0] + 2_000
                         for other, items in spans.items() for span in items[-3:])
@@ -1093,6 +1100,7 @@ def _read_heatmap(cache: Path, query: dict, *, now_ms: int | None = None) -> dic
         depth_kind, trade_kind = f'depth{tier}', ('none' if summary else f'trades{tier}')
         blobs = {}
         for i in range(0, len(selected), 500):
+            _read_deadline(deadline)
             ids = selected[i:i + 500]
             marks = ','.join('?' * len(ids))
             for chunk_id, kind, data in connection.execute(
@@ -1105,6 +1113,7 @@ def _read_heatmap(cache: Path, query: dict, *, now_ms: int | None = None) -> dic
     if tier == 0:
         frames = {}
         for chunk_id in selected:
+            _read_deadline(deadline)
             blob = blobs.get((chunk_id, depth_kind))
             if blob is None:
                 continue
@@ -1135,6 +1144,7 @@ def _read_heatmap(cache: Path, query: dict, *, now_ms: int | None = None) -> dic
     else:
         buckets = {}
         for chunk_id in selected:
+            _read_deadline(deadline)
             blob = blobs.get((chunk_id, depth_kind))
             if blob is None:
                 continue
@@ -1183,6 +1193,7 @@ def _read_heatmap(cache: Path, query: dict, *, now_ms: int | None = None) -> dic
                 side.append(sides)
     groups = {}
     for chunk_id in selected:
+        _read_deadline(deadline)
         blob = blobs.get((chunk_id, trade_kind))
         if blob is None:
             continue
@@ -1269,8 +1280,8 @@ def main():
     else:
         try:
             query = json.loads(sys.stdin.read(4097))
-            print(json.dumps(read_heatmap(args.cache, query), separators=(',', ':'), allow_nan=False))
-        except (ValueError, OSError, KeyError, TypeError, sqlite3.Error):
+            print(json.dumps(read_heatmap(args.cache, query, deadline=time.monotonic()+20), separators=(',', ':'), allow_nan=False))
+        except (ValueError, OSError, KeyError, TypeError, sqlite3.Error, RuntimeError):
             print(json.dumps({'error': 'Heatmap history could not be read.'}))
             raise SystemExit(1)
 

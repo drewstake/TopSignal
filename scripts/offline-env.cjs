@@ -7,7 +7,7 @@ function offlineEnvironment(environment, repoRoot, { projectx = false, liveOrder
   }
   const env = { ...environment };
   for (const key of Object.keys(env)) {
-    if (/^(SUPABASE_|VITE_SUPABASE_|DATABENTO_API_KEY|PG)/i.test(key)
+    if (/^(SUPABASE_|VITE_SUPABASE_|JOURNAL_|GEMINI_|DATABENTO_API_KEY|PG)/i.test(key)
       || (!projectx && /^(PROJECTX_|TOPSTEP)/i.test(key))) {
       env[key] = "";
     }
@@ -36,10 +36,6 @@ function offlineEnvironment(environment, repoRoot, { projectx = false, liveOrder
     TOPSIGNAL_LIVE_EXECUTION_ENABLED: liveOrders ? "true" : "false",
     TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION: liveOrders ? "true" : "false",
     PROJECTX_STREAMING_ENABLED: "false",
-    JOURNAL_IMAGE_STORAGE_BACKEND: "local",
-    JOURNAL_IMAGE_STORAGE_DIR: path.join(storageDir, "journal_images"),
-    VITE_SUPABASE_URL: "",
-    VITE_SUPABASE_ANON_KEY: "",
     VITE_OFFLINE_MODE: "true",
     VITE_LOCAL_PROJECTX: projectx ? "true" : "false",
     VITE_LOCAL_LIVE_ORDERS: liveOrders ? "true" : "false",

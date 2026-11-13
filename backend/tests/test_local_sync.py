@@ -50,6 +50,88 @@ def seed(connection, key=1):
         connection.execute("INSERT INTO bot_order_attempts VALUES(%s,%s,%s,'pending')", (key, key, 'intent-' + str(key)))
 
 
+def test_mirror_retirement_is_atomic_stops_outbox_and_preserves_authority(databases, monkeypatch):
+    from app.mirror_retirement import retire_source, retired
+    from app.execution_storage import validate_authority
+    from sqlalchemy import create_engine
+    with databases(0) as source, databases(1) as target:
+        identity = source.execute('SELECT source_id FROM topsignal_local.authority').fetchone()[0]
+        params = dict(authority_id=identity, acknowledged_seq=0, reconciliation_sha256='a'*64, backup_sha256='b'*64)
+        seed(source)
+        with pytest.raises(RuntimeError, match='stale|not empty'):
+            with source.transaction(): retire_source(source, **params)
+        assert not retired(source)
+        sync_once(source, target)
+        params['acknowledged_seq'] = source.execute('SELECT acknowledged_seq FROM topsignal_local.sync_status').fetchone()[0]
+        with source.transaction(): retire_source(source, **params)
+        assert retired(source)
+        seed(source, 2)
+        assert source.execute('SELECT count(*) FROM topsignal_local.outbox').fetchone()[0] == 0
+        with pytest.raises(RuntimeError, match='retired'):
+            sync_once(source, target)
+        engine = create_engine(make_url(URL).set(database=source.info.dbname))
+        monkeypatch.setenv('TOPSIGNAL_EXECUTION_STORAGE', 'local_postgres')
+        monkeypatch.setenv('TOPSIGNAL_RESEARCH_STORAGE', 'local')
+        monkeypatch.setenv('TOPSIGNAL_LOCAL_AUTHORITY_ID', str(identity))
+        try:
+            validate_authority(engine)
+            source.execute('UPDATE topsignal_local.authority SET active=false')
+            with pytest.raises(psycopg.errors.RaiseException, match='authority inactive'):
+                seed(source, 3)
+            with pytest.raises(RuntimeError, match='inactive'):
+                validate_authority(engine)
+        finally:
+            engine.dispose()
+
+
+def test_independent_recorder_uses_only_scoped_read_only_local_credentials(databases, tmp_path, monkeypatch):
+    from cryptography.fernet import Fernet
+    from pathlib import Path
+    from tools.recorder_startup import load_context
+    from tools.provision_depth_recorder import provision
+    from app.services.probabilistic_shadow import scope_hash
+    role='topsignal_audit_depth_'+uuid4().hex[:12]
+    owner=uuid4(); key=Fernet.generate_key(); cipher=Fernet(key)
+    for name in ('PYTHON_DOTENV_DISABLED','TOPSIGNAL_DATABENTO_CACHE_DIR','TOPSIGNAL_LIVE_EXECUTION_ENABLED','TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION'):
+        monkeypatch.setenv(name,os.getenv(name,''))
+    with databases(0) as admin:
+        try:
+            admin.execute('CREATE TABLE bot_configs(id bigint PRIMARY KEY,user_id uuid,execution_mode text,contract_id text)')
+            admin.execute('CREATE TABLE provider_credentials(user_id uuid,provider text,username_encrypted text,api_key_encrypted text)')
+            admin.execute("INSERT INTO bot_configs VALUES(32,%s,'dry_run','CON.F.US.MNQ.Z26')",(owner,))
+            admin.execute("INSERT INTO provider_credentials VALUES(%s,'projectx',%s,%s)",
+                          (owner,cipher.encrypt(b'fixture-user').decode(),cipher.encrypt(b'fixture-key').decode()))
+            admin.execute('ALTER TABLE bot_configs ENABLE ROW LEVEL SECURITY')
+            admin.execute('ALTER TABLE provider_credentials ENABLE ROW LEVEL SECURITY')
+            password = 'disposable-depth-fixture-password'
+            with admin.transaction():
+                provision(admin, role=role, password=password, owner_id=owner, bot_config_id=32)
+            url=make_url(URL).set(database=admin.info.dbname,username=role,password=password)
+            env=tmp_path/'recorder.env'
+            env.write_text('DATABASE_URL='+url.render_as_string(hide_password=False)+'\nCREDENTIALS_ENCRYPTION_KEY='+key.decode()
+                +'\nTOPSIGNAL_LIVE_EXECUTION_ENABLED=false\nTOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION=false\n'
+                +'TOPSIGNAL_DATABENTO_CACHE_DIR='+tmp_path.as_posix()+'\nPROJECTX_API_BASE_URL=https://api.topstepx.com\n')
+            config=dict(backend_root=str(Path(__file__).resolve().parents[1]),credential_env_file=str(env),
+                database_role=role,owner_id=str(owner),bot_config_id=32,recording_root=str(tmp_path/'depth-recordings-v1'))
+            client,scope,root=load_context(config)
+            assert scope==scope_hash(str(owner)) and root==tmp_path/'depth-recordings-v1'
+            admin.execute("INSERT INTO provider_credentials VALUES(%s,'projectx','other','other')",(uuid4(),))
+            with psycopg.connect(host=url.host, port=url.port, dbname=url.database, user=role, password=password) as reader:
+                assert reader.execute('SELECT user_id FROM provider_credentials').fetchall() == [(owner,)]
+                with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+                    reader.execute('DELETE FROM bot_configs')
+            with pytest.raises(RuntimeError,match='permits authentication'):
+                client._request_once('POST','/api/Order/place',json={})
+            with pytest.raises(RuntimeError,match='Owned paper'):
+                load_context(dict(config,owner_id=str(uuid4())))
+            admin.execute(sql.SQL('GRANT INSERT ON bot_configs TO {}').format(sql.Identifier(role)))
+            with pytest.raises(RuntimeError,match='read-only'):
+                load_context(config)
+        finally:
+            admin.execute(sql.SQL('DROP OWNED BY {}').format(sql.Identifier(role)))
+            admin.execute(sql.SQL('DROP ROLE {}').format(sql.Identifier(role)))
+
+
 def test_restored_fences_allow_only_intentionally_omitted_legacy_tables(databases):
     from tools.provision_execution_storage import LEGACY_TABLES, lock_offline_restore, replace_restored_cloud_fences
     with databases(0) as source:
@@ -206,7 +288,7 @@ def test_runtime_rejects_restored_authority_and_unmirrored_tables(databases, mon
         try:
             validate_authority(engine)
             src.execute('CREATE TABLE newly_added_state(id bigint PRIMARY KEY)')
-            with pytest.raises(RuntimeError, match='unfenced or unmirrored'):
+            with pytest.raises(RuntimeError, match='unfenced'):
                 validate_authority(engine)
             src.execute('DELETE FROM topsignal_local.authority')
             with pytest.raises(RuntimeError, match='absent, inactive or mismatched'):

@@ -40,7 +40,7 @@ export const APP_THEMES: AppTheme[] = [
   {
     id: "daylight",
     name: "Daylight",
-    description: "A bright review mode for scanning reports and journals in well-lit rooms.",
+    description: "A bright review mode for scanning reports in well-lit rooms.",
     colorScheme: "light",
     swatches: ["#f8fafc", "#ffffff", "#0e7490", "#4f46e5"],
     tags: ["Light", "Review"],

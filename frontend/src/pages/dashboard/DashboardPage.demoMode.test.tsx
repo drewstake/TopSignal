@@ -4,7 +4,6 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { accountsApi } from "../../lib/api";
 import { DashboardPage } from "./DashboardPage";
 
 function renderDemoDashboard(compact: boolean) {
@@ -31,8 +30,6 @@ describe("Dashboard Demo day selection", () => {
   });
 
   it.each([false, true])("filters a calendar day without journal requests (compact=%s)", async (compact) => {
-    const createJournalEntry = vi.spyOn(accountsApi, "createJournalEntry");
-    const getJournalDays = vi.spyOn(accountsApi, "getJournalDays");
     const router = renderDemoDashboard(compact);
     const name = compact ? /July 24, 2026,.*trade/i : /Jul 24, 2026\..*Net P&L/i;
 
@@ -42,7 +39,5 @@ describe("Dashboard Demo day selection", () => {
     expect(router.state.location.pathname).toBe("/dashboard");
     expect(router.state.location.search).toContain("account=910001");
     expect(screen.queryByRole("button", { name: /journal/i })).toBeNull();
-    expect(getJournalDays).not.toHaveBeenCalled();
-    expect(createJournalEntry).not.toHaveBeenCalled();
   }, 20_000);
 });

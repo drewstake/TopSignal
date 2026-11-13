@@ -1,5 +1,22 @@
 # TopSignal
 
+The hosted dashboard is `http://127.0.0.1:4173` through the private connection to
+peteamdpc. The [November 13 health audit](docs/audits/2026-11-13/peteamdpc-health.md)
+verified release `20261112-auto-signin-87`, local PostgreSQL execution authority,
+filesystem recordings and local trusted-device sign-in. Supabase is **partially
+retired**: compact records are still mirrored there, journal images use its
+object storage, and the independent recorder reads startup credentials there.
+The [prepared remediation](docs/audits/2026-11-13/storage-remediation.md) and
+[maintenance procedure](docs/supabase-retirement.md) describe the candidate;
+they are not a deployment receipt. Development modes below describe repository code.
+
+Market recording runs on the host without a browser. Trade-progress enrollment
+is per owner/account; only practice account `29593203` was enrolled at inspection.
+History timeouts, recording gaps and stale full-cache backups remain operational
+issues. See [storage and recovery](docs/local-first-storage.md),
+[recording](docs/trade-progress-recording.md) and
+[hosted access](docs/hosted-dashboard-connection.md).
+
 TopBot's practice strategy uses contrarian DOM entries, a 25-point initial MNQ
 stop, and a 25-point trailing stop activated at +25. See the
 [strategy and operating notes](docs/topbot-contrarian.md). Retired configurations
@@ -7,14 +24,14 @@ remain inactive; starting a practice run explicitly installs the new preset.
 
 TopSignal opens to the account dashboard. The shared navigation includes Dashboard, Accounts, Trades, Expenses, Bot, Backtesting, and Appearance. Bot contains Overview and Logs views.
 
-Run `npm run dev` and open `http://localhost:5173`. This starts both the cloud app and the ProjectX-connected local workspace at `http://127.0.0.1:5174`, so Continue offline works from the sign-in page. Local live orders are disabled. Each frontend starts after its backend is ready with the matching API address. The dashboard opens at `/` and `/dashboard`. TopBot diagnostics and service logs are available under Bot → Logs.
+Run `npm run dev` and open `http://localhost:5173`. This starts both the configured local-auth workspace and the ProjectX-connected offline workspace at `http://127.0.0.1:5174`, so Continue offline works from the sign-in page. Local live orders are disabled. Each frontend starts after its backend is ready with the matching API address. The dashboard opens at `/` and `/dashboard`. TopBot diagnostics and service logs are available under Bot → Logs.
 
 The dev launcher checks `/ready/dev`. When its local worker and both live-order
 flags are explicitly disabled, this checks database/schema readiness without
 requiring a second worker for runs hosted on another PC. It does not enable
 automation or change saved runs; `/ready` and bot-start checks remain strict.
 
-The account analytics workspace retains its cloud authentication and data protections. It syncs ProjectX/TopstepX account data or imports reviewed trade exports, and provides account management, trade review, expense tracking, and trading-bot controls. `npm run dev:live`, `dev:cloud`, and `dev:local` remain explicit launch options for that workspace.
+The candidate account workspace uses local sign-in with owner isolation; cloud OAuth/JWKS and token refresh have been removed. It syncs ProjectX/TopstepX account data or imports reviewed trade exports, and provides account management, trade review, expense tracking, and trading-bot controls. `npm run dev:live`, `dev:cloud`, and `dev:local` remain explicit launch options for that workspace.
 
 The retained Bot workspace supports forward testing. The Data tab and
 Databento backtest panel have been removed; old `/data` links redirect to the
@@ -25,12 +42,10 @@ archive was created under `backend/storage/backups/retired-databento-research-20
 Saved database backtest records and historical replay tools remain for reference;
 running those tools again requires an explicit restore or new history import.
 
-The Journal page, calendar journal shortcuts, and account journal-merge controls
-have also been removed. Old `/journal` links redirect to the dashboard with their
-account selection preserved. Calendars continue to select trade days without
-loading or creating journal entries. Existing journal records and images remain
-in storage; the retained journal APIs and historical notes below describe that
-data rather than a currently routed feature.
+The candidate removes Journal UI, routes, APIs, autosave, images and AI recap.
+Calendars continue to select trade days. Historical records/images remain in a
+verified encrypted archive on peteamdpc and off device; no cloud/source data was
+deleted. See the [archive receipt](docs/audits/2026-11-13/storage-remediation.md).
 
 This repository contains:
 
@@ -89,7 +104,7 @@ Core features in the current routed app:
 - Payout tracking, payout totals, and spend-since-last-payout context
 - One-click TopBot MNQ dry/live run controls, signal charting, market analysis, trade-plan evaluation, and bot activity review
 - Workspace theme selection with live palette previews
-- Optional Supabase authentication for multi-user deployments
+- Local authentication with owner isolation
 
 ## Product Walkthrough
 
@@ -134,7 +149,7 @@ Important dashboard behaviors:
 - The page can sync trades, change time range, and drill into a specific trading day.
 - Topstep CSV/XLSX exports can be reviewed and confirmed directly above the P&L calendar; duplicate source IDs are skipped.
 - Clicking a PnL-calendar day filters the trade feed to that trading day.
-- Calendar days can open or create a journal entry for that date/account.
+- Calendar days select scoped trade history.
 - `Summary` opens a coach-style trading summary for the selected dashboard range, including verdict, sample quality, top levers, risks, improvements, and a short action plan.
 - `Copy Full Stats` copies a text payload for the selected dashboard range.
 - `Copy Trade Mode` can combine the selected leader account with up to four follower accounts for adjusted dashboard totals.
@@ -160,7 +175,6 @@ A user can:
   local Live account backed by manually imported Topstep trades
 - create Live accounts with a name and opening balance; TopSignal generates and
   hides the internal routing key and derives current balance from imported net P&L
-- merge journal history from an older account into a replacement account
 - resolve the last trade timestamp from the provider when local data is stale or absent
 
 Accounts page:
@@ -236,37 +250,12 @@ The page also contains a combine spend helper that:
 
 This combine tracker is implemented on the frontend and is not a standalone backend subsystem.
 
-### Journal
+### Retired Journal recovery
 
-The Journal page is an account-scoped daily trading journal.
-
-A user can:
-
-- create one journal entry per account per date
-- filter entries by date range and mood
-- edit title, mood, tags, and notes
-- rely on debounced autosave
-- archive or unarchive entries
-- paste images into the entry workspace
-- pull a trade-stat snapshot into the journal entry
-- generate or append a Gemini-backed AI Recap for the selected trading date and account
-- copy journal content for recent entries
-- merge one account's journal history into another account without deleting the source account history
-
-Journal workspace:
-
-![Trading journal page](images/journal.png)
-
-Notable journal behavior:
-
-- Autosave uses optimistic concurrency with a `version` column.
-- If a stale save collides with newer server state, the API returns `409 version_conflict` and the UI can reload the server version.
-- Journal images are stored either locally on disk or in Supabase Storage, depending on configuration.
-- Trade stats can be pulled by explicit trade IDs, explicit date range, or the entry's trading day.
-- AI Recap generation uses the backend Gemini client and the existing `GEMINI_*` environment variables listed in this README.
-- AI Recap skips days with no trades instead of creating or updating a journal entry.
-- Journal merge matches entries by `entry_date`. `skip` keeps the destination entry for that date; `overwrite` replaces the destination entry content with the source entry.
-- Journal merge copies entries into the destination account and leaves the source account untouched. When image copying is enabled, new destination image records and files are created so source images are not orphaned or shared.
+Journal is no longer an active feature. The November 13 recovery archive contains
+31 entries and nine image references, with all referenced contents verified.
+Historical table definitions and immutable migrations remain for recovery.
+The current hosted release still exposes old APIs until candidate activation.
 
 ### Bot
 
@@ -328,7 +317,6 @@ The current router includes these product surfaces:
 - `/accounts`: account management
 - `/trades`: execution review
 - `/expenses`: expenses and payouts
-- `/journal`: daily journal
 - `/bot`: TopBot MNQ run controls and activity review
 - `/appearance`: app zoom and palette selection (`/themes` redirects here)
 
@@ -341,8 +329,8 @@ flowchart LR
     A["React frontend"] --> B["FastAPI backend"]
     B --> C["ProjectX API"]
     B --> D["PostgreSQL"]
-    B --> E["Supabase Auth (optional)"]
-    B --> F["Supabase Storage (optional, journal images)"]
+    B --> E["Protected local auth SQLite"]
+    B --> F["Host filesystem recordings + off-device recovery"]
     G["ProjectX streaming runtime (optional)"] --> B
     B --> H["Derived metrics + cached trade history"]
     H --> A
@@ -357,7 +345,7 @@ flowchart LR
 | Routing | React Router 7 |
 | Build tool | Vite 7 |
 | Styling | Tailwind CSS + custom UI primitives |
-| Auth client | `@supabase/supabase-js` when Supabase env vars are present |
+| Auth client | Local session bootstrap and revocation |
 | Tests | Vitest |
 
 ### Backend Stack
@@ -368,7 +356,7 @@ flowchart LR
 | ORM | SQLAlchemy 2 |
 | Validation | Pydantic v2 |
 | DB driver | `psycopg` |
-| Auth verification | PyJWT + JWKS or shared secret |
+| Auth verification | Local signed session + protected SQLite revocation/expiry |
 | Tests | Pytest |
 
 ### Database
@@ -379,7 +367,7 @@ Important implementation detail:
 
 - The current app's main analytics dataset is `projectx_trade_events`, not the legacy `trades` table.
 - The legacy `/metrics/*` endpoints and `/trades` endpoint still read from `trades`.
-- The account dashboard, trade review, PnL calendar, and journal trade-stat flows use `projectx_trade_events`.
+- The account dashboard, trade review, PnL calendar flows use `projectx_trade_events`.
 - Confirmed file imports use the same `projectx_trade_events` analytics path and are audited in `trade_import_batches`.
 - Bot configuration and audit history use `bot_configs`, `bot_runs`, `bot_decisions`, `bot_order_attempts`, and `bot_risk_events`.
 - Canonical Databento definitions, raw 1-minute bars, statistics, and no-lookahead roll decisions live in the versioned local Parquet/mmap cache. Fresh PostgreSQL schemas omit the older `databento_*` market tables. Upgraded installations may retain them for compatibility; they are never dropped automatically and production backtests do not read them.
@@ -390,10 +378,8 @@ Important implementation detail:
 
 | Integration | Purpose |
 | --- | --- |
-| ProjectX API | Account discovery, provider auth, executions, positions, trade/journal sync, contract lookup, and optional order routing |
+| ProjectX API | Account discovery, provider auth, executions, positions, trade sync, contract lookup, and optional order routing |
 | Databento DBN archives | Sole historical OHLCV and contract-definition source for backtesting |
-| Supabase Auth | Optional JWT-based user auth |
-| Supabase Storage | Optional journal image storage backend |
 | ProjectX market/user hubs | Tenant-scoped streaming adapters; process-global user lifecycle persistence is disabled |
 
 ## System Structure
@@ -416,7 +402,7 @@ Important implementation detail:
 - `backend/app/trade_plan_schemas.py`: trade-plan evaluation request/response schemas
 - `backend/app/db.py`: engine/session setup and startup schema compatibility patches
 - `backend/app/auth.py`: auth middleware helpers and JWT validation
-- `backend/app/services/`: ProjectX sync, analytics, journaling, image storage, payout, streaming, and bot helpers
+- `backend/app/services/`: ProjectX sync, analytics, payout, streaming, and bot helpers
 
 ### Database
 
@@ -525,51 +511,11 @@ Key rules in code:
 
 The backend computes summaries from `projectx_trade_events`, then the frontend computes several additional display-only metrics from the returned summary and trade feed.
 
-### 4. Journal Data Flow
+### 4. Historical Journal archive
 
-Journal entries are keyed by `(user_id, account_id, entry_date)`.
-
-Typical journal workflow:
-
-1. frontend creates or loads an entry for a specific trading date
-2. the user edits title, mood, tags, and notes
-3. a debounced autosave queue sends `PATCH` requests after `800ms`
-4. the backend validates the expected `version`
-5. on success, the entry version increments
-6. on conflict, the API returns `409` with the server copy
-
-Image flow:
-
-1. the user pastes an image into the editor
-2. frontend uploads it
-3. backend validates size and MIME type
-4. backend stores the file locally or in Supabase Storage
-5. backend persists a `journal_entry_images` row and returns a backend-served URL path
-
-Trade-stat snapshot flow:
-
-1. the user asks to pull stats into a journal entry
-2. the backend optionally refreshes the relevant trade window from ProjectX first
-3. it computes a snapshot from closed trades in the selected window
-4. it stores that snapshot in `journal_entries.stats_json`
-
-AI Recap flow:
-
-1. the user clicks AI Recap for the selected account and trading date on the Journal page
-2. the frontend flushes pending journal autosave work, then calls the account-scoped AI recap endpoint
-3. the backend loads closed trades for that account and trading date
-4. if the day has no trades, the backend skips recap generation and does not create or update a journal entry
-5. if trades exist, the backend calls Gemini using the existing `GEMINI_*` backend environment variables listed in this README
-6. the recap is created as a new journal entry or appended to the existing entry as a managed AI recap section
-
-Journal merge flow:
-
-1. the user chooses an old account and a new account from the Accounts page
-2. the frontend submits `POST /api/journal/merge` with `skip` or `overwrite`
-3. the backend validates that both accounts belong to the current user
-4. it copies source entries into the destination account by `entry_date`
-5. if `include_images=true`, it copies image files and creates new `journal_entry_images` rows for the destination entry
-6. it returns a merge summary with transferred, skipped, overwritten, and copied-image counts
+`backend/tools/archive_journal.py` exports, verifies and restores historical
+records and referenced images. The encrypted artifact is recovery data, not an
+application data flow. Permanent deletion requires separate authorization.
 
 ### 5. Expense And Payout Flow
 
@@ -654,7 +600,6 @@ The frontend has small in-memory caches in `frontend/src/lib/api.ts`:
 
 - account lists: cached for 10 minutes
 - account-scoped summary, trades, and PnL-calendar reads: cached for 10 minutes
-- journal day markers: cached per account and query
 - bot chart candles: cached in browser storage by market and timeframe
 - duplicate in-flight requests are deduplicated
 
@@ -716,10 +661,9 @@ Recommended minimum frontend variables:
 VITE_API_BASE_URL=http://localhost:8000
 ```
 
-If you want authenticated cloud mode, also set the Supabase variables shown in `.env.example`.
-When `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are configured, the frontend
-bootstraps a Supabase session before rendering the routed app. If there is no active
-session, it shows a Google OAuth sign-in screen first.
+Authenticated workspaces use protected local sign-in state from `.env.example`.
+For production, build with `VITE_LOCAL_AUTH_ENABLED=true`; configure the existing
+loopback/tunnel owner using the local-auth provisioning and recovery procedure.
 
 #### 3. Install dependencies
 
@@ -879,12 +823,6 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `PROJECTX_USERNAME` | Legacy env-based TopstepX username used for ProjectX API auth |
 | `PROJECTX_API_KEY` | Legacy env-based TopstepX API key generated from `Settings -> API` |
 | `AUTH_REQUIRED` | Requires API auth by default; `false` is accepted only in a fully local runtime |
-| `SUPABASE_URL` | Enables Supabase-aware auth and optional storage |
-| `SUPABASE_JWKS_URL` | Custom JWKS endpoint for JWT validation |
-| `SUPABASE_JWT_ISSUER` | Expected JWT issuer |
-| `SUPABASE_JWT_AUDIENCE` | Expected JWT audience |
-| `SUPABASE_JWT_ALGORITHMS` | Optional comma-separated narrowing of reviewed JWT algorithms (`HS256`, `RS256`, `ES256`) |
-| `SUPABASE_JWT_SECRET` | Shared secret for local HS-signed tokens |
 | `CREDENTIALS_ENCRYPTION_KEY` | Fernet key for encrypting stored provider credentials |
 | `ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS` | Explicitly allows one server-wide ProjectX identity only in a fully local, single-user runtime |
 | `ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY` | Explicitly allows the deterministic encryption key only with a local/SQLite database; never use it for real credentials |
@@ -896,12 +834,6 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `PROJECTX_ACCOUNT_MISSING_BUFFER_SECONDS` | Delay before absent accounts become `MISSING` |
 | `PROJECTX_ACCOUNT_STALE_AFTER_SECONDS` | Age after which a cache-only account response is labeled stale; defaults to 900 seconds |
 | `PROJECTX_LAST_TRADE_LOOKBACK_DAYS` | Provider lookback for last-trade resolution |
-| `GEMINI_API_KEY` | Server-side Gemini API key used by AI journal recap generation |
-| `GEMINI_MODEL` | Gemini model for AI journal recap generation; defaults to `gemini-3.1-flash-lite` |
-| `GEMINI_API_BASE_URL` | Optional Gemini API base URL override |
-| `GEMINI_TIMEOUT_SECONDS` | Optional Gemini request timeout override |
-| `GEMINI_RETRY_ATTEMPTS` | Optional total attempts for retryable Gemini HTTP errors; defaults to `3` |
-| `GEMINI_RETRY_BACKOFF_SECONDS` | Optional base delay for Gemini retries; defaults to `0.75` |
 | `ALLOWED_ORIGINS` | Exact CORS allowlist |
 | `ALLOWED_ORIGIN_REGEX` | Regex-based CORS allowlist |
 | `ALLOW_QUERY_BEARER_TOKENS` | Allows `access_token` query param auth for special cases |
@@ -929,10 +861,6 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `TOPSIGNAL_BOT_PROVIDER_PROBE_SECONDS` | Provider health-probe interval for armed runs; defaults to `60` seconds |
 | `TOPSIGNAL_BOT_MAX_RETRY_BACKOFF_SECONDS` | Maximum retry delay after transient provider/runtime errors; defaults to `300` seconds |
 | `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD` | On Windows, set to `1` to use Uvicorn's native reload instead of wrapper-managed backend reload |
-| `JOURNAL_IMAGE_STORAGE_BACKEND` | `local` or `supabase` |
-| `JOURNAL_IMAGE_STORAGE_DIR` | Local journal image directory |
-| `SUPABASE_STORAGE_BUCKET` | Storage bucket for journal images |
-| `SUPABASE_SERVICE_ROLE_KEY` | Server-side key for Supabase Storage operations |
 | `PROJECTX_STREAMING_ENABLED` | Reserved streaming gate; defaults to `false`, and process-global startup is deliberately refused because it cannot prove tenant ownership |
 | `PROJECTX_MARKET_HUB_URL` | Market SignalR/websocket hub URL used only by an explicitly scoped runtime |
 | `PROJECTX_USER_HUB_URL` | User SignalR/websocket hub URL used only by a runtime bound to one authenticated user and owned account |
@@ -946,17 +874,14 @@ ProjectX user-hub lifecycle persistence is never started from server-wide enviro
 | Variable | Purpose |
 | --- | --- |
 | `VITE_API_BASE_URL` | Backend base URL |
-| `VITE_SUPABASE_URL` | Supabase project URL |
-| `VITE_SUPABASE_ANON_KEY` | Supabase anon key |
 | `VITE_PERF_LOGS` | Enable frontend API perf logging |
 | `VITE_DEMO_MODE` | Start the frontend in read-only demo mode with masked account, journal, and money fields |
 
-Frontend auth behavior:
-
-- If both `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are present, the app treats Supabase auth as enabled.
-- With Supabase auth enabled, the app requires Supabase session bootstrap before the routed app is shown.
-- If session bootstrap does not find an active session, the user sees a Google OAuth sign-in screen.
-- Google must be enabled in Supabase Auth providers for sign-in to work.
+Frontend auth uses local session bootstrap, owner identity and sign-out.
+Production builds use `VITE_LOCAL_AUTH_ENABLED=true`; no Supabase SDK or Google
+OAuth configuration is required. Hosted trusted-device access stays bound to the
+private loopback tunnel and the existing owner. See `.env.example` and the
+[local recovery procedure](docs/supabase-retirement.md).
 
 ### Common Commands
 
@@ -1040,7 +965,7 @@ in `historical_trade_excursions.py` reports recorder health for operations.
 
 TopSignal is best understood as a local-first trading intelligence layer with separated providers:
 
-- ProjectX owns accounts, executions, positions, trade/journal synchronization, and order routing
+- ProjectX owns accounts, executions, positions, trade synchronization, and order routing
 - Databento is the sole historical market-data source for backtesting
 - PostgreSQL is the local analytics cache and journal/expense store
 - FastAPI is the normalization and metrics layer

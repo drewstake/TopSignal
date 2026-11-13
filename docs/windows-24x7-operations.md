@@ -1,5 +1,16 @@
 # TopSignal on a personal Windows laptop
 
+For the existing peteamdpc deployment, first read the
+[November 13 verified architecture](audits/2026-11-13/peteamdpc-health.md) and
+[local storage/recovery runbook](local-first-storage.md). Execution uses local
+PostgreSQL at loopback port 5433, research/recordings on D:, and protected local
+trusted-device authentication. Supabase remains an active mirror and journal
+backend, plus a recorder startup dependency. Remote-database/OAuth examples below
+are deployment options, not instructions to repoint the current authority or
+replace its protected environment. Preserve live configuration through the
+release workflow. Health checks do not authorize activation, enrollment,
+schedule changes or trading changes.
+
 For routine updates to an existing deployment, use the checked-in
 [release command](releasing.md). This guide remains the setup, storage-change
 and migration-specific procedure; its safety requirements still apply.
@@ -69,9 +80,10 @@ arrived with Mark-of-the-Web metadata, sign its PowerShell scripts or use
 `Unblock-File` on those exact reviewed files before hardening; do not solve this
 by adding an `ExecutionPolicy Bypass` task action.
 
-Create `frontend/.env.production.local` in the release with the production
-`VITE_SUPABASE_URL` and publishable `VITE_SUPABASE_ANON_KEY`. Do not put a
-Supabase service-role key or provider credential in a `VITE_*` variable. Then
+For the prepared local-only release, configure `frontend/.env.production.local`
+with `VITE_LOCAL_AUTH_ENABLED=true`. Never put credentials or signing keys in
+a `VITE_*` variable. Follow [the retirement procedure](supabase-retirement.md)
+before changing the existing host's storage/helper configuration. Then
 build the UI with the checked-in wrapper, which pins its API URL to loopback:
 
 ```powershell
@@ -105,10 +117,9 @@ library server in `scripts/serve-production-frontend.py`. That server refuses
 non-loopback binding and non-loopback `Host` headers, supplies SPA fallback and
 restrictive browser headers, does not log query strings, and is health-checked
 with the backend. Vite's dev and preview servers are not used in production.
-The local control URL is `http://127.0.0.1:4173/`; configure that exact URL as
-an allowed Supabase auth redirect when OAuth is enabled.
+The local control URL and allowed local-auth origin is `http://127.0.0.1:4173/`.
 
-Create `backend/.env` in the release. Use real database, Supabase Auth, Fernet
+Create `backend/.env` in the release. Use protected local database, local Auth, Fernet
 credential-key, and ProjectX settings. Do not move plaintext secrets by email
 or cloud notes. Preserve the Fernet key in a separate password manager/backup;
 losing it makes stored ProjectX credentials unreadable. At minimum, set:
@@ -116,10 +127,13 @@ losing it makes stored ProjectX credentials unreadable. At minimum, set:
 ```dotenv
 AUTH_REQUIRED=true
 TOPSIGNAL_ENV=production
-DATABASE_URL=postgresql+psycopg://<app-user>:<password>@<db-host>/<database>?sslmode=verify-full&sslrootcert=C:/ProgramData/TopSignal/releases/2026-09-04-01/certs/database-ca.pem
-MIGRATION_DATABASE_URL=postgresql://<migration-user>:<password>@<direct-db-host>/<database>?sslmode=verify-full&sslrootcert=C:/ProgramData/TopSignal/releases/2026-09-04-01/certs/database-ca.pem
-SUPABASE_URL=https://<project>.supabase.co
-SUPABASE_JWT_AUDIENCE=authenticated
+DATABASE_URL=postgresql+psycopg://topsignal_app:<protected-password>@127.0.0.1:5433/topsignal
+MIGRATION_DATABASE_URL=postgresql://topsignal_admin:<protected-password>@127.0.0.1:5433/topsignal
+TOPSIGNAL_EXECUTION_STORAGE=local_postgres
+TOPSIGNAL_LOCAL_AUTHORITY_ID=b15899c2-5a5b-4352-aa5d-162c600188eb
+TOPSIGNAL_RESEARCH_STORAGE=local
+TOPSIGNAL_LOCAL_AUTH_MODE=trusted_device
+TOPSIGNAL_LOCAL_AUTH_DB=C:/ProgramData/TopSignal/runtime/local-auth/auth.sqlite3
 CREDENTIALS_ENCRYPTION_KEY=<your-valid-fernet-key>
 PROJECTX_API_BASE_URL=https://api.topstepx.com
 ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS=false
@@ -132,12 +146,10 @@ TOPSIGNAL_BOT_WORKER_ENABLED=true
 TOPSIGNAL_LIVE_EXECUTION_ENABLED=false
 TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION=false
 PROJECTX_USER_HUB_URL=https://rtc.topstepx.com/hubs/user
-TOPSIGNAL_DATABENTO_CACHE_DIR=C:\ProgramData\TopSignal\runtime\data\databento
-JOURNAL_IMAGE_STORAGE_DIR=C:\ProgramData\TopSignal\runtime\data\journal_images
-JOURNAL_IMAGE_STORAGE_BACKEND=local
+TOPSIGNAL_DATABENTO_CACHE_DIR=D:/TopSignal/data/databento
 ```
 
-Obtain the database provider's current CA certificate through its trusted
+For an explicitly configured remote recovery connection, obtain its current CA certificate through its trusted
 dashboard/documentation, verify its provenance, and put the file at the exact
 `sslrootcert` path in the immutable release before preflight. The app checks that
 the file is absolute, readable and nonempty; libpq checks the certificate chain
@@ -541,12 +553,9 @@ after disconnects/restarts; authoritative broker fills and reconciled P&L remain
 the safety input. Legacy metrics return `metrics_pnl_incomplete` if authoritative
 closed-trade P&L is absent, rather than estimating futures dollars from points.
 
-Gemini and Supabase storage also reject redirects, URL userinfo, query strings,
-and fragments. Gemini requires HTTPS, limits successful responses to 4 MiB and
-error bodies to 16 KiB, and caps attempts at five. Storage downloads are limited
-to 10 MiB; HTTP storage is permitted only for explicit
-`TOPSIGNAL_ENV=development`/`test` and an exact loopback hostname. The production
-launcher forces `TOPSIGNAL_ENV=production`, so production storage must use HTTPS.
+Journal's Gemini recap and Supabase image adapters are removed from the candidate.
+The encrypted historical archive retains verified referenced image bytes. Its
+restore tool is separate from runtime, and does not restore the active feature.
 Read deadlines are checked between bounded reads; DNS/socket behavior still
 requires target-machine fault testing before claiming a strict overall deadline.
 

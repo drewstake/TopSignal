@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.backup_execution_database import backup, connection_parameters, decrypt_backup
 from tools.run_local_sync import status_file
 from tools.storage_backup_crypto import load_key
+from tools.runtime_configuration import runtime_environment_file
 
 
 def run(config):
@@ -31,11 +32,11 @@ def run(config):
         raise ValueError('Staging and published backups must be separate')
     if staging.drive.lower() != published.drive.lower():
         raise ValueError('Atomic backup publication requires the same volume')
-    environment = dotenv_values(config['database_env_file'])
+    environment = dotenv_values(config['database_env_file'], interpolate=False)
     if connection_parameters(environment['DATABASE_URL'])['host'] not in {'127.0.0.1', 'localhost', '::1'}:
         raise ValueError('Scheduled execution backup requires local PostgreSQL')
-    runtime_file = Path(config['runtime_env_file'])
-    runtime = dotenv_values(runtime_file)
+    runtime_file = runtime_environment_file(config)
+    runtime = dotenv_values(runtime_file, interpolate=False)
     # Losing this key would make stored broker credentials unrecoverable.
     if not runtime.get('CREDENTIALS_ENCRYPTION_KEY') or not runtime.get('TOPSIGNAL_LOCAL_AUTH_DB'):
         raise ValueError('Execution backup requires credential key and local sign-in state')
@@ -50,12 +51,15 @@ def run(config):
     verified, _ = decrypt_backup(destination, key)
     if verified != result or verified['authority_excluded'] is not True:
         raise ValueError('Backup verification failed')
+    if runtime_environment_file(config) != runtime_file:
+        raise ValueError('Runtime release changed during backup; retry after activation completes')
     for path in destination.iterdir():
         with path.open('r+b') as stream:
             os.fsync(stream.fileno())
     # rename fails on collision; do not replace an existing immutable backup.
     destination.rename(published / identifier)
     receipt = dict(state='verified_and_published', observed_at=datetime.now(timezone.utc).isoformat(),
+                   runtime_environment_file=str(runtime_file),
                    directory=str(published / identifier), dump_sha256=result['dump_sha256'],
                    tables=len(result['tables']), rows=sum(row['rows'] for row in result['tables'].values()),
                    encrypted_bytes=result['encrypted_bytes'], off_device_verification='pending_archive_pull')

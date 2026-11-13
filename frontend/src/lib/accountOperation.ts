@@ -1,6 +1,6 @@
 import { authIdentityRevision, subscribeToAuthIdentityChanges, tokenIdentity } from "./authIdentity";
 import { isDemoModeEnabled, subscribeToDemoModeChanges } from "./demoMode";
-import { getAccessTokenSync } from "./supabase";
+import { getAccessTokenSync } from "./auth";
 
 export class AccountOperationCancelled extends Error {
   constructor() {

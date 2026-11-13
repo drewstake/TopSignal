@@ -38,12 +38,12 @@ export interface DemoReturnSnapshot {
 let volatileDemoReturnSnapshot: DemoReturnSnapshot | null = null;
 
 export function parseAccountId(rawValue: string | null): number | null {
-  if (rawValue === null) {
+  if (rawValue === null || !/^[1-9]\d*$/.test(rawValue)) {
     return null;
   }
 
   const parsed = Number(rawValue);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     return null;
   }
 

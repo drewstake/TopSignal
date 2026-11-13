@@ -20,7 +20,6 @@ import type {
   ExpenseListResponse,
   ExpenseTotals,
   FinancialSummary,
-  JournalEntriesResponse,
   PayoutListResponse,
   ProjectXMarketCandle,
   StreakMetrics,
@@ -196,32 +195,7 @@ describe("demo trading ledger", () => {
   });
 });
 
-describe("demo journals and financial story", () => {
-  it("derives every journal snapshot from that account's trades on the journal day", () => {
-    const allBodies = new Set<string>();
-    const allMoods = new Set<string>();
-    for (const accountId of [PRIMARY_ACCOUNT_ID, FOLLOWER_ACCOUNT_ID, SWING_ACCOUNT_ID, PRACTICE_ACCOUNT_ID]) {
-      const entries = demo<JournalEntriesResponse>(`/api/accounts/${accountId}/journal`, { limit: 100 }).items;
-      const trades = demo<AccountTrade[]>(`/api/accounts/${accountId}/trades`, { limit: 10_000 });
-      expect(entries.length).toBeGreaterThan(1);
-
-      for (const entry of entries) {
-        const dayTrades = trades.filter((trade) => trade.timestamp.slice(0, 10) === entry.entry_date);
-        const stats = entry.stats_json;
-        expect(stats).not.toBeNull();
-        expect(stats?.trade_count).toBe(dayTrades.length);
-        expect(stats?.gross).toBeCloseTo(sum(dayTrades.map((trade) => trade.pnl ?? 0)), 2);
-        expect(stats?.total_fees).toBeCloseTo(sum(dayTrades.map((trade) => trade.fees)), 2);
-        expect(stats?.net).toBeCloseTo(sum(dayTrades.map(netPnl)), 2);
-        expect(stats?.net_realized_pnl).toBe(stats?.net);
-        allBodies.add(entry.body);
-        allMoods.add(entry.mood);
-      }
-    }
-    expect(allBodies.size).toBe(12);
-    expect(allMoods).toEqual(new Set(["Confident", "Focused", "Frustrated", "Neutral"]));
-    expect(demo<JournalEntriesResponse>(`/api/accounts/${MISSING_ACCOUNT_ID}/journal`).items).toEqual([]);
-  });
+describe("demo financial story", () => {
 
   it("reconciles expense lists, semantic ranges, payouts, and the financial summary", () => {
     const expenses = demo<ExpenseListResponse>("/api/expenses", { limit: 100 }).items;

@@ -131,6 +131,17 @@ def attempt(config, *, previous=None, force_restore=False, progress=lambda stage
     if used >= limit or shutil.disk_usage(root).free < 5_000_000_000:
         raise OSError('Off-device capacity budget reached; no automatic deletion')
     stage = config['remote_staging'].rstrip('/')+'/'+identity
+    rate = float(config.get('max_mib_per_second', 0))
+    if not 0 <= rate <= 64:
+        raise ValueError('Backup rate must be between 0 and 64 MiB/s')
+    pacing = f' --max-mib-per-second {rate}' if rate else ''
+    if config.get('recorder_status'):
+        pacing += ' --recorder-status '+quote(config['recorder_status'])
+    # Refuse overlapping work before even starting a capacity walk.
+    progress('overlap_check')
+    running = remote(config, "@(Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*backup_market_cache*' }).Count", timeout=120)
+    if int(running.strip() or 0):
+        raise RuntimeError('An earlier snapshot is still running on the host')
     # Bound staging and require space for a new full snapshot before starting.
     script = f'''$source={quote(config['remote_source'])}; $base={quote(config['remote_staging'])}
 $members=@(Get-ChildItem -LiteralPath $source -File -Recurse)
@@ -147,26 +158,22 @@ $bytes | ConvertTo-Json -Compress
         raise OSError('Backup and restore capacity insufficient')
     # An SSH timeout does not stop the remote snapshot. Never start a second one
     # beside it: two full walks of the recording disk make both fail.
-    progress('overlap_check')
-    running = remote(config, "@(Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*backup_market_cache*' }).Count", timeout=120)
-    if int(running.strip() or 0):
-        raise RuntimeError('An earlier snapshot is still running on the host')
     # Reuse unchanged members only relative to a backup that is verified here.
     earlier = Path(previous.get('destination') or '') if previous.get('status') == 'verified' or previous.get('last_verified_at') else None
     earlier = earlier if earlier and (earlier/'backup-manifest.json').is_file() and earlier.parent == root/'backups' else None
     reuse = f" --previous {quote(config['remote_staging'].rstrip('/')+'/'+earlier.name)}" if earlier else ''
     progress('snapshot')
-    remote(config, f"& {quote(config['remote_python'])} {quote(config['remote_helper'])} --source {quote(config['remote_source'])} --output {quote(stage)}{reuse} --receiver-verifies; if($LASTEXITCODE -ne 0){{throw 'Snapshot failed'}}")
+    remote(config, f"& {quote(config['remote_python'])} {quote(config['remote_helper'])} --source {quote(config['remote_source'])} --output {quote(stage)}{reuse}{pacing} --receiver-verifies; if($LASTEXITCODE -ne 0){{throw 'Snapshot failed'}}")
     backups = root/'backups'
     backups.mkdir(exist_ok=True)
     destination = backups/identity
     progress('pack')
-    transport = json.loads(remote(config, f"& {quote(config['remote_python'])} {quote(config['remote_helper'])} --pack {quote(stage)} --output {quote(stage+'.tar')}; if($LASTEXITCODE -ne 0){{throw 'Packing failed'}}"))
+    transport = json.loads(remote(config, f"& {quote(config['remote_python'])} {quote(config['remote_helper'])} --pack {quote(stage)} --output {quote(stage+'.tar')}{pacing}; if($LASTEXITCODE -ne 0){{throw 'Packing failed'}}"))
     if transport['bytes'] > estimated:
         raise OSError('Snapshot grew beyond estimated transport budget')
     local_archive = backups/(identity+'.tar')
     progress('transfer')
-    run(['scp', *ssh_options(config), config['ssh_host']+':'+stage+'.tar', str(local_archive)],
+    run(['scp', *(['-l', str(max(1,int(rate*8192)))] if rate else []), *ssh_options(config), config['ssh_host']+':'+stage+'.tar', str(local_archive)],
         timeout=int(config.get('remote_timeout_seconds', 1200)))
     if local_archive.stat().st_size != transport['bytes'] or checksum(local_archive) != transport['sha256']:
         raise ValueError('Transport archive checksum mismatch')
