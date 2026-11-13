@@ -25,7 +25,7 @@ $action=New-ScheduledTaskAction -Execute $python -Argument "-B `"$runner`" --con
 $startup=New-ScheduledTaskTrigger -AtStartup
 $watchdog=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 5)
 $principal=New-ScheduledTaskPrincipal -UserId $ServiceUser -LogonType Password -RunLevel Limited
-$settings=New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden
+$settings=New-ScheduledTaskSettingsSet -Priority 4 -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden
 $definition=New-ScheduledTask -Action $action -Trigger @($startup,$watchdog) -Principal $principal -Settings $settings -Description 'Paper-only MNQ raw depth recording. Independent of TopBot execution; bounded private filesystem storage.'
 Register-ScheduledTask -TaskName $TaskName -InputObject $definition -User $ServiceUser -Password $Credential.GetNetworkCredential().Password -Force | Out-Null
 if($StartNow){Start-ScheduledTask -TaskName $TaskName}

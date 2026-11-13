@@ -23,6 +23,8 @@ test("startup task uses a dedicated limited identity and validates immutable ACL
   assert.match(installer, /\.git/);
   assert.match(installer, /-LogonType\s+Password/);
   assert.match(installer, /-RunLevel\s+Limited/);
+  assert.match(installer, /-Priority\s+4\b/);
+  assert.match(read("scripts/install-depth-recorder-task.ps1"), /-Priority\s+4\b/);
   assert.doesNotMatch(installer, /-UserId\s+["']?(?:SYSTEM|NT AUTHORITY\\SYSTEM)/i);
   assert.doesNotMatch(installer, /-RunLevel\s+Highest/i);
   assert.doesNotMatch(installer, /ExecutionPolicy\s+Bypass/i);

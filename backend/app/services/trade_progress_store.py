@@ -10,12 +10,22 @@ from pathlib import Path
 import platform
 import shutil
 import sqlite3
+import threading
 
 from .probabilistic_shadow import cache_root
 
 FLOOR = 10_000_000_000
 PREFIX = "trade_progress_"
 SAMPLE_INTERVAL_SECONDS = 1
+# SQLite has one writer. Coordinate account threads before they open a write
+# connection, instead of making every account compete in SQLite's busy handler.
+_writer_lock = threading.Lock()
+
+
+def is_busy(exc):
+    return (isinstance(exc, sqlite3.OperationalError)
+            and getattr(exc, 'sqlite_errorcode', -1) & 0xff
+            in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED))
 
 
 def now():
@@ -65,13 +75,21 @@ CREATE TABLE IF NOT EXISTS trade_progress_fill_revisions(
 @contextmanager
 def connect(*, write=False):
     path = location()
+    acquired = False
     if write:
         path.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(path, timeout=1)
-    else:
-        db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=1)
-    db.row_factory = sqlite3.Row
+        acquired = _writer_lock.acquire(timeout=1)
+        if not acquired:
+            exc = sqlite3.OperationalError('Trade progress writer is busy')
+            exc.sqlite_errorcode = sqlite3.SQLITE_BUSY
+            raise exc
+    db = None
     try:
+        if write:
+            db = sqlite3.connect(path, timeout=1)
+        else:
+            db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=1)
+        db.row_factory = sqlite3.Row
         if write:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=FULL")
@@ -81,10 +99,14 @@ def connect(*, write=False):
         if write:
             db.commit()
     except BaseException:
-        db.rollback()
+        if db is not None:
+            db.rollback()
         raise
     finally:
-        db.close()
+        if db is not None:
+            db.close()
+        if acquired:
+            _writer_lock.release()
 
 
 def disk_report():

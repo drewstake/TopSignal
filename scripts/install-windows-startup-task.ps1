@@ -270,6 +270,7 @@ $principal = New-ScheduledTaskPrincipal `
     -LogonType Password `
     -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet `
+    -Priority 4 `
     -StartWhenAvailable `
     -RestartCount 999 `
     -RestartInterval (New-TimeSpan -Minutes 1) `

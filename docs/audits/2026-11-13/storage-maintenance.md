@@ -112,3 +112,56 @@ It changes no strategy, recording budget, retention or authority setting. This
 correction requires its own exact-commit CI/package before activation. Full-
 cache backup, mirror retirement and account enrollment remain pending while
 recording stability and this release are verified.
+
+## Deployed local-only release and multi-account observation
+
+Release `20261113-local-storage-91` (`c37975f`) passed all six exact-commit CI
+jobs and immutable activation at 22:04:19 UTC. The independent recorder now
+uses its restricted local credential role. Mirror retirement passed two full
+ordered comparisons; at 22:07:04 UTC the receipt acknowledged sequence 175050,
+disabled all 30 capture triggers, retained all 30 authority/serialization
+triggers and all cloud fences, and left the outbox empty. The application
+restarted successfully against the retired state. Both dedicated mirror logins
+were changed to NOLOGIN after verifying zero connections. Old credentials and
+configuration remain only in protected recovery material; cloud data is intact.
+
+Passive policy enrollment covers exactly the six fresh, owned visible accounts:
+29593203, 29671908, 29671939, 29671977, 29672001 and 29672024. The last account
+classification had 820 other accounts excluded. Account 29672001 cannot trade
+but remains eligible for passive recording. Config 40 stays disabled/run 18
+stopped; no diagnostic trades or strategy/risk changes were made.
+
+At 22:21 UTC the served UI verified practice selection, selector-driven switching
+to 29672001 with a matching URL and flat recorder status, unavailable account
+28278873 failing explicitly, and duplicate URL account parameters failing
+explicitly. Journal is absent from navigation. The temporary verification tab
+was closed. The browser also exposed pending history/backup warnings; those
+remain acceptance work, not evidence of complete success.
+
+Longer six-account observation exposed intermittent SQLite OperationalError
+writes and three discarded queued events on 29672001, despite current healthy
+heartbeats. The follow-up patch serializes in-process writers and retries the
+same rolled-back pending batch for SQLite BUSY/LOCKED only, with four bounded
+attempts. It retains the one-second SQLite busy timeout, queue/storage bounds,
+full synchronous commits, and gap handling for unrecoverable failures. Tests
+exercise six competing accounts, a real external write lock, no duplicate/lost
+fills or observations, and bounded retries versus immediate disk-error failure.
+Error diagnostics now retain sanitized SQLite codes without payloads/secrets.
+This follow-up is prepared; it requires its own CI/package and activation.
+
+The API and independent recorder tasks had inherited scheduler priority 7
+(background I/O and memory). At 21:59 UTC only these two task priorities changed
+to 4, and their verified running processes received normal CPU/I/O/memory
+priority without restarting the recorder. The stalled inventory completed ten
+seconds later; later inventories took 16 seconds. This establishes a contention
+contributor, not proof that all provider disconnects had the same cause. The
+installers now preserve priority 4; optional helpers remain background work.
+
+The execution backup created 22:11:10 UTC has an off-device verified isolated
+restore at 22:14:02 UTC: 38 tables, 12,924 rows, credential decryption and local
+auth issuance/restart/revocation, with execution authority absent. The final
+21-file encrypted configuration archive verified off device at 22:16:03 UTC.
+A full-cache backup started 22:17 UTC at 8 MiB/s under the unchanged capacity
+and deadlines; it is still in progress and does not yet replace the stale
+November 4 full-cache receipt. The current Discord helper restarted with a
+minimal local-only environment and reported `watching`, PID 15304, at 22:23 UTC.

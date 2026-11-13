@@ -49,7 +49,8 @@ class AccountRecorder:
         self.metrics = dict(process_started_at=store.now(), queue_overflow_events=0,
             discarded_after_overflow=0, discarded_after_write_failure=0,
             snapshot_failures=0, snapshot_successes=0, reconnects=0,
-            commit_failures=0, last_commit_seconds=None, max_commit_seconds=0,
+            commit_failures=0, commit_busy_retries=0, last_write_error=None,
+            last_commit_seconds=None, max_commit_seconds=0,
             last_successful_write=None, last_snapshot_success=None)
         self.seen_connections = set()
         self.tracker = RecordingTracker(self)
@@ -112,6 +113,25 @@ class AccountRecorder:
                 self.submit("gap", "position_snapshot_failed")
                 logger.warning("trade_progress_snapshot_failed error_type=%s", type(exc).__name__)
             self.refresh.wait(15)
+
+    def flush(self, engine, **kwargs):
+        # A rolled-back BUSY transaction has not lost the engine's pending
+        # events. Retry that exact batch before draining more callbacks. Both
+        # waits and attempts are bounded; disk/schema errors still fail closed.
+        for attempt in range(4):
+            try:
+                return engine.flush(**kwargs)
+            except Exception as exc:
+                with self.metrics_lock:
+                    self.metrics['last_write_error'] = dict(
+                        at=store.now(), type=type(exc).__name__,
+                        sqlite_code=getattr(exc, 'sqlite_errorcode', None))
+                if not store.is_busy(exc) or attempt == 3 or self.stop_event.is_set():
+                    raise
+                with self.metrics_lock:
+                    self.metrics['commit_busy_retries'] += 1
+                if self.stop_event.wait(.05 * 2**attempt):
+                    raise
 
     def run(self):
         engine = None
@@ -192,7 +212,7 @@ class AccountRecorder:
                             coverage_ready=healthy)
                     began = monotonic()
                     try:
-                        engine.flush(error=None if healthy else "stream_or_position_coverage_unavailable", diagnostics=diagnostics)
+                        self.flush(engine, error=None if healthy else "stream_or_position_coverage_unavailable", diagnostics=diagnostics)
                     except Exception:
                         with self.metrics_lock:
                             self.metrics['commit_failures'] += 1
@@ -207,7 +227,8 @@ class AccountRecorder:
             except Exception as exc:
                 # Reload only committed state. A failed transaction never advances
                 # durable sampling cursors; the restart gap includes its lost tail.
-                logger.error("trade_progress_recording_failed error_type=%s", type(exc).__name__)
+                logger.error("trade_progress_recording_failed error_type=%s sqlite_code=%s",
+                             type(exc).__name__, getattr(exc, 'sqlite_errorcode', None))
                 storage_error = True
                 engine = None
                 self.stop_event.wait(2)

@@ -496,3 +496,85 @@ def test_writer_rechecks_runner_connection_after_queued_stale_state(local,monkey
         state=json.loads(db.execute("SELECT state FROM trade_progress_positions").fetchone()[0])
         assert "user_disconnected" in state["reasons"]
         assert not engine.connected["user"]
+
+
+def test_busy_writer_retries_same_batch_without_losing_or_duplicating_observations(local):
+    import threading
+    from app.services.trade_progress_recorder import AccountRecorder
+    engine = ready()
+    engine.position(pos(), T)
+    engine.fill(dict(id=91, accountId=1, contractId=C, creationTimestamp=iso(T),
+                     size=1, price=100, profitAndLoss=0), T)
+    # A separate connection (like a maintenance process) owns the real SQLite
+    # write lock longer than the existing one-second busy timeout.
+    with store.connect(write=True):
+        pass
+    locked = threading.Event()
+    def competing_writer():
+        with sqlite3.connect(store.location()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            locked.set()
+            threading.Event().wait(1.3)
+    thread = threading.Thread(target=competing_writer)
+    thread.start()
+    assert locked.wait(2)
+    worker = AccountRecorder('owner', 1, {'MNQ': 2}, lambda: None)
+    worker.flush(engine)
+    thread.join(3)
+    assert not thread.is_alive()
+    assert worker.metrics['commit_busy_retries'] >= 1
+    assert worker.metrics['discarded_after_write_failure'] == 0
+    with store.connect() as db:
+        assert db.execute('SELECT count(*) FROM trade_progress_samples').fetchone()[0] == 1
+        assert db.execute('SELECT count(*) FROM trade_progress_fills').fetchone()[0] == 1
+        assert db.execute('SELECT count(*) FROM trade_progress_fill_revisions').fetchone()[0] == 1
+    assert not engine.samples and not engine.fills
+
+
+def test_six_account_writers_serialize_and_preserve_scope(local, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from app.services.trade_progress_recorder import AccountRecorder
+    engines = {account: ready(account=account) for account in range(1, 7)}
+    for account, engine in engines.items():
+        engine.position(pos() | {'accountId': account}, T)
+    original_connect = sqlite3.connect
+    class SlowCommit(sqlite3.Connection):
+        def commit(self):
+            threading.Event().wait(.22)
+            return super().commit()
+    def slow_connect(*args, **kwargs):
+        return original_connect(*args, **kwargs, factory=SlowCommit)
+    monkeypatch.setattr(sqlite3, 'connect', slow_connect)
+    barrier = threading.Barrier(6)
+    def capture(account):
+        engine = engines[account]
+        worker = AccountRecorder('owner', account, {'MNQ': 2}, lambda: None)
+        barrier.wait(timeout=3)
+        worker.flush(engine)
+        return worker.metrics
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(capture, range(1, 7)))
+    assert sum(row['commit_busy_retries'] for row in results) >= 1
+    assert all(row['discarded_after_write_failure'] == 0 for row in results)
+    with store.connect() as db:
+        assert [r[0] for r in db.execute('SELECT account FROM trade_progress_positions ORDER BY account')] == list(range(1, 7))
+        assert db.execute('SELECT count(*) FROM trade_progress_samples').fetchone()[0] == 6
+
+
+@pytest.mark.parametrize('code, expected_calls', [(sqlite3.SQLITE_BUSY, 4), (sqlite3.SQLITE_IOERR, 1)])
+def test_write_retry_is_bounded_and_never_retries_storage_failure(local, code, expected_calls):
+    from app.services.trade_progress_recorder import AccountRecorder
+    worker = AccountRecorder('owner', 1, {}, lambda: None)
+    class BrokenEngine:
+        calls = 0
+        def flush(self):
+            self.calls += 1
+            exc = sqlite3.OperationalError('controlled failure')
+            exc.sqlite_errorcode = code
+            raise exc
+    engine = BrokenEngine()
+    with pytest.raises(sqlite3.OperationalError):
+        worker.flush(engine)
+    assert engine.calls == expected_calls
+    assert worker.metrics['last_write_error']['sqlite_code'] == code
