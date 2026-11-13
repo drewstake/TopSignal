@@ -1,13 +1,14 @@
 # TopSignal on a personal Windows laptop
 
 For the existing peteamdpc deployment, first read the
-[November 13 verified architecture](audits/2026-11-13/peteamdpc-health.md) and
+[November 13 maintenance evidence](audits/2026-11-13/storage-maintenance.md) and
 [local storage/recovery runbook](local-first-storage.md). Execution uses local
 PostgreSQL at loopback port 5433, research/recordings on D:, and protected local
-trusted-device authentication. Supabase remains an active mirror and journal
-backend, plus a recorder startup dependency. Remote-database/OAuth examples below
-are deployment options, not instructions to repoint the current authority or
-replace its protected environment. Preserve live configuration through the
+trusted-device authentication. The application, independent recorder and active
+helpers now use local-only configuration; the mirror is retired and Journal is
+archived and removed. Earlier remote-database/OAuth examples below are historical
+setup context, not instructions to repoint the current authority or restore old
+cloud runtime paths. Preserve live configuration through the
 release workflow. Health checks do not authorize activation, enrollment,
 schedule changes or trading changes.
 
@@ -80,7 +81,7 @@ arrived with Mark-of-the-Web metadata, sign its PowerShell scripts or use
 `Unblock-File` on those exact reviewed files before hardening; do not solve this
 by adding an `ExecutionPolicy Bypass` task action.
 
-For the prepared local-only release, configure `frontend/.env.production.local`
+For local-only releases, configure `frontend/.env.production.local`
 with `VITE_LOCAL_AUTH_ENABLED=true`. Never put credentials or signing keys in
 a `VITE_*` variable. Follow [the retirement procedure](supabase-retirement.md)
 before changing the existing host's storage/helper configuration. Then

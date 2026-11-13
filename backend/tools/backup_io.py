@@ -31,8 +31,11 @@ class BackupIO:
         if self.rate and size:
             # No accumulated credits: quiet time must not permit a later I/O burst.
             self.next_io = max(now,self.next_io)+size/self.rate
-            while self.clock() < self.next_io:
-                self.sleep(min(1,self.next_io-self.clock()))
+            while True:
+                remaining = self.next_io-self.clock()
+                if remaining <= 0:
+                    break
+                self.sleep(min(1,remaining))
 
 
 class PacedReader:

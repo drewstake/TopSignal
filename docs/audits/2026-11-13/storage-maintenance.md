@@ -226,3 +226,30 @@ The scheduled execution backup at 22:45 UTC successfully resolved release 93,
 covering 38 tables and 13,078 rows. Its off-device restore is still pending.
 The separate full-cache snapshot continues; the November 4 receipt remains the
 last verified full-cache recovery until the new snapshot is restored off device.
+
+
+## Full-cache pacing failure and verified focused recovery
+
+The scheduled 22:45:06 UTC PostgreSQL/auth backup restored off device at
+22:53:10 UTC: all 38 tables/13,078 rows and sequence/content checks matched,
+one credential decrypted, authority was absent, and local auth issuance,
+restart and revocation passed with network calls forbidden. Its dump SHA-256 is
+`9c69a64d2e50dbcc3f9879db608adca608e7735a41cb6c3fed1c54fcdd6f1688`.
+
+The full-cache snapshot failed at 22:56:10 UTC with `ValueError: sleep length
+must be non-negative`. The pacing loop read its clock twice across a deadline,
+allowing the second reading to produce a negative sleep. The failed stage
+`20261113T221652Z-659db5fb` and failure receipt remain intact. After proving the
+snapshot process had exited, only this chat's local backup runner was stopped
+during its read-only estimate retry; no live SQLite snapshot or recorder was
+terminated. The correction uses one remaining-time calculation per sleep and a
+regression test advances the fake clock across that exact boundary. A new
+immutable helper and verified full off-device restore are still required.
+
+A warm lower-history profile after the failed snapshot exited completed the
+same full session in 9.860 and 8.641 seconds (269,896 raw measurements, 47,865
+plotted points, zero skipped segments). Its first cold attempt took 20.188
+seconds and hit the bounded retry. These are direct helper measurements, not
+served API acceptance under backup load. Session flow now returns partial HTTP
+200 with explicit `building` status and pending segment counts; partial response
+does not imply complete session coverage.

@@ -18,6 +18,17 @@ def test_pacing_does_not_accumulate_burst_credit_and_bounds_each_sleep():
     assert clock[0] == 200.5
 
 
+def test_pacing_clock_crossing_deadline_never_sleeps_negative_duration():
+    ticks = iter((0, 0, .999, 1.001))
+    delays = []
+    def sleep(delay):
+        assert 0 < delay <= 1
+        delays.append(delay)
+    pacing = BackupIO(1, clock=lambda: next(ticks), sleep=sleep)
+    pacing.check(1024**2)
+    assert delays == [pytest.approx(.001)]
+
+
 def test_recorder_unknown_stale_or_unhealthy_defers_backup(tmp_path):
     path = tmp_path/'status.json'
     clock = [100]
