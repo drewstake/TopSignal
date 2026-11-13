@@ -37,3 +37,37 @@ def test_recorder_configuration_fails_before_connect(tmp_path, old, new):
 def test_no_implicit_release_environment_fallback(tmp_path):
     with pytest.raises(RuntimeError, match='Explicit protected'):
         configuration(dict(backend_root=str(tmp_path)))
+
+
+def test_independent_recording_loop_does_not_import_application_database(tmp_path):
+    """A clean scheduled process has no ambient application DATABASE_URL."""
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    backend = Path(__file__).resolve().parents[1]
+    script = r'''
+import asyncio,json,pathlib,sys
+sys.path.insert(0,sys.argv[1])
+from tools.record_market_depth import record
+root=pathlib.Path(sys.argv[2])
+runtime=root/'runtime';runtime.mkdir()
+(runtime/'STOP').write_text('startup acceptance')
+config=dict(runtime_root=str(runtime),max_bytes=64*1024**2,reserve_bytes=0,
+            review_after_days=30,segment_seconds=60,record_contract_totals=True)
+class NoBrokerCalls:
+    def __getattr__(self,name):
+        raise AssertionError('Stopped startup must not call the broker')
+assert asyncio.run(record(config,NoBrokerCalls(),'a'*64,root/'raw'))=='stopped'
+assert 'app.db' not in sys.modules
+assert 'app.models' not in sys.modules
+assert json.loads((runtime/'status.json').read_text())['state']=='stopped'
+'''
+    environment = {key: value for key, value in os.environ.items()
+                   if key not in ('DATABASE_URL', 'MIGRATION_DATABASE_URL', 'PYTHONPATH')
+                   and not key.startswith('SUPABASE_')}
+    environment['PYTHON_DOTENV_DISABLED'] = '1'
+    result = subprocess.run([sys.executable, '-B', '-c', script, str(backend), str(tmp_path)],
+                            env=environment, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr

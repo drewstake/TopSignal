@@ -6,13 +6,15 @@ import json
 import logging
 import os
 import time
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
 
 import websockets
 
 from .projectx_client import ProjectXClient, validate_projectx_url
-from .streaming_pnl_tracker import StreamingPnlTracker
+
+if TYPE_CHECKING:
+    from .streaming_pnl_tracker import StreamingPnlTracker
 
 logger = logging.getLogger(__name__)
 
