@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 from contextlib import suppress
 from pathlib import Path
 import sys
@@ -55,6 +56,7 @@ def main() -> int:
     args = parser.parse_args()
     if args.host != "127.0.0.1" or args.workers != 1 or not 1 <= args.port <= 65535:
         parser.error("Production requires loopback, one worker, and a valid port")
+    os.environ["TOPSIGNAL_DEPTH_RECORDER_STATUS"] = str(Path(args.stop_file).parent / "depth-recorder/status.json")
     sys.path.insert(0, str(Path(args.app_dir).resolve()))
     import uvicorn
 

@@ -5,10 +5,12 @@ import re
 import stat
 
 
-def directories(parent, pattern, *, reverse=False):
+def directories(parent, pattern, *, reverse=False, checkpoint=None):
     result = []
     with os.scandir(parent) as entries:
         for entry in entries:
+            if checkpoint is not None:
+                checkpoint()
             if not re.fullmatch(pattern, entry.name):
                 continue
             info = entry.stat(follow_symlinks=False)

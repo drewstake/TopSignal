@@ -64,3 +64,51 @@ The application remains release `20261112-auto-signin-87`. No application
 restart, fill migration, mirror retirement or enrollment change has occurred
 at this checkpoint. The dedicated local role is prepared, while the restored
 recorder still uses its prior startup configuration.
+
+## Subsequent cutover and resource-pressure finding
+
+The corrected immutable commit `8adcbb3` passed all six CI jobs, 3,412 backend
+checks, 1,291 frontend checks and 47 deployment checks. A limited-service startup
+probe invoked the real recorder loop with application DATABASE_URL absent and
+broker calls prohibited, successfully reading/decrypting its one local credential
+without importing application models or the database initializer. The recorder
+then changed cleanly to the local-only helper at 21:22:15 UTC, PID 17264, capture
+`1624b5417a294a7e8d4775dd2727e306`.
+
+Both local and mirror migration ledgers now contain the 57 checked migrations.
+The fill-leg partial index was applied without modifying trade rows. The cloud
+ledger itself was fenced: its existing dedicated mirror identity inserted the
+exact ledger row inside a bounded transaction using temporary, narrowly scoped
+membership/INSERT rights. Those temporary rights were removed in the same
+transaction and the original memberships, all 41 cloud fences and all 4,681
+trade content hashes were verified unchanged. Full ordered mirror comparison
+passed afterward. No fence was disabled and no cloud data was deleted.
+
+The previous release cannot start against the new ledger: its checked migration
+runner rejects an unknown future migration. Thus the earlier proposed blind
+rollback to release 87 is **not valid even before mirror retirement**. A stopped-
+service cutover retained source/dependency/ACL/CI/backup/broker gates, and started
+candidate `20261113-local-storage-90` at 21:39:18 UTC. Its initial readiness
+verification timed out during recovery. Existing configuration 40 had practice
+auto-resume enabled; following a fresh six-account flat/order-free check, the
+normal stop API disabled configuration 40 and stopped run 18 with `manual_stop`.
+The client timed out, but authoritative state confirmed the stop committed.
+Every other configuration field, including strategy settings, was verified
+unchanged. No order/flatten/rearm call was made.
+
+Readiness recovered, but release acceptance remains incomplete. The independent
+recorder retained its PID/capture and reported no raw rejected events or status
+publication failures; connection errors increased and its metadata inventory
+stalled. Nonblocking read-only Python stack samples at 21:49 UTC found the raw
+recorder waiting in filesystem flush/inventory and the optional heatmap helper
+walking archive metadata. Disk queue was 7–13 in three samples. This is evidence
+of concurrent I/O pressure, not proof that every disconnect has that cause.
+
+A further correction makes production heatmap admission check the independent
+recorder's small protected status file, deferring on stale/malformed status,
+stalled inventory or storage refusal. Its metadata scan now honors pause/stop
+requests between entries and preserves verified manifest progress on resume.
+It changes no strategy, recording budget, retention or authority setting. This
+correction requires its own exact-commit CI/package before activation. Full-
+cache backup, mirror retirement and account enrollment remain pending while
+recording stability and this release are verified.

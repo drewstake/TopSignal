@@ -611,6 +611,10 @@ def owner_bytes(directory: Path) -> int:
 # ---------------------------------------------------------------------------
 # Incremental inventory of committed raw segments
 
+class InventoryPaused(Exception):
+    """A pressure/shutdown request interrupted optional metadata reads."""
+
+
 class Inventory:
     """Directory-mtime cached scan; unchanged run directories are not relisted."""
 
@@ -620,15 +624,21 @@ class Inventory:
         self.runs = {}
         self.errors = 0
 
-    def scan(self, *, since_ms: int | None = None):
+    def scan(self, *, since_ms: int | None = None, should_stop=None):
+        def checkpoint():
+            if should_stop is not None and should_stop():
+                raise InventoryPaused()
+
+        checkpoint()
         root = self.root
         found = []
         if not root.exists():
             return found
         safe_path(root, root)
         live_runs = set()
-        for day, _ in directories(root, r'\d{4}-\d{2}-\d{2}'):
-            for run, metadata in directories(day, '[a-f0-9]{32}'):
+        for day, _ in directories(root, r'\d{4}-\d{2}-\d{2}', checkpoint=checkpoint):
+            for run, metadata in directories(day, '[a-f0-9]{32}', checkpoint=checkpoint):
+                checkpoint()
                 live_runs.add(run)
                 stamp = metadata[3]
                 cached = self.runs.get(run)
@@ -636,11 +646,17 @@ class Inventory:
                 if cached is None or cached[0] != stamp:
                     safe_path(run, root)
                     # Only markers not seen before are read; a long capture is not reparsed per segment.
-                    with os.scandir(run) as entries:
-                        markers = sorted((Path(e.path), e.stat(follow_symlinks=False)) for e in entries if e.name.endswith('.segment.json'))
-                    for marker, info in markers:
-                        if marker.name in known:
-                            continue
+                    # Preserve parsed members across a paused first scan, but
+                    # do not accept the directory stamp until it finishes.
+                    self.runs[run] = (cached[0] if cached else None, known)
+                    def markers():
+                        with os.scandir(run) as entries:
+                            for entry in entries:
+                                checkpoint()
+                                if entry.name.endswith('.segment.json') and entry.name not in known:
+                                    yield Path(entry.path), entry.stat(follow_symlinks=False)
+                    for marker, info in markers():
+                        checkpoint()
                         known[marker.name] = None
                         try:
                             m = read_manifest(marker, root, validated_parent=run, file_info=info)
@@ -661,6 +677,7 @@ class Inventory:
                             self.errors += 1
                     self.runs[run] = (stamp, known)
                 for name, entry in list(known.items()):
+                    checkpoint()
                     if entry is None:
                         continue
                     if since_ms is not None and entry['last_ms'] < since_ms:
@@ -814,7 +831,12 @@ class Deriver:
     def run_once(self, *, budget_seconds=None, should_stop=None) -> dict:
         now = self.clock()
         target = session_start_ms(now) - PRE_ROLL_MS
-        entries = self.inventory.scan(since_ms=target - PRE_ROLL_MS - 120_000)
+        try:
+            entries = self.inventory.scan(since_ms=target - PRE_ROLL_MS - 120_000, should_stop=should_stop)
+        except InventoryPaused:
+            for owner in self.states:
+                self.set_status(owner, state='paused', reason='recording_or_replay_priority')
+            return dict(processed=0, pending=0, owners=0, paused=True)
         by_owner = {}
         for entry in entries:
             by_owner.setdefault(entry['owner'], {}).setdefault(entry['capture'], []).append(entry)

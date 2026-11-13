@@ -11,6 +11,7 @@ work and recorder backpressure instead of adding concurrent archive reads.
 from __future__ import annotations
 
 from collections import OrderedDict
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -126,9 +127,12 @@ class HeatmapDeriverSupervisor:
     this process closes its stdin, so it cannot outlive the backend.
     """
 
-    def __init__(self, *, root: Path | None = None, cache: Path | None = None, mode: str | None = None):
+    def __init__(self, *, root: Path | None = None, cache: Path | None = None, mode: str | None = None,
+                 recorder_status: Path | None = None):
         self.mode = (mode or os.getenv('TOPSIGNAL_HEATMAP_DERIVER', 'auto')).strip().lower()
         self.root = root
+        status = recorder_status or os.getenv('TOPSIGNAL_DEPTH_RECORDER_STATUS')
+        self.recorder_status = Path(status) if status else None
         self.cache = cache
         self.process: subprocess.Popen | None = None
         self.stop_event = Event()
@@ -188,13 +192,29 @@ class HeatmapDeriverSupervisor:
             self.stop_event.wait(delay)
         self.state = 'stopped'
 
+    def _independent_recorder_pressure(self):
+        # The production launcher supplies the protected runtime status file.
+        # A local development backend may have no independent recorder.
+        if self.recorder_status is None:
+            return False
+        try:
+            status = json.loads(self.recorder_status.read_text(encoding='utf-8-sig'))
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(status['at'])).total_seconds()
+            storage = status['storage']
+            if not isinstance(storage, dict):
+                return True
+            return (status['state'] != 'recording' or not 0 <= age <= 30
+                    or bool(storage.get('scan_stalled')) or bool(storage.get('blocked_reason')))
+        except (OSError, ValueError, KeyError, TypeError):
+            return True
+
     def _signal_pressure(self):
-        """Send only state changes; no archive reads or files on the live drive."""
+        """Read the small runtime status and send changes; never scan raw archives."""
         from .topbot_study_worker import ACTIVE, STATE_LOCK, recording_pressure
         try:
             with STATE_LOCK:
                 replaying = bool(ACTIVE)
-            paused = replaying or recording_pressure() is not None
+            paused = replaying or recording_pressure() is not None or self._independent_recorder_pressure()
         except Exception:
             paused = True  # Unknown recorder health must not start optional IO.
         if paused == self._pressure_sent:
