@@ -461,12 +461,19 @@ That five-minute overlap makes ingestion more robust around provider timing drif
 
 #### Chunking and deduplication
 
-Trade history requests are chunked by `PROJECTX_SYNC_CHUNK_DAYS` and paged by `PROJECTX_DAY_SYNC_LIMIT`. Ingested events are deduplicated by:
+The existing UI request path uses `PROJECTX_SYNC_CHUNK_DAYS` and
+`PROJECTX_DAY_SYNC_LIMIT`. The independent persisted policy described in
+[trade reviews](docs/trade-review-workflow.md) uses bounded timestamp windows,
+durable progress and reconciliation without opening account pages. Provider
+pagination and unlimited historical retention are not guaranteed. Ingested events are deduplicated by:
 
 - `(user_id, account_id, source_trade_id)` when the provider gives a stable execution ID
 - otherwise `(user_id, account_id, order_id, trade_timestamp)`
 
-Voided or canceled provider rows are ignored. Existing local rows can be updated when ProjectX later returns completed PnL, fee, or lifecycle fields for rows that were previously incomplete.
+Voided rows retain their evidence and are excluded from performance. Distinct
+provider IDs never merge merely because order/time match. Existing display heads
+can accept authoritative corrections; independent synchronization preserves
+local revisions and prior heads before applying them.
 
 #### Single-day cache behavior
 
@@ -988,6 +995,8 @@ Frontend auth behavior:
 - Expense combine tracking is partly client-side, so it is not a fully server-authoritative accounting subsystem.
 
 ## Documentation Map
+
+- [Repeatable trade reviews](docs/trade-review-workflow.md): bounded recovery, frozen reports, attribution, coverage and backup checks
 
 - `db.md`: database design, persistence model, and trade-ingestion notes
 - `db/README.md`: fresh schema and migration application instructions

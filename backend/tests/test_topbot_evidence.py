@@ -162,7 +162,22 @@ def test_full_queue_does_not_block_trading_and_reports_loss(tmp_path, monkeypatc
     state.apply(book(now+timedelta(seconds=1), 2), now+timedelta(seconds=1))
     assert state.snapshot(now+timedelta(seconds=1))["ready"]
     assert cap.dropped == 1 and cap.index == 2
+    assert cap.status()['drop_reasons']=={'queue_event_limit':1}
     cap.close()
+
+
+def test_rejected_large_book_is_preserved_without_relaxing_model(tmp_path):
+    cap=Capture('owner',CONTRACT,root=tmp_path,free_floor=0)
+    state=DepthState(CONTRACT);state.capture=cap
+    at=datetime.now(timezone.utc)
+    event=book(at,1)
+    event['data']['bids']=[{'price':20000-i*.25,'size':10} for i in range(3000)]
+    state.apply(event,at)
+    assert not state.snapshot(at)['ready']
+    cap.close()
+    assert cap.dropped==0
+    rows=list(recorded_batches(cap.path))
+    assert len(rows[1]['event']['data']['bids'])==3000
 
 
 def test_capture_strips_nonconsumed_messages(tmp_path):

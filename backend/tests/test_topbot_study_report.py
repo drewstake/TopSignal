@@ -13,6 +13,15 @@ CONTRACT = "CON.F.US.MNQ.Z26"
 NOW = datetime.now(timezone.utc)
 
 
+def test_actual_outcome_inclusion_does_not_use_simulated_winners_or_holdouts():
+    rows=[dict(entry_id=i,phase='exploratory',session='2026-11-12',strategy_version_id='v',paired_valid=i==2) for i in (1,2)]
+    rows.append(dict(entry_id=3,phase='holdout',paired_valid=True))
+    value=report.outcome_coverage(rows,{1:{'net_pnl_usd':50},2:{'net_pnl_usd':-50}})
+    counts={r['outcome']:r for r in value['rows'] if r['scope']=='all'}
+    assert counts['winner']['rate']==0 and counts['loser']['rate']==1
+    assert sum(r['entries'] for r in counts.values())==2
+
+
 @pytest.fixture
 def cache(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "default_cache_root", lambda: tmp_path)

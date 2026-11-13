@@ -434,7 +434,12 @@ class ProjectXHubRunner:
         if not isinstance(arguments, list):
             return
 
+        # SignalR method names are case-insensitive. Position dispatch below
+        # already folds case; archive/fill callbacks must see the same events.
         target_name = str(frame.get("target") or "")
+        target_name = {name.casefold(): name for name in (
+            "GatewayQuote", "GatewayUserOrder", "GatewayUserTrade", "GatewayUserPosition"
+        )}.get(target_name.casefold(), target_name)
         if self._on_archive_event is not None and target_name in {"GatewayQuote", "GatewayUserOrder", "GatewayUserTrade", "GatewayUserPosition"}:
             for argument in arguments:
                 if isinstance(argument, Mapping):

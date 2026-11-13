@@ -463,6 +463,9 @@ async def app_lifespan(_: FastAPI):
     from .services.trade_progress_recorder import TradeProgressRecorder
     progress_recorder = TradeProgressRecorder(SessionLocal, _projectx_client_for_user_without_open_transaction)
     progress_recorder.start()
+    from .services.trade_history_sync import HistorySynchronizer
+    history_sync = HistorySynchronizer(SessionLocal, _projectx_client_for_user_without_open_transaction)
+    history_sync.start()
     from .services.topbot_study_worker import StudyRecorder
     study_recorder = StudyRecorder(SessionLocal, _projectx_client_for_user_without_open_transaction)
     study_recorder.start()
@@ -484,6 +487,8 @@ async def app_lifespan(_: FastAPI):
         yield
     finally:
         heatmap_deriver.request_stop()  # Instant; the wait happens last.
+        if not await asyncio.to_thread(history_sync.stop):
+            logger.error("trade_history_sync_shutdown_incomplete")
         if not await asyncio.to_thread(progress_recorder.stop):
             logger.error("trade_progress_recorder_shutdown_incomplete")
         study_stopped = await asyncio.to_thread(study_recorder.stop)
@@ -4700,6 +4705,24 @@ def get_trade_progress_status(account_id: int, db: Session = Depends(get_db)):
         return progress.status(owner, account_id)
     except (OSError, sqlite3.Error):
         raise HTTPException(status_code=503, detail="Local trade progress storage is unavailable.")
+
+
+@app.get("/api/accounts/{account_id}/trade-history/status")
+def get_trade_history_status(account_id: int, db: Session = Depends(get_db)):
+    owner = get_authenticated_user_id()
+    _require_owned_projectx_account(db, user_id=owner, account_id=account_id)
+    from .services import trade_history_sync as history
+    if not history.path().exists():
+        return {"state":"not_configured", "windows":[]}
+    try:
+        with history.state() as local:
+            policy=local.execute('SELECT * FROM policies WHERE owner=?',(owner,)).fetchone()
+            account=local.execute('SELECT * FROM accounts WHERE owner=? AND account=?',(owner,account_id)).fetchone()
+            rows=local.execute('SELECT * FROM windows WHERE owner=? AND account=? ORDER BY day DESC LIMIT 4001',(owner,account_id)).fetchall()
+        return {"state":account['state'] if account else "not_examined", "policy":dict(policy) if policy else None,
+                "account":dict(account) if account else None, "windows":[dict(r) for r in rows[:4000]], "truncated":len(rows)>4000}
+    except (OSError,sqlite3.Error):
+        raise HTTPException(status_code=503,detail="Local history synchronization state is unavailable.")
 
 
 @app.put("/api/accounts/{account_id}/trade-progress/enrollment")

@@ -157,8 +157,14 @@ class ProgressEngine:
             return False
         if snapshot and state and state["last_event_received"] > payload.get("_request_started", at):
             return True  # A response to an older REST request cannot overwrite a newer stream event.
-        if state and created is not None and created < state["provider_created"]:
+        if state and state["identity"] and created is not None and created < state["provider_created"]:
             return False
+        if snapshot and state and not state["identity"] and identity:
+            # A receipt-only opening notification cannot establish provider
+            # identity. Split at the fresh snapshot; never silently attach its
+            # earlier creation time to an uncertain live lifecycle.
+            self.close(state, "identity_unverified", at, issue="lifecycle_identity_uncertain")
+            state = None
         if not update.net_qty:
             if state:
                 if identity and state["identity"] and identity != state["identity"]:
@@ -255,7 +261,7 @@ class ProgressEngine:
             return
         trade, contract = payload.get("id"), payload.get("contractId")
         ts = timestamp(payload.get("creationTimestamp"))
-        if trade is None or not contract or ts is None or ts>at:
+        if trade is None or not contract or ts is None:
             return
         # Corrected and voided legs replace the same scoped ID; never add an
         # unproven cumulative realized number to unrealized P&L.
@@ -263,6 +269,7 @@ class ProgressEngine:
             realized_dollars=number(payload.get("profitAndLoss")), fees=number(payload.get("fees")),
             commissions=number(payload.get("commissions")), quantity=number(payload.get("size")),
             price=number(payload.get("price")), voided=bool(payload.get("voided")), source="live_broker_fill",
+              clock_issue="provider_timestamp_after_receipt" if ts>at else None,
             order_id=payload.get("orderId"), fill_id=payload.get("fillId"),
             realized_basis="provider_reported_separate_from_unrealized"))
 

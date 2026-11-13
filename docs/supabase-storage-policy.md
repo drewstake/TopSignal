@@ -9,6 +9,7 @@ the development default is `backend/storage/databento`.
 
 | Data | Location and policy |
 | --- | --- |
+| Trade history sync coverage/revisions, frozen trade-review bundles and copied replay results | Local cache `trade-history-sync-v1/` and `trade-review-v1/`; keep hashes, originals and off-device receipts; no cloud arrays |
 | Original Databento definition/OHLCV ZIPs | Local cache `sources/`; preserve checksums and an off-device backup |
 | Bulk historical candles, derived timeframes, replay arrays | Local Parquet/mmap cache; new instruments follow this policy |
 | Accounts, executed trades, journals, expenses, credentials, bot configuration | Application database with existing tenant protections |

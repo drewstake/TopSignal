@@ -620,12 +620,15 @@ class ProjectXTradeEvent(Base):
             "source_trade_id",
             name="uq_projectx_trade_events_account_source_trade",
         ),
-        UniqueConstraint(
+        Index(
+            "uq_projectx_trade_events_account_order_ts",
             "user_id",
             "account_id",
             "order_id",
             "trade_timestamp",
-            name="uq_projectx_trade_events_account_order_ts",
+            unique=True,
+            postgresql_where=text("source_trade_id IS NULL"),
+            sqlite_where=text("source_trade_id IS NULL"),
         ),
         Index(
             "idx_projectx_trade_events_user_account_ts_id",

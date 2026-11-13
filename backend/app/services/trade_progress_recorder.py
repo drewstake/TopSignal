@@ -34,11 +34,12 @@ class RecordingTracker:
 
 
 class AccountRecorder:
-    def __init__(self, owner, account, points, client_factory):
+    def __init__(self, owner, account, points, client_factory, *, market=None):
         from .projectx_hubs import ProjectXHubRunner
         from .projectx_streaming_runtime import StreamingRuntime
         self.owner, self.account, self.points = owner, account, points
         self.client_factory = client_factory
+        self.market = market
         self.queue = Queue(maxsize=20000)
         self.overflow = threading.Event()
         self.stop_event = threading.Event()
@@ -46,7 +47,7 @@ class AccountRecorder:
         self.tracker = RecordingTracker(self)
         self.runtime = StreamingRuntime(tracker=self.tracker, runner=ProjectXHubRunner(
             tracker=self.tracker, client_factory=client_factory, user_id=owner, account_id=account,
-            market_hub_url="https://rtc.topstepx.com/hubs/market", track_positions=True,
+            market_hub_url="" if market else "https://rtc.topstepx.com/hubs/market", track_positions=True,
             on_connection=self.connection,
             on_archive_event=lambda kind, payload: self.submit("fill", dict(payload)) if kind == "GatewayUserTrade" else None))
         self.thread = threading.Thread(target=self.run, name="trade-progress-writer", daemon=True)
@@ -61,6 +62,12 @@ class AccountRecorder:
     def connection(self, stream, reason):
         self.submit("connection", (stream, reason.startswith("connected")))
         self.refresh.set()
+
+    def connection_states(self):
+        states = dict(self.runtime.runner.stream_states)
+        if self.market:
+            states['market'] = self.market.runtime.runner.stream_states.get('market', 'disconnected')
+        return states
 
     def start(self):
         self.thread.start()
@@ -108,7 +115,7 @@ class AccountRecorder:
                             except Empty:
                                 break
                         self.refresh.set()
-                    engine.connected = {k: v == "connected" for k,v in self.runtime.runner.stream_states.items()}
+                    engine.connected = {k: v == "connected" for k,v in self.connection_states().items()}
                     for key in ("market", "user"):
                         engine.connected.setdefault(key, False)
                 if self.overflow.is_set():
@@ -137,7 +144,7 @@ class AccountRecorder:
                 # Queue loss must not leave a stale "connected" value behind.
                 # The runner's current state is authoritative for sampling now.
                 for stream in ("market", "user"):
-                    connected = self.runtime.runner.stream_states.get(stream) == "connected"
+                    connected = self.connection_states().get(stream) == "connected"
                     if connected != engine.connected.get(stream):
                         engine.connection(stream, connected, store.now())
                 if not self.queue.empty():
@@ -171,12 +178,52 @@ class AccountRecorder:
                 logger.error("trade_progress_final_flush_failed error_type=%s", type(exc).__name__)
 
 
+class SharedRecorderMarket:
+    """One quote subscription per owner/contract, shared only across that owner.
+
+    Positions and fills remain account-scoped. This does not substitute the
+    valuation stream for the separate depth/exit-study experiment evidence.
+    """
+    def __init__(self, owner, client_factory):
+        from .projectx_hubs import ProjectXHubRunner
+        from .projectx_streaming_runtime import StreamingRuntime
+        self.owner = owner
+        self.workers = ()  # Copy-on-write tuple: callbacks never hold manager locks.
+        self.runtime = StreamingRuntime(tracker=self, runner=ProjectXHubRunner(
+            tracker=self,client_factory=client_factory,user_id=owner,user_hub_url="",
+            market_hub_url="https://rtc.topstepx.com/hubs/market",track_positions=True,on_connection=self.connection))
+
+    def add(self, worker):
+        if worker.owner != self.owner:
+            raise ValueError('Market sharing requires the same credential owner')
+        self.workers = (*self.workers, worker)
+
+    def remove(self, worker):
+        self.workers = tuple(w for w in self.workers if w is not worker)
+
+    def active_contracts(self):
+        return set().union(*(w.tracker.contracts for w in self.workers))
+
+    def reset_observations(self):
+        pass  # Connection callback and live stream-state checks record gaps.
+
+    def connection(self, stream, reason):
+        for worker in self.workers:
+            worker.connection(stream,reason)
+
+    def ingest_market_event(self, payload):
+        for worker in self.workers:
+            if payload.get('contractId') in worker.tracker.contracts:
+                worker.submit('quote',dict(payload))
+
+
 class TradeProgressRecorder:
     def __init__(self, session_factory, client_factory):
         self.session_factory, self.client_factory = session_factory, client_factory
         self.stop_event = threading.Event()
         self.thread = None
         self.workers = {}
+        self.markets = {}
 
     def start(self):
         self.thread = threading.Thread(target=self.run, name="trade-progress-manager", daemon=True)
@@ -221,14 +268,25 @@ class TradeProgressRecorder:
                     if valid:
                         wanted.add((owner,account))
                         if (owner,account) not in self.workers:
-                            worker = AccountRecorder(owner,account,points,lambda owner=owner: self.client(owner))
+                            if owner not in self.markets:
+                                self.markets[owner] = SharedRecorderMarket(owner,lambda owner=owner:self.client(owner))
+                            market = self.markets[owner]
+                            worker = AccountRecorder(owner,account,points,lambda owner=owner: self.client(owner),market=market)
+                            market.add(worker)
                             self.workers[owner,account] = worker
                             worker.start()
                         else:
                             self.workers[owner,account].runtime.start()
                 for key in list(self.workers):
                     if key not in wanted and self.workers[key].stop():
+                        self.markets[key[0]].remove(self.workers[key])
                         del self.workers[key]
+                for owner in list(self.markets):
+                    market = self.markets[owner]
+                    if market.workers:
+                        market.runtime.start()
+                    elif market.runtime.stop():
+                        del self.markets[owner]
                 self.stop_event.wait(5)
         finally:
             # Retain the cross-process lock until all callbacks are reaped.
@@ -236,3 +294,7 @@ class TradeProgressRecorder:
                 while not worker.stop():
                     self.stop_event.wait(1)
             self.workers.clear()
+            for market in self.markets.values():
+                while not market.runtime.stop():
+                    self.stop_event.wait(1)
+            self.markets.clear()

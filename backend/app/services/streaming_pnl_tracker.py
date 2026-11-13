@@ -47,8 +47,8 @@ class ClosedPositionLifecycle:
     max_qty: float
     avg_entry_at_open: float
     realized_pnl_usd: float | None
-    mae_usd: float
-    mfe_usd: float
+    mae_usd: float | None
+    mfe_usd: float | None
     mae_points: float | None
     mfe_points: float | None
     mae_timestamp: datetime | None
@@ -81,6 +81,7 @@ class _LifecycleTracker:
     mfe_usd: float
     mae_timestamp: datetime | None
     mfe_timestamp: datetime | None
+    observed_marks: int = 0
 
 
 class StreamingPnlTracker:
@@ -265,7 +266,7 @@ class StreamingPnlTracker:
         point_value = self._resolve_point_value(tracker.contract_id, tracker.symbol)
         mae_points: float | None = None
         mfe_points: float | None = None
-        if point_value is not None and point_value > _EPSILON and tracker.max_abs_qty > _EPSILON:
+        if tracker.observed_marks and point_value is not None and point_value > _EPSILON and tracker.max_abs_qty > _EPSILON:
             denominator = tracker.max_abs_qty * point_value
             mae_points = tracker.mae_usd / denominator
             mfe_points = tracker.mfe_usd / denominator
@@ -282,12 +283,12 @@ class StreamingPnlTracker:
             max_qty=tracker.max_abs_qty,
             avg_entry_at_open=tracker.avg_entry_at_open,
             realized_pnl_usd=realized_pnl_usd,
-            mae_usd=tracker.mae_usd,
-            mfe_usd=tracker.mfe_usd,
+            mae_usd=tracker.mae_usd if tracker.observed_marks else None,
+            mfe_usd=tracker.mfe_usd if tracker.observed_marks else None,
             mae_points=mae_points,
             mfe_points=mfe_points,
-            mae_timestamp=tracker.mae_timestamp,
-            mfe_timestamp=tracker.mfe_timestamp,
+            mae_timestamp=tracker.mae_timestamp if tracker.observed_marks else None,
+            mfe_timestamp=tracker.mfe_timestamp if tracker.observed_marks else None,
         )
         self._on_lifecycle_closed(lifecycle)
 
@@ -309,6 +310,7 @@ class StreamingPnlTracker:
 
         direction = 1.0 if position.net_qty > 0 else -1.0
         unrealized_usd = (mark_price - position.avg_price) * qty * point_value * direction
+        tracker.observed_marks += 1
 
         if unrealized_usd < tracker.mae_usd:
             tracker.mae_usd = unrealized_usd

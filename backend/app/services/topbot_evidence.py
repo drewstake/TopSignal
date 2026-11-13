@@ -240,7 +240,10 @@ def normalized(event):
                                   "entry_id", "start") if k in data}
     for side in ("bids", "asks"):
         if side in data:
-            if len(data[side]) > 2001:
+            # DepthState must still reject >2,000 levels under its existing
+            # experiment rules. Preserve that rejected input for faithful replay,
+            # subject to the unchanged one-MiB record and eight-MiB queue limits.
+            if len(data[side]) > 32768:
                 raise ValueError("oversize_evidence_book")
             result[side] = [{k: row[k] for k in ("price", "size") if k in row} for row in data[side]]
     return {"event": event.get("event"), "data": result}
@@ -268,6 +271,7 @@ class Capture:
         self.last_durable_at = self.last_durable_received_at = None
         self.last_commit_completed_at = None
         self.last_drop = None
+        self.drop_reasons = {}
         self.phase, self.phase_started = "initializing", monotonic()
         self.phase_seconds = {}
         self.last_progress = monotonic()
@@ -286,6 +290,7 @@ class Capture:
         self.index += 1
         reference = {"capture_id": self.capture_id, "event_index": self.index,
                      "received_at": at.isoformat()}
+        reason = 'invalid_or_oversize_record'
         try:
             row = {**reference, "monotonic_ns": monotonic_ns(), "event": normalized(event),
                    "transitions": transitions, "dropped_before": self.dropped}
@@ -293,15 +298,19 @@ class Capture:
             if len(raw) > MAX_RECORD_BYTES:
                 raise ValueError("oversize_evidence_event")
             if self.state in {"error", "storage_blocked", "closed"}:
+                reason = 'recorder_unavailable'
                 raise Full  # "retrying" keeps buffering up to the queue bound.
             with self.queue_lock:
                 if self.queued_bytes + len(raw) > 8*1024**2:
+                    reason = 'queue_byte_limit'
                     raise Full
+                reason = 'queue_event_limit'
                 self.queue.put_nowait((self.index, raw, monotonic()))
                 self.queued_bytes += len(raw)
         except (Full, ValueError, TypeError, KeyError):
             self.dropped += 1
-            self.last_drop = {"event_index": self.index, "received_at": at.isoformat()}
+            self.drop_reasons[reason] = self.drop_reasons.get(reason, 0)+1
+            self.last_drop = {"event_index": self.index, "received_at": at.isoformat(), "reason": reason}
             if self.dropped & (self.dropped-1) == 0:
                 from ..bot_diagnostics import event as diagnostic
                 diagnostic(logger, "topbot_evidence_loss", level=logging.WARNING,
@@ -318,7 +327,7 @@ class Capture:
         stalled = (self.state in {"starting", "recording"} and (head is not None or self.pending_events)
                    and now-self.last_progress > 5)
         return {"state": "stalled" if stalled else self.state, "durable_index": self.durable_index,
-                "dropped_events": self.dropped, "queued_events": self.queue.qsize(),
+                "dropped_events": self.dropped, "drop_reasons": dict(self.drop_reasons), "queued_events": self.queue.qsize(),
                 "queued_bytes": self.queued_bytes, "queue_limit_events": self.queue.maxsize,
                 "oldest_queued_seconds": oldest,
                 "inflight_events": self.pending_events, "durable_events": self.durable_events,

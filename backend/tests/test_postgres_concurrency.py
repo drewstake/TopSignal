@@ -96,6 +96,27 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def test_provider_leg_identity_survives_same_execution_and_correction(postgres_engine):
+    """Exercise the migrated partial index on real PostgreSQL, not SQLite."""
+    sessions=sessionmaker(bind=postgres_engine)
+    owner=str(uuid4());account=24_000_000_000+(uuid4().int%4_000_000_000)
+    stamp=datetime(2036,3,6,15,tzinfo=timezone.utc)
+    base=dict(account_id=account,contract_id='CON.F.US.MNQ.M36',symbol='MNQ',side='SELL',size=1,
+              price=20000,timestamp=stamp,fees=.36,pnl=10,order_id='same-order',raw_payload={})
+    try:
+        with sessions() as db:
+            assert projectx_trades_module.store_trade_events(db,[dict(base,source_trade_id='one'),dict(base,source_trade_id='two')],user_id=owner)==2
+            db.commit()
+        with sessions() as db:
+            projectx_trades_module.store_trade_events(db,[dict(base,source_trade_id='one',pnl=11,correction=True)],user_id=owner)
+            db.commit()
+            rows=db.query(ProjectXTradeEvent).filter_by(user_id=owner).order_by(ProjectXTradeEvent.source_trade_id).all()
+            assert len(rows)==2 and [float(r.pnl) for r in rows]==[11,10]
+    finally:
+        with postgres_engine.begin() as db:
+            db.execute(delete(ProjectXTradeEvent).where(ProjectXTradeEvent.user_id==owner))
+
+
 def test_trade_day_partial_writer_waits_for_complete_and_cannot_downgrade(
     postgres_engine,
 ):

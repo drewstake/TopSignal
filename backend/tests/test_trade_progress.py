@@ -38,6 +38,27 @@ def ready(owner="owner", account=1):
     return engine
 
 
+def test_future_clock_fill_is_preserved_with_timing_uncertainty(local):
+    engine=ready()
+    engine.fill(dict(id=99,accountId=1,contractId=C,creationTimestamp=iso(T+.02),
+                     profitAndLoss=10,fees=.36,commissions=.25,size=1,price=105),T)
+    engine.flush()
+    with store.connect() as db:
+        row=json.loads(db.execute('select payload from trade_progress_fills').fetchone()[0])
+    assert row['ts']==T+.02
+    assert row['clock_issue']=='provider_timestamp_after_receipt'
+
+
+def test_snapshot_can_replace_receipt_only_identity_without_false_continuity(local):
+    engine=ready()
+    engine.position(dict(accountId=1,contractId=C,netQty=1,averagePrice=100),T+1)
+    first=engine.active[C]['id']
+    engine.snapshot([pos(1)],T+2,T+3)
+    assert engine.active[C]['id']!=first
+    assert engine.active[C]['identity'] is not None
+    assert 'lifecycle_identity_uncertain' in engine.dirty[first]['reasons']
+
+
 def saved(engine):
     state = next(iter(engine.active.values())) if engine.active else next(iter(engine.dirty.values()))
     engine.flush()
@@ -325,6 +346,22 @@ def test_callbacks_are_bounded_nonblocking_and_connection_is_observed(local):
     assert kind=="connection" and payload==("user",False)
     worker.runtime.runner._dispatch_signalr_invocation("user",dict(target="GatewayUserTrade",arguments=[dict(id=1,accountId=1)]))
     assert worker.queue.get_nowait()[0]=="fill"
+
+
+def test_same_owner_market_is_shared_but_positions_and_other_owners_are_isolated(local):
+    from app.services.trade_progress_recorder import AccountRecorder,SharedRecorderMarket
+    market=SharedRecorderMarket('owner',lambda:None)
+    first=AccountRecorder('owner',1,{},lambda:None,market=market)
+    second=AccountRecorder('owner',2,{},lambda:None,market=market)
+    first.tracker.contracts=second.tracker.contracts=frozenset({C})
+    market.add(first);market.add(second)
+    assert market.active_contracts()=={C}
+    assert not first.runtime.runner._market_hub_url and not second.runtime.runner._market_hub_url
+    market.ingest_market_event(quote(101,T))
+    assert first.queue.get_nowait()[0]=='quote' and second.queue.get_nowait()[0]=='quote'
+    with pytest.raises(ValueError):market.add(AccountRecorder('other',1,{},lambda:None))
+    first.tracker.ingest_position_event(pos())
+    assert first.queue.qsize()==1 and second.queue.empty()
 
 
 def test_midpoint_fallback_and_invalid_quote_do_not_invent_observations(local):
