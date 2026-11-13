@@ -12,6 +12,24 @@ See the [deployment record](audits/2026-11-11/trade-progress-deployment.md)
 for activation, validation and backup evidence. This implements
 [the recording proposal](trade-progress-recording-idea.md).
 
+## November 13 maintenance
+
+The durable passive policy now enrolls six currently owned supported accounts:
+29593203, 29671908, 29671939, 29671977, 29672001 and 29672024. Capacity remains
+eight; 820 historical/ineligible accounts were excluded. Explicit opt-outs and
+change history are retained. Trading permission is independent of passive
+eligibility; enrollment does not arm a bot or alter broker permissions.
+
+The URL, selector, API scope and displayed recorder status now agree. Unavailable
+or duplicate account links fail explicitly without silently selecting another
+account. States distinguish not enrolled, flat recording, unhealthy coverage,
+stale heartbeat and unavailable status. Account changes abort stale requests.
+
+Scoped reconciliation verified 178 broker fill legs across the six accounts for
+November 11–12. They retain revisions and response coverage; they do not recreate
+missing one-second observations. See [maintenance evidence](audits/2026-11-13/storage-maintenance.md)
+for live loss/latency findings, current release and remaining acceptance.
+
 ## What is recorded
 
 `Not enrolled` means the selected owner/external account has no enabled scope
@@ -25,9 +43,9 @@ an enrolled scope unhealthy.
 Check the active account control and actual API account, not only the URL. On
 November 13, the URL named unavailable account `28278873` while the UI selected
 `29672001`; neither had enrollment. Practice `29593203` remained enabled under
-the same owner. No disable event was established. Scope rows have no enrollment
-change timestamp/history, so absence cannot prove an account was never enrolled
-in any older store.
+the same owner. No disable event was established. The audited release 87 had no enrollment change history, so its absence cannot
+prove an account was never enrolled in an older store. New changes now retain
+timestamped policy/manual enrollment history.
 
 An independently enrolled ProjectX account gets read-only user/market hub
 subscriptions, a position reconciliation thread and a local SQLite writer.

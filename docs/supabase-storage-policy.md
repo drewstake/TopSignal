@@ -2,19 +2,19 @@
 
 ## Current deployment boundary (verified November 13, 2026)
 
-Supabase is **partially retired**. Execution/application records are authoritative
-in local PostgreSQL on peteamdpc; research and recordings stay on its filesystem.
-The compact-record mirror is active, journal object storage remains configured
-in Supabase, and the independent recorder still reads startup credentials from
-cloud PostgreSQL. Hosted sign-in uses local trusted-device authentication;
-cloud Auth remains an alternative. See [live evidence](audits/2026-11-13/peteamdpc-health.md)
-and [recovery guidance](local-first-storage.md). Historical incident sections
-below retain their original dates; they do not describe the current release.
+The November 13 maintenance made the application, trusted-device authentication,
+independent recorder, Discord helper and execution backup local-only. PostgreSQL
+on peteamdpc remains the sole execution authority. Mirror consumption and all
+30 capture triggers are retired, with an empty outbox and dedicated logins set
+NOLOGIN; authority/cloud fences remain. Journal is removed and its records/images
+have verified encrypted local and off-device recovery copies. Cloud user/audit
+records and historical definitions are retained, not deleted.
 
-Prepared local-only code and its pending maintenance steps are documented in
-[Supabase retirement](supabase-retirement.md). Journal records/images now also
-have a verified encrypted historical archive on the host and off device. This
-does not authorize source/cloud deletion or imply the old deployed APIs stopped.
+See [maintenance evidence and outstanding acceptance](audits/2026-11-13/storage-maintenance.md),
+[retirement recovery](supabase-retirement.md) and [storage recovery](local-first-storage.md).
+The earlier live audit and incident sections below are dated history, not current
+health checks. Full-cache freshness must be assessed separately from focused
+PostgreSQL/auth/configuration backups. No retirement step authorizes data deletion.
 
 ## Permanent storage boundary
 
@@ -28,7 +28,8 @@ the development default is `backend/storage/databento`.
 | Trade history sync coverage/revisions, frozen trade-review bundles and copied replay results | Local cache `trade-history-sync-v1/` and `trade-review-v1/`; keep hashes, originals and off-device receipts; no cloud arrays |
 | Original Databento definition/OHLCV ZIPs | Local cache `sources/`; preserve checksums and an off-device backup |
 | Bulk historical candles, derived timeframes, replay arrays | Local Parquet/mmap cache; new instruments follow this policy |
-| Accounts, executed trades, journals, expenses, credentials, bot configuration | Application database with existing tenant protections |
+| Accounts, executed trades, expenses, credentials, bot configuration | Local application database with existing tenant protections |
+| Retired Journal records and referenced images | Retained historical tables plus encrypted `retired-journal-v1/` archive and verified off-device copy; no active feature |
 | Saved backtest results | Application database, with bounded detail; do not embed the complete input candle history |
 | Raw observations, ProjectX candle caches, detailed research snapshots | Local SQLite under `TOPSIGNAL_DATABENTO_CACHE_DIR`; cloud definitions remain fenced |
 | Trade progress samples, lifecycle timelines, fill revisions, enrollment and recorder metadata | Local `trade-progress-v1/progress.sqlite3` under `TOPSIGNAL_DATABENTO_CACHE_DIR`; never Supabase or the cloud mirror; no automatic retention deletion |
@@ -55,8 +56,8 @@ filesystem.
 
 ## Capacity checks before growth
 
-Inspect local PostgreSQL and C:/D: capacity before local growth. For the active
-cloud mirror, run [the read-only storage report](../db/diagnostics/storage_usage.sql) in the
+Inspect local PostgreSQL and C:/D: capacity before local growth. For any separately authorized future
+cloud writes, run [the read-only storage report](../db/diagnostics/storage_usage.sql) in the
 Supabase SQL editor weekly, before increasing mirrored volume or sync
 lookback/retention, and before releases that add stored data. Review the
 organization Usage page and project disk metrics as well; a single database

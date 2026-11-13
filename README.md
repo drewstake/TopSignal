@@ -1,19 +1,19 @@
 # TopSignal
 
-The hosted dashboard is `http://127.0.0.1:4173` through the private connection to
-peteamdpc. The [November 13 health audit](docs/audits/2026-11-13/peteamdpc-health.md)
-verified release `20261112-auto-signin-87`, local PostgreSQL execution authority,
-filesystem recordings and local trusted-device sign-in. Supabase is **partially
-retired**: compact records are still mirrored there, journal images use its
-object storage, and the independent recorder reads startup credentials there.
-The [prepared remediation](docs/audits/2026-11-13/storage-remediation.md) and
-[maintenance procedure](docs/supabase-retirement.md) describe the candidate;
-they are not a deployment receipt. Development modes below describe repository code.
+The hosted dashboard is [the practice workspace](http://127.0.0.1:4173/bot?account=29593203)
+through the private connection to peteamdpc. The [November 13 maintenance receipt](docs/audits/2026-11-13/storage-maintenance.md)
+records the activated local-only application, recorder and helpers. PostgreSQL,
+authentication, credentials, recordings and research use protected host storage.
+Journal is removed and archived. Mirror production/consumption is retired and
+dedicated mirror logins are disabled; historical cloud data remains preserved.
+The earlier [health audit](docs/audits/2026-11-13/peteamdpc-health.md) is a baseline.
+Check current acceptance and backup receipts before making recovery promises.
 
-Market recording runs on the host without a browser. Trade-progress enrollment
-is per owner/account; only practice account `29593203` was enrolled at inspection.
-History timeouts, recording gaps and stale full-cache backups remain operational
-issues. See [storage and recovery](docs/local-first-storage.md),
+Six currently owned visible accounts are passively enrolled, with an eight-account
+policy cap and explicit opt-outs. Recording eligibility is separate from trading
+permission. The selector, URL and requests change together; unavailable or invalid
+account links show an explicit error. Market recording runs independently of the
+browser and bot arm state. Historical gaps remain explicit. See [storage and recovery](docs/local-first-storage.md),
 [recording](docs/trade-progress-recording.md) and
 [hosted access](docs/hosted-dashboard-connection.md).
 
@@ -31,7 +31,7 @@ flags are explicitly disabled, this checks database/schema readiness without
 requiring a second worker for runs hosted on another PC. It does not enable
 automation or change saved runs; `/ready` and bot-start checks remain strict.
 
-The candidate account workspace uses local sign-in with owner isolation; cloud OAuth/JWKS and token refresh have been removed. It syncs ProjectX/TopstepX account data or imports reviewed trade exports, and provides account management, trade review, expense tracking, and trading-bot controls. `npm run dev:live`, `dev:cloud`, and `dev:local` remain explicit launch options for that workspace.
+The account workspace uses local sign-in with owner isolation; cloud OAuth/JWKS and token refresh have been removed. It syncs ProjectX/TopstepX account data or imports reviewed trade exports, and provides account management, trade review, expense tracking, and trading-bot controls. `npm run dev:live`, `dev:cloud`, and `dev:local` remain explicit launch options for that workspace; `dev:cloud` is a retained command alias, not a Supabase sign-in path.
 
 The retained Bot workspace supports forward testing. The Data tab and
 Databento backtest panel have been removed; old `/data` links redirect to the
@@ -42,7 +42,7 @@ archive was created under `backend/storage/backups/retired-databento-research-20
 Saved database backtest records and historical replay tools remain for reference;
 running those tools again requires an explicit restore or new history import.
 
-The candidate removes Journal UI, routes, APIs, autosave, images and AI recap.
+Journal UI, routes, APIs, autosave, images and AI recap have been removed.
 Calendars continue to select trade days. Historical records/images remain in a
 verified encrypted archive on peteamdpc and off device; no cloud/source data was
 deleted. See the [archive receipt](docs/audits/2026-11-13/storage-remediation.md).
@@ -133,7 +133,7 @@ Dashboard overview:
 
 Calendar drill-down:
 
-![Trading-day PnL calendar with journal markers](images/PnL_Calender.png)
+![Trading-day PnL calendar](images/PnL_Calender.png)
 
 Balance curve derived from the selected trading range:
 
@@ -307,7 +307,7 @@ A user can:
 - apply a theme across the routed app
 - compare status, metric, control, and surface colors before switching
 
-Themes are stored client-side and applied through CSS variables, so they affect the shell, dashboard, trade review, journal, bot, and supporting controls without a backend migration.
+Themes are stored client-side and applied through CSS variables, so they affect the shell, dashboard, trade review, bot, and supporting controls without a backend migration.
 
 ### Routed Pages
 
@@ -612,7 +612,7 @@ Mutation calls invalidate affected cache entries.
 - Node.js 20+
 - Python 3.11+
 - npm
-- PostgreSQL 16 locally or a hosted PostgreSQL/Supabase database
+- PostgreSQL 16 locally; production execution uses peteamdpc PostgreSQL
 - Docker, if you want the included local Postgres container
 
 ### Fastest Local Setup
@@ -626,7 +626,7 @@ The simplest path is:
 5. build the local Databento Parquet/mmap cache for backtesting
 6. run the root dev command
 
-For development while Supabase is unavailable, run `npm run dev:offline` and
+For isolated development without the host connection, run `npm run dev:offline` and
 open `http://127.0.0.1:5174`. This uses a separate local SQLite workspace without
 Google sign-in. See [offline development](docs/offline-development.md) for storage,
 supported workflows, and switching back.
@@ -875,7 +875,7 @@ ProjectX user-hub lifecycle persistence is never started from server-wide enviro
 | --- | --- |
 | `VITE_API_BASE_URL` | Backend base URL |
 | `VITE_PERF_LOGS` | Enable frontend API perf logging |
-| `VITE_DEMO_MODE` | Start the frontend in read-only demo mode with masked account, journal, and money fields |
+| `VITE_DEMO_MODE` | Start the frontend in read-only demo mode with masked account and money fields |
 
 Frontend auth uses local session bootstrap, owner identity and sign-out.
 Production builds use `VITE_LOCAL_AUTH_ENABLED=true`; no Supabase SDK or Google
@@ -909,7 +909,7 @@ private loopback tunnel and the existing owner. See `.env.example` and the
 
 ## Current Limitations
 
-- The main routed app is strong around dashboard, trades, journal, expenses, payouts, themes, and bot dry-run workflows.
+- The main routed app is strong around dashboard, trades, expenses, payouts, themes, and bot dry-run workflows.
 - There is backend support for per-user ProjectX credentials, but there is no dedicated frontend credentials-management screen in the current routed UI.
 - The repository still carries the legacy `trades` table and `/metrics/*` routes beside the newer `projectx_trade_events` pipeline.
 - The accounts endpoint performs provider sync inline, which can make the first load noticeably slower on large account sets.
@@ -967,7 +967,7 @@ TopSignal is best understood as a local-first trading intelligence layer with se
 
 - ProjectX owns accounts, executions, positions, trade synchronization, and order routing
 - Databento is the sole historical market-data source for backtesting
-- PostgreSQL is the local analytics cache and journal/expense store
+- PostgreSQL is the authoritative local application and expense store
 - FastAPI is the normalization and metrics layer
 - React is the trader-facing review workspace
 

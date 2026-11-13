@@ -285,51 +285,58 @@ class ProgressEngine:
 
     def flush(self, *, error=None, diagnostics=None):
         with store.connect(write=True) as db:
-            for state in self.dirty.values():
-                db.execute("INSERT INTO trade_progress_positions VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET ended=excluded.ended,state=excluded.state",
-                    (state["id"], self.owner, self.account, state["contract"], state["opened"], state["ended"], store.encode(state)))
-            db.executemany("INSERT INTO trade_progress_samples(position,ts,kind,payload) VALUES(?,?,?,?)",
-                [(s["position_id"], s["ts"], s["kind"], store.encode(s)) for s in self.samples])
-            for contract, cursor in self.cursors.items():
-                db.execute("INSERT OR REPLACE INTO trade_progress_cursors VALUES(?,?,?,?)", (self.owner,self.account,contract,store.encode(cursor)))
-            for fill in self.fills:
-                key = fill["trade_id"]
-                encoded = store.encode(fill)
-                # Receipt clock uncertainty is observation metadata, not a new
-                # broker revision when the same leg replays after reconnect.
-                content = {k:v for k,v in fill.items() if k != 'clock_issue'}
-                digest = sha256(store.encode(content).encode()).hexdigest()
-                # Older stores hashed receipt-clock metadata too. Reuse their
-                # immutable receipt when the actual broker content is equal;
-                # do not manufacture a correction at the upgrade boundary.
-                old = db.execute('SELECT digest,payload FROM trade_progress_fill_revisions '
-                    'WHERE owner=? AND account=? AND trade=?', (self.owner,self.account,key)).fetchall()
-                contents = {store.encode(content)}
-                retained_clock_issue = fill.get('clock_issue')
-                for revision in old:
-                    prior = json.loads(revision['payload'])
-                    normalized = store.encode({k:v for k,v in prior.items() if k != 'clock_issue'})
-                    contents.add(normalized)
-                    if normalized == store.encode(content):
-                        digest = revision['digest']
-                        retained_clock_issue = prior.get('clock_issue') or retained_clock_issue
-                db.execute("INSERT OR IGNORE INTO trade_progress_fill_revisions VALUES(?,?,?,?,?,?)",
-                           (self.owner,self.account,key,digest,self.clock(),encoded))
-                first = json.loads(db.execute('SELECT payload FROM trade_progress_fill_revisions '
-                    'WHERE owner=? AND account=? AND trade=? AND digest=?', (self.owner,self.account,key,digest)).fetchone()[0])
-                fill = fill | dict(clock_issue=first.get('clock_issue') or retained_clock_issue)
-                if len(contents) > 1:
-                    # GatewayUserTrade has no revision sequence. An old leg
-                    # replay must not silently undo a correction/void. Preserve
-                    # every distinct payload and withhold an authoritative total.
-                    fill = fill | dict(revision_conflict=True, reported_realized_dollars=fill["realized_dollars"], realized_dollars=None)
-                db.execute("INSERT OR REPLACE INTO trade_progress_fills VALUES(?,?,?,?,?,?)",
-                    (self.owner,self.account,key,fill["contract"],fill["ts"],store.encode(fill)))
-            db.execute("UPDATE trade_progress_scopes SET heartbeat=?,error=? WHERE owner=? AND account=?",
-                       (self.clock(),error,self.owner,self.account))
-            if diagnostics is not None:
-                db.execute('INSERT OR REPLACE INTO trade_progress_meta VALUES(?,?)',
-                    (store.diagnostics_key(self.owner,self.account),store.encode(diagnostics)))
+            self.write_pending(db, error=error, diagnostics=diagnostics)
+        self.accept_commit()
+
+    def write_pending(self, db, *, error=None, diagnostics=None):
+        """Write this frozen account batch; clear it only after the shared commit."""
+        for state in self.dirty.values():
+            db.execute("INSERT INTO trade_progress_positions VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET ended=excluded.ended,state=excluded.state",
+                (state["id"], self.owner, self.account, state["contract"], state["opened"], state["ended"], store.encode(state)))
+        db.executemany("INSERT INTO trade_progress_samples(position,ts,kind,payload) VALUES(?,?,?,?)",
+            [(s["position_id"], s["ts"], s["kind"], store.encode(s)) for s in self.samples])
+        for contract, cursor in self.cursors.items():
+            db.execute("INSERT OR REPLACE INTO trade_progress_cursors VALUES(?,?,?,?)", (self.owner,self.account,contract,store.encode(cursor)))
+        for fill in self.fills:
+            key = fill["trade_id"]
+            encoded = store.encode(fill)
+            # Receipt clock uncertainty is observation metadata, not a new
+            # broker revision when the same leg replays after reconnect.
+            content = {k:v for k,v in fill.items() if k != 'clock_issue'}
+            digest = sha256(store.encode(content).encode()).hexdigest()
+            # Older stores hashed receipt-clock metadata too. Reuse their
+            # immutable receipt when the actual broker content is equal;
+            # do not manufacture a correction at the upgrade boundary.
+            old = db.execute('SELECT digest,payload FROM trade_progress_fill_revisions '
+                'WHERE owner=? AND account=? AND trade=?', (self.owner,self.account,key)).fetchall()
+            contents = {store.encode(content)}
+            retained_clock_issue = fill.get('clock_issue')
+            for revision in old:
+                prior = json.loads(revision['payload'])
+                normalized = store.encode({k:v for k,v in prior.items() if k != 'clock_issue'})
+                contents.add(normalized)
+                if normalized == store.encode(content):
+                    digest = revision['digest']
+                    retained_clock_issue = prior.get('clock_issue') or retained_clock_issue
+            db.execute("INSERT OR IGNORE INTO trade_progress_fill_revisions VALUES(?,?,?,?,?,?)",
+                       (self.owner,self.account,key,digest,self.clock(),encoded))
+            first = json.loads(db.execute('SELECT payload FROM trade_progress_fill_revisions '
+                'WHERE owner=? AND account=? AND trade=? AND digest=?', (self.owner,self.account,key,digest)).fetchone()[0])
+            fill = fill | dict(clock_issue=first.get('clock_issue') or retained_clock_issue)
+            if len(contents) > 1:
+                # GatewayUserTrade has no revision sequence. An old leg
+                # replay must not silently undo a correction/void. Preserve
+                # every distinct payload and withhold an authoritative total.
+                fill = fill | dict(revision_conflict=True, reported_realized_dollars=fill["realized_dollars"], realized_dollars=None)
+            db.execute("INSERT OR REPLACE INTO trade_progress_fills VALUES(?,?,?,?,?,?)",
+                (self.owner,self.account,key,fill["contract"],fill["ts"],store.encode(fill)))
+        db.execute("UPDATE trade_progress_scopes SET heartbeat=?,error=? WHERE owner=? AND account=?",
+                   (self.clock(),error,self.owner,self.account))
+        if diagnostics is not None:
+            db.execute('INSERT OR REPLACE INTO trade_progress_meta VALUES(?,?)',
+                (store.diagnostics_key(self.owner,self.account),store.encode(diagnostics)))
+
+    def accept_commit(self):
         self.dirty.clear()
         self.samples.clear()
         self.fills.clear()

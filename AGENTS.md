@@ -1,18 +1,22 @@
 # Storage rules for TopSignal
 
-Current architecture: see the [November 13 live audit](docs/audits/2026-11-13/peteamdpc-health.md).
-Local PostgreSQL on peteamdpc is the execution authority. Supabase is **partially
-retired**: the compact-record mirror, journal storage and independent recorder
-startup still depend on it. Hosted sign-in uses local trusted-device auth;
-cloud authentication remains configured as an alternative. Verify live state
-and dated receipts; old deployment reports are not current health checks.
+Current architecture: see the [November 13 maintenance receipt](docs/audits/2026-11-13/storage-maintenance.md).
+Local PostgreSQL on peteamdpc is the sole execution authority. The application,
+trusted-device authentication, independent recorder, Discord reader and backup
+helper now use protected local stores. Journal is removed and archived; the
+compact-record mirror is retired, its task disabled, capture triggers disabled,
+outbox empty and dedicated logins NOLOGIN. Authority/cloud fences remain enabled.
+Historical environments and cloud data are recovery material, never fallbacks.
+Verify live state and dated receipts; the earlier health audit is a baseline,
+not the current architecture or proof that final acceptance is complete.
 
-The [November 13 remediation](docs/audits/2026-11-13/storage-remediation.md) and
-[retirement procedure](docs/supabase-retirement.md) describe prepared local-only
-code. Do not confuse it with activated runtime. Journal has a verified encrypted
-host/off-device historical archive; keep historical tables/migrations and cloud
-recovery records. Mirror retirement must preserve local authority fences and
-stop both the consumer and outbox production coherently.
+Follow the [retirement/recovery procedure](docs/supabase-retirement.md). Preserve
+encrypted host/off-device Journal archives, historical tables/migrations and
+cloud audit records. Release 87 cannot accept the new migration ledger or retired
+mirror state; do not blindly roll back to it or reenable the old sync task.
+Keep the API and independent recorder tasks at scheduler priority 4; optional
+derivation/backup work remains lower priority. Keep collection independent of
+bot arm state, account selection and browser/development-PC availability.
 
 Read [the Supabase storage policy](docs/supabase-storage-policy.md) before changing
 historical-data imports, backtest persistence, database migrations, retention,

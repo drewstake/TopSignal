@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import json
 import sqlite3
+from time import monotonic
 
 import pytest
 
@@ -578,3 +579,129 @@ def test_write_retry_is_bounded_and_never_retries_storage_failure(local, code, e
         worker.flush(engine)
     assert engine.calls == expected_calls
     assert worker.metrics['last_write_error']['sqlite_code'] == code
+
+
+def test_group_commit_batches_six_accounts_without_merging_owners_or_fill_legs(local, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from app.services.trade_progress_recorder import GroupCommitter
+    engines = [ready(owner=owner, account=account)
+               for owner in ('owner', 'other') for account in range(1, 4)]
+    for engine in engines:
+        engine.position(pos() | {'accountId': engine.account}, T)
+        for identity in (91, 92):
+            engine.fill(dict(id=identity, accountId=engine.account, contractId=C,
+                creationTimestamp=iso(T), size=1, price=100, profitAndLoss=0), T)
+    # Hold the first transaction until all account writers are queued, then let
+    # the next shared transaction consume all six batches with one fsync.
+    original_connect = sqlite3.connect
+    commits = []
+    class CountCommit(sqlite3.Connection):
+        def commit(self):
+            commits.append(True)
+            return super().commit()
+    monkeypatch.setattr(sqlite3, 'connect', lambda *a, **kw: original_connect(*a, **kw, factory=CountCommit))
+    committer = GroupCommitter()
+    # Block dequeue until submissions are ready; this avoids wall-clock flakiness.
+    original_get = committer.queue.get
+    queued = threading.Event()
+    monkeypatch.setattr(committer.queue, 'get', lambda *a, **kw: (queued.wait(3), original_get(*a, **kw))[1])
+    committer.start()
+    try:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = [pool.submit(committer.flush, engine) for engine in engines]
+            deadline = monotonic()+3
+            while committer.queue.qsize() < 6 and monotonic() < deadline:
+                threading.Event().wait(.005)
+            assert committer.queue.qsize() == 6
+            queued.set()
+            for future in futures:
+                future.result(timeout=3)
+        assert len(commits) == 1
+        assert all(not engine.samples and not engine.fills for engine in engines)
+        with store.connect() as db:
+            assert db.execute('SELECT count(*) FROM trade_progress_samples').fetchone()[0] == 6
+            assert db.execute('SELECT count(*) FROM trade_progress_fills').fetchone()[0] == 12
+            assert db.execute('SELECT count(*) FROM trade_progress_fill_revisions').fetchone()[0] == 12
+            scopes = [tuple(row) for row in db.execute('SELECT owner,account FROM trade_progress_positions ORDER BY owner,account')]
+            assert scopes == [(owner, account) for owner in ('other', 'owner') for account in range(1, 4)]
+    finally:
+        queued.set()
+        assert committer.stop()
+    with pytest.raises(RuntimeError, match='not running'):
+        committer.flush(engines[0])
+
+
+def test_group_commit_rolls_back_every_batch_and_retry_preserves_pending_samples(local, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from app.services.trade_progress_recorder import GroupCommitter
+    engines = [ready(account=account) for account in (1, 2)]
+    for engine in engines:
+        engine.position(pos() | {'accountId': engine.account}, T)
+    with store.connect(write=True) as db:
+        db.execute("CREATE TRIGGER fail_second BEFORE INSERT ON trade_progress_positions "
+                   "WHEN NEW.account=2 BEGIN SELECT RAISE(ABORT,'controlled failure'); END")
+    committer = GroupCommitter()
+    original_get = committer.queue.get
+    queued = threading.Event()
+    monkeypatch.setattr(committer.queue, 'get', lambda *a, **kw: (queued.wait(3), original_get(*a, **kw))[1])
+    committer.start()
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(committer.flush, engine) for engine in engines]
+            deadline = monotonic()+3
+            while committer.queue.qsize() < 2 and monotonic() < deadline:
+                threading.Event().wait(.005)
+            assert committer.queue.qsize() == 2
+            queued.set()
+            for future in futures:
+                with pytest.raises(sqlite3.IntegrityError):
+                    future.result(timeout=3)
+        assert all(len(engine.samples) == 1 and engine.dirty for engine in engines)
+        with store.connect(write=True) as db:
+            assert db.execute('SELECT count(*) FROM trade_progress_positions').fetchone()[0] == 0
+            assert db.execute('SELECT count(*) FROM trade_progress_samples').fetchone()[0] == 0
+            db.execute('DROP TRIGGER fail_second')
+        for engine in engines:
+            committer.flush(engine)
+        with store.connect() as db:
+            assert db.execute('SELECT count(*) FROM trade_progress_positions').fetchone()[0] == 2
+            assert db.execute('SELECT count(*) FROM trade_progress_samples').fetchone()[0] == 2
+    finally:
+        queued.set()
+        assert committer.stop()
+
+
+def test_group_commit_shutdown_drains_accepted_batch_before_releasing_writer(local, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from app.services.trade_progress_recorder import GroupCommitter
+    engine = ready()
+    engine.position(pos(), T)
+    entered, release = threading.Event(), threading.Event()
+    write = engine.write_pending
+    def blocked_write(db, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        return write(db, **kwargs)
+    monkeypatch.setattr(engine, 'write_pending', blocked_write)
+    committer = GroupCommitter()
+    committer.start()
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            flushing = pool.submit(committer.flush, engine)
+            assert entered.wait(3)
+            stopping = pool.submit(committer.stop)
+            assert committer.halt.wait(3)
+            assert not stopping.done() and not flushing.done()
+            with pytest.raises(RuntimeError, match='not running'):
+                committer.flush(engine)
+            release.set()
+            flushing.result(timeout=3)
+            assert stopping.result(timeout=3)
+        with store.connect() as db:
+            assert db.execute('SELECT count(*) FROM trade_progress_samples').fetchone()[0] == 1
+    finally:
+        release.set()
+        assert committer.stop()

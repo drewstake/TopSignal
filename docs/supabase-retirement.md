@@ -1,10 +1,11 @@
 # Supabase retirement maintenance procedure
 
-**Prepared November 13, 2026; not executed.** Production still runs
-`20261112-auto-signin-87`. The maintenance restriction recorded in
-[the trade-pipeline audit](audits/2026-11-13/trade-pipeline.md) remains in force.
-The [remediation receipt](audits/2026-11-13/storage-remediation.md) distinguishes
-verified recovery copies, candidate code and deployed behavior.
+**Executed during the authorized November 13, 2026 maintenance window.**
+See the [maintenance receipt](audits/2026-11-13/storage-maintenance.md) for the
+actual release, mirror transition, dedicated login retirement, enrollment and
+recovery evidence. Earlier audits describe the pre-maintenance baseline.
+This procedure remains recovery guidance, not permission to repeat provisioning,
+retirement or enrollment blindly. Remaining acceptance work is recorded separately.
 
 ## Prerequisites and review
 
@@ -25,10 +26,10 @@ Include changed independent modules in `companion_files`; the release refuses
 activation until their separately reviewed rollout matches. In particular:
 
 - Recorder: `record_market_depth.py`, `recorder_startup.py`, `depth_recording.py`,
-  `depth_contract_totals.py` and their existing imports. Preserve all original
+  `depth_totals.py` and their existing imports. Preserve all original
   recorder bounds, contract selection, owner and bot configuration 32.
 - Remote history helpers: `read_depth_history.py`, `depth_history_index.py`,
-  `recording_inventory.py`, `depth_heatmap.py` and existing dependencies.
+  `recording_inventory.py`, `depth_heatmap.py`, `read_session_flow.py` and existing dependencies.
 - Host backup: `backup_market_cache.py`, `backup_io.py`; execution backup uses
   `run_execution_backup.py`, `runtime_configuration.py`, crypto/dump modules and
   its existing private key/configuration. Upgrade the off-device archive runner
@@ -68,7 +69,7 @@ archives. Full-cache catch-up is a separately permitted low-load transfer:
 
 - Existing source `D:/TopSignal/data/databento`; existing protected off-device
   destination and capacity limit from `scheduled-backup-config.json` remain.
-- Start with `max_mib_per_second: 2`, the host recorder `recorder_status` path,
+- The closed-market catch-up uses `max_mib_per_second: 8`, the host recorder `recorder_status` path,
   and the existing bounded remote deadline. Pacing applies to host copy/hash,
   SQLite warm-up/online-backup steps, packing and SCP transfer. Unknown/stale/
   unhealthy recorder status or stalled inventory defers the attempt.
@@ -124,9 +125,10 @@ completed **before** the application release's uninterrupted-recorder baseline.
 2. Apply the prepared fill-leg migration through the existing migration runner.
    Preserve old rows; do not invent one-second paths. Perform migration/readiness
    checks required by the immutable release workflow.
-3. Stage/activate the exact CI-approved application bundle with mirroring still
-   active. The candidate accepts the current captured state; the old release
-   remains a valid rollback target during this first switch. Verify served bytes,
+3. Stage/activate the exact CI-approved application bundle. Verify compatibility
+   of the migration ledger and retirement state before selecting any rollback.
+   Release 87 rejects the new fill-leg migration even before mirror retirement;
+   it is not a valid routine rollback. Verify served bytes,
    local auth and local recorder operation. Retain expected restart disarming;
    never rearm automatically. Only after that succeeds, recheck exposure/orders
    and gracefully stop candidate writers for the separate storage transition.
@@ -164,11 +166,16 @@ completed **before** the application release's uninterrupted-recorder baseline.
    consumers have been excluded and replacement admin recovery is verified.
    Do not delete the Supabase project, Auth users, audit records or objects.
 
-The two October 22 one-shot check tasks have no next run; preserve their scripts
-and export/disable these obsolete task definitions in the permitted cleanup.
-The Discord v5 helper already reads local PostgreSQL; verify its active config
-and restart behavior without sending any diagnostic message. Disabled old helpers
+The two October 22 one-shot check tasks were exported and disabled. Discord v5
+restarted using `discord-local-storage-20261113/config.json` and its minimal
+protected environment containing only local DATABASE_URL; its read-only check
+and fresh `watching` state passed without diagnostic messages. Disabled helpers
 and immutable historical environments are recovery material, not active fallbacks.
+
+Keep scheduler priority 4 on the API and independent recorder tasks. The default
+priority 7 gave both background I/O/memory priority and contributed to observed
+contention. Both installers now set 4; preserve their limited service identity,
+boot/retry triggers, ACLs and all recording/storage limits when restoring them.
 
 Rollback after mirror retirement is a **storage transition**, not a blind switch
 to release 87. The old backend expects capture triggers enabled. Leave execution

@@ -1,17 +1,14 @@
 # Local-first storage migration
 
-The November 3 execution cutover used `20261103-local-execution-45`; that release
-is historical. The [November 13 live audit](audits/2026-11-13/peteamdpc-health.md)
-found `20261112-auto-signin-87`, PostgreSQL at loopback port 5433/database
-`topsignal`, and the same active local execution authority. Supabase is
-**partially retired**. Preserve cloud writer fences and the
-[original migration evidence](audits/2026-11-02/local-first-storage.md).
-
-The [prepared retirement procedure](supabase-retirement.md) covers local-only
-recorder permissions, auth, Journal recovery, mirror fencing and current-release
-backup selection. It has not been activated; the deployed boundaries below are
-the November 13 baseline. Current archive/restore and candidate test receipts are
-in [storage remediation](audits/2026-11-13/storage-remediation.md).
+The November 13 maintenance deployed local-only application and helper paths on
+peteamdpc. PostgreSQL at loopback port 5433/database `topsignal` remains the sole
+execution authority. The mirror was drained and retired, with producer triggers
+disabled, both dedicated logins set NOLOGIN, and authority/cloud fences retained.
+See [dated maintenance evidence](audits/2026-11-13/storage-maintenance.md) and
+[the retirement/recovery procedure](supabase-retirement.md). The earlier
+[live audit](audits/2026-11-13/peteamdpc-health.md) is the pre-maintenance baseline.
+Final load, full-cache restore and disconnected/reboot acceptance remain tracked
+in the maintenance record; running processes alone do not establish completion.
 
 ## Storage boundaries
 
@@ -25,20 +22,19 @@ in [storage remediation](audits/2026-11-13/storage-remediation.md).
 - Execution state uses one PostgreSQL authority. Authentication remains separate
   and ownership, risk, order-idempotency and worker-lease checks still apply.
 - Hosted sign-in uses local `trusted_device` authentication and protected SQLite
-  state at `C:/ProgramData/TopSignal/runtime/local-auth/auth.sqlite3`. Supabase
-  Auth/JWKS and the frontend cloud client remain configured for alternative cloud
-  sign-in; local sessions do not refresh through Supabase.
-- Supabase remains the configured journal object-storage provider and active
-  asynchronous compact-record mirror. It is never an execution fallback. Cloud
-  outages still affect cloud sign-in/token refresh, remote journal images and
-  mirror catch-up independently of local authentication.
-
-On peteamdpc the preserved independent recorder currently loads its configuration
-and provider credentials from the cloud read-only at process startup, then closes
-the database connection. That is a separate remaining cloud dependency: an
-already running recorder and a recorder restart during a cloud outage have
-different recovery requirements. Do not claim recorder outage/restart independence
-from main-application tests.
+  state at `C:/ProgramData/TopSignal/runtime/local-auth/auth.sqlite3`. The active
+  frontend/backend have no cloud OAuth, refresh or JWKS dependency. Local sessions
+  remain owner-scoped, loopback/tunnel-bound, expiring and revocable.
+- Journal UI/API/background work is removed. Its 31 records, nine image references
+  and three image objects are preserved in verified encrypted local and off-device
+  archives. Historical database tables and cloud audit/user data remain retained.
+- The independent recorder uses `storage-remediation-v2`, its minimal protected
+  `.env.recorder`, and local `topsignal_depth_recorder` read-only role. It reads
+  configuration 32 and its owner's credential under RLS without initializing the
+  application database. Both live-routing flags remain false.
+- Discord uses a minimal local-only environment. The daily execution backup
+  resolves the active immutable application task rather than a pinned old release.
+  Retired mirror configuration/credentials remain protected recovery material.
 
 Research routing fails closed if the configured store is missing or incomplete.
 Cross-store SQL joins and textual research queries are rejected. Explicit model

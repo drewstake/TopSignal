@@ -14,6 +14,74 @@ from .trade_progress import ProgressEngine
 logger = logging.getLogger(__name__)
 
 
+class GroupCommitter:
+    """One durable commit for concurrently waiting, still account-scoped batches.
+
+    An account writer waits until its batch commits or rolls back, so its engine
+    cannot mutate pending observations during serialization. Socket callbacks
+    continue to use each account's existing bounded event queue.
+    """
+    def __init__(self):
+        self.queue = Queue(maxsize=32)
+        self.halt = threading.Event()
+        self.lifecycle = threading.Lock()
+        self.thread = threading.Thread(target=self.run, name='trade-progress-commit', daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def stop(self):
+        with self.lifecycle:
+            self.halt.set()
+        self.thread.join(timeout=5)
+        return not self.thread.is_alive()
+
+    def flush(self, engine, **kwargs):
+        request = dict(engine=engine, kwargs=kwargs, done=threading.Event(), error=None)
+        with self.lifecycle:
+            if self.halt.is_set() or not self.thread.is_alive():
+                raise RuntimeError('Trade progress committer is not running')
+            try:
+                self.queue.put_nowait(request)
+            except Full as exc:
+                raise RuntimeError('Trade progress commit queue is full') from exc
+        # Do not time out and retry a transaction whose outcome is still unknown.
+        # This has the same fsync lifetime as direct SQLite commit; queued input
+        # remains bounded and shutdown keeps the manager lease until it finishes.
+        request['done'].wait()
+        if request['error'] is not None:
+            raise request['error']
+
+    def run(self):
+        while not self.halt.is_set() or not self.queue.empty():
+            try:
+                first = self.queue.get(timeout=.1)
+            except Empty:
+                continue
+            requests = [first]
+            until = monotonic()+.05
+            while len(requests) < 32:
+                remaining = until-monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    requests.append(self.queue.get(timeout=remaining))
+                except Empty:
+                    break
+            try:
+                with store.connect(write=True) as db:
+                    for request in requests:
+                        request['engine'].write_pending(db, **request['kwargs'])
+                for request in requests:
+                    request['engine'].accept_commit()
+            except Exception as exc:
+                for request in requests:
+                    request['error'] = exc
+            finally:
+                for request in requests:
+                    request['done'].set()
+
+
 class RecordingTracker:
     """The hub's small tracker interface, with no execution lifecycle sink."""
     def __init__(self, worker):
@@ -35,12 +103,13 @@ class RecordingTracker:
 
 
 class AccountRecorder:
-    def __init__(self, owner, account, points, client_factory, *, market=None):
+    def __init__(self, owner, account, points, client_factory, *, market=None, committer=None):
         from .projectx_hubs import ProjectXHubRunner
         from .projectx_streaming_runtime import StreamingRuntime
         self.owner, self.account, self.points = owner, account, points
         self.client_factory = client_factory
         self.market = market
+        self.committer = committer
         self.queue = Queue(maxsize=20000)
         self.overflow = threading.Event()
         self.stop_event = threading.Event()
@@ -120,6 +189,8 @@ class AccountRecorder:
         # waits and attempts are bounded; disk/schema errors still fail closed.
         for attempt in range(4):
             try:
+                if self.committer is not None:
+                    return self.committer.flush(engine, **kwargs)
                 return engine.flush(**kwargs)
             except Exception as exc:
                 with self.metrics_lock:
@@ -222,7 +293,7 @@ class AccountRecorder:
                         self.metrics.update(last_commit_seconds=elapsed,
                             max_commit_seconds=max(elapsed,self.metrics['max_commit_seconds']),
                             last_successful_write=store.now())
-                    last_flush = at
+                    last_flush = store.now()
                 self.stop_event.wait(.05)
             except Exception as exc:
                 # Reload only committed state. A failed transaction never advances
@@ -236,7 +307,7 @@ class AccountRecorder:
             try:
                 store.verify_destination()
                 engine.gap("recorder_stopped", store.now())
-                engine.flush(error="recorder_stopped")
+                self.flush(engine, error="recorder_stopped")
             except Exception as exc:
                 logger.error("trade_progress_final_flush_failed error_type=%s", type(exc).__name__)
 
@@ -320,6 +391,8 @@ class TradeProgressRecorder:
     def run_owned(self):
         from ..models import Account
         from .instruments import build_point_value_lookup, load_instrument_specs
+        committer = GroupCommitter()
+        committer.start()
         try:
             while not self.stop_event.is_set():
                 wanted = set()
@@ -334,7 +407,8 @@ class TradeProgressRecorder:
                             if owner not in self.markets:
                                 self.markets[owner] = SharedRecorderMarket(owner,lambda owner=owner:self.client(owner))
                             market = self.markets[owner]
-                            worker = AccountRecorder(owner,account,points,lambda owner=owner: self.client(owner),market=market)
+                            worker = AccountRecorder(owner,account,points,lambda owner=owner: self.client(owner),
+                                                     market=market,committer=committer)
                             market.add(worker)
                             self.workers[owner,account] = worker
                             worker.start()
@@ -361,3 +435,5 @@ class TradeProgressRecorder:
                 while not market.runtime.stop():
                     self.stop_event.wait(1)
             self.markets.clear()
+            while not committer.stop():
+                self.stop_event.wait(1)

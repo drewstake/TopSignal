@@ -191,3 +191,38 @@ subtests, but one unrelated frontend CSV-import test timed out awaiting its
 confirmation dialog. The unchanged six-test CSV-import file passed immediately
 in isolation. The next complete candidate must pass all release checks anew;
 the failed validation directory is retained.
+
+
+## Release 93 and grouped-commit follow-up
+
+Release `20261113-local-storage-93` (`9010312`) completed immutable activation at
+22:41:56 UTC after all six CI jobs, 3,429 backend tests plus eight subtests,
+1,291 frontend tests, 47 deployment checks, lint, audits and build passed. The
+independent recorder retained its PID/capture. A fresh six-account provider read
+at 22:42:32 UTC found zero positions/orders and all six currently trade-enabled;
+29672001's provider flag changed since the earlier observation. Config 40 remains
+disabled/run 18 stopped. No broker mutation was made.
+
+Under the concurrent full-cache backup, recent lower history returned HTTP 200
+in 1.828 seconds, but full-session requests returned bounded 503 at 20 seconds
+on both attempts. The upper summary returned 200 in 17.812 seconds and session
+flow returned bounded 503 in 12.047 seconds while retaining scan progress. The
+125-second Future/500 failure is fixed; full-session delivery acceptance is not
+complete. Profiling attributed 14.423 of 20.094 seconds to 539 manifest reads.
+
+All six recorders were currently healthy/flat at 22:44 UTC, but bounded BUSY
+retries still accumulated and 29671908 had one exhausted commit attempt. Separate
+FULL-synchronous heartbeat commits compete on the HDD. The prepared next change
+collects simultaneously waiting account batches for at most 50 ms and commits
+them in one SQLite transaction. Owner/account boundaries and per-leg revisions
+remain unchanged; pending batches clear only after a successful durable commit.
+A rollback preserves every pending batch for bounded retry. Callback queues stay
+bounded, and shutdown retains the manager lease until accepted writes finish.
+Regression checks cover six accounts across two owners, shared broker leg IDs,
+whole-group rollback/retry and shutdown draining. This is not deployed until its
+own complete release and exact-commit CI pass.
+
+The scheduled execution backup at 22:45 UTC successfully resolved release 93,
+covering 38 tables and 13,078 rows. Its off-device restore is still pending.
+The separate full-cache snapshot continues; the November 4 receipt remains the
+last verified full-cache recovery until the new snapshot is restored off device.
