@@ -427,7 +427,10 @@ def pack(root, output):
     # member. Re-reading this entire tar here only repeats HDD work.
     with output.open('xb') as transport:
         writer = HashingWriter(transport)
-        with tarfile.open(fileobj=writer, mode='w') as archive:
+        # tarfile defaults to 16 KiB reads. With coarse Windows timer ticks,
+        # pacing each such read reduces an 8 MiB/s cap to about 1 MiB/s.
+        # Match ordinary copies' bounded 1 MiB chunks; byte/health guards remain.
+        with tarfile.open(fileobj=writer, mode='w', copybufsize=1024**2) as archive:
             for name in members:
                 with (root/name).open('rb') as stream:
                     archive.addfile(archive.gettarinfo(root/name, arcname=name), PacedReader(stream,io_checkpoint))

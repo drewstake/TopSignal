@@ -31,6 +31,29 @@ def test_transport_hash_covers_headers_padding_and_payload_without_readback(tmp_
         tool.pack(snapshot,output)
 
 
+def test_transport_pacing_remains_useful_with_coarse_windows_timers(tmp_path, monkeypatch):
+    import math
+    from tools import backup_market_cache as tool
+    from tools.backup_io import BackupIO
+    source = tmp_path/'source'; source.mkdir()
+    payload = b'evidence' * (4 * 1024 * 1024 // 8)
+    (source/'evidence.bin').write_bytes(payload)
+    snapshot = tmp_path/'snapshot'
+    tool.backup(source, snapshot)
+    elapsed = [0.0]
+    # Observed on the host: a requested 2 ms sleep takes one 15.625 ms tick.
+    # A 16 KiB tar read consequently turns an 8 MiB/s cap into 1 MiB/s.
+    def sleep(seconds):
+        elapsed[0] += math.ceil(seconds / .015625) * .015625
+    monkeypatch.setattr(tool, '_IO_GUARD', BackupIO(8, clock=lambda: elapsed[0], sleep=sleep))
+    output = tmp_path/'transport.tar'
+    receipt = tool.pack(snapshot, output)
+    assert .5 <= elapsed[0] < 1.5  # Preserve the cap without a per-small-read timer penalty.
+    assert hashlib.sha256(output.read_bytes()).hexdigest() == receipt['sha256']
+    with tarfile.open(output) as archive:
+        assert archive.extractfile('evidence.bin').read() == payload
+
+
 def test_wal_snapshot_finishes_under_continuous_external_writes(tmp_path):
     from tools.backup_market_cache import backup_sqlite
     path = tmp_path / 'busy.sqlite3'
