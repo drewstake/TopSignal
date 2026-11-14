@@ -24,7 +24,7 @@ remain inactive; starting a practice run explicitly installs the new preset.
 
 TopSignal opens to the account dashboard. The shared navigation includes Dashboard, Accounts, Trades, Expenses, Bot, Backtesting, and Appearance. Bot contains Overview and Logs views.
 
-Run `npm run dev` and open `http://localhost:5173`. This starts both the configured local-auth workspace and the ProjectX-connected offline workspace at `http://127.0.0.1:5174`, so Continue offline works from the sign-in page. Local live orders are disabled. Each frontend starts after its backend is ready with the matching API address. The dashboard opens at `/` and `/dashboard`. TopBot diagnostics and service logs are available under Bot → Logs.
+Use the hosted URL above for the authoritative workspace. For development, first configure an isolated local database and local trusted-device authentication; an old private `.env` may still contain retired cloud settings and must not be treated as a working development profile. Then run `npm run dev` and open `http://localhost:5173`. The launcher also starts the ProjectX-connected offline workspace at `http://127.0.0.1:5174`, with local live orders disabled. Each frontend waits for its matching backend. The dashboard opens at `/` and `/dashboard`; TopBot diagnostics are under Bot / Logs.
 
 The dev launcher checks `/ready/dev`. When its local worker and both live-order
 flags are explicitly disabled, this checks database/schema readiness without
@@ -72,7 +72,7 @@ ProjectX exposes account and trade data, but the raw provider API is not a good 
 
 It is built for traders who want to:
 
-- keep a local or cloud-backed history of their ProjectX trades
+- keep a durable local history of their ProjectX trades with off-device recovery copies
 - analyze performance without re-querying the provider for every page load
 - understand risk, drawdown, expectancy, and pacing in plain numbers
 - track real cash costs such as evaluation fees, activations, resets, data fees, and actual payouts
@@ -255,7 +255,7 @@ This combine tracker is implemented on the frontend and is not a standalone back
 Journal is no longer an active feature. The November 13 recovery archive contains
 31 entries and nine image references, with all referenced contents verified.
 Historical table definitions and immutable migrations remain for recovery.
-The current hosted release still exposes old APIs until candidate activation.
+Hosted release 99 removes the old APIs; the served Journal routes return 404.
 
 ### Bot
 

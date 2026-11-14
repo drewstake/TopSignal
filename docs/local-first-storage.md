@@ -166,11 +166,13 @@ existing off-device archive pull transports these with research and source data.
 Publication is not off-device verification: check that pull's receipt and
 periodically perform a full isolated PostgreSQL restore too.
 
-The cache backup CLI uses Windows background resource scheduling to reduce
-disk/memory contention with the recorder and local SQLite. CPU priority alone
-does not control that contention. Monitor live response times during the first
-full backup after adding a large store; retain existing verified snapshots if a
-manual verification run must be stopped.
+The cache backup CLI uses BelowNormal Windows CPU priority with normal I/O
+and memory priority. Background resource mode starved ordinary file copies and
+SQLite reads on the recording HDD during the November 13 catch-up. Explicit byte
+pacing and recorder-health admission bound disk work; the closed-market profile
+uses 8 MiB/s. Monitor recording loss, response times and actual disk load, including
+unrelated processes. Retain existing verified snapshots and incomplete staging
+when an attempt fails; a focused backup never substitutes for full-cache recovery.
 
 `run_market_archive_backup.py` accepts `remote_timeout_seconds` in its private
 configuration, bounded from 120 to 7,200 seconds. Increase this deliberately for

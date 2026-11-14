@@ -5,6 +5,23 @@ market close. MNQ futures continue through 5 p.m.; fresh broker checks, recovery
 gates and existing execution safeguards still apply. This receipt records work
 in progress and does not declare Supabase retired.
 
+## Current checkpoint — November 14, 02:54 UTC
+
+The sections below preserve the maintenance chronology, including failed attempts;
+their earlier release numbers and pending items are not the current runtime.
+
+| Area | Verified state at this checkpoint |
+| --- | --- |
+| Application | Immutable release `20261113-local-storage-99`, commit `2ba78b62f04bf67c4ec6036e71efcd8be9702c5b`, active since November 13 23:46 UTC; all six exact-commit CI jobs passed |
+| Account recording | Six owned accounts enrolled, healthy, with zero new commit failures, BUSY retries, discarded observations or queued events in the 02:52 check; historical losses remain recorded below |
+| History and UI | Served account switching, explicit invalid links, Journal removal, upper heatmap and lower history verified; full-session response 11.985 s cold / 1.250 s warm under backup load |
+| Runtime storage | Application, auth, recorder, Discord and execution backup use protected local stores; mirror retired, outbox empty, dedicated logins disabled, authority fences retained |
+| Independence | Five-minute development-PC network isolation passed; actual host reboot/autostart verification remains pending |
+| Recovery | Journal archive and final 36-member configuration archive verified off device; PostgreSQL/auth isolated restore passed at 00:44 UTC and must be refreshed for the reboot freshness gate |
+| Full cache | Original attempt preserved after SQLite failure; continuation `20261114T021916Z-9270ec34` is running, with 22,347 raw files / 6,193,328,940 bytes staged at 02:54 UTC; off-device verification and isolated replay restore are still required |
+| Backup helper | Protected v8 matches `781659c2c94c29b971020f14125b956a91dc0148`; 32 focused checks, six CI lanes and isolated host copy/transport verification passed; the active continuation remains pinned to v6 |
+| Remaining acceptance | Complete full recovery verification, enable reviewed weekly pull, refresh PostgreSQL/auth recovery, perform gated unforced reboot, verify automatic startup/auth and finish session-flow derivation |
+
 ## Recovery and preparation
 
 The original immutable candidate `053e0c6` passed all six CI jobs, 3,411 backend
@@ -428,3 +445,157 @@ file copies as well as SQLite pages. Closed SQLite integrity copies are paced as
 well. Source, WAL consistency, checksum, authority, capacity and retention rules
 are unchanged. The active application remains release 99; helper rollout and the
 full off-device/restore result are recorded separately below when verified.
+
+## Final configuration recovery scope — November 14, 00:29 UTC
+
+Release 99 configuration was archived at 00:28:45 UTC and independently decrypted
+and verified off device at 00:29:26 UTC. Snapshot `20261114T002845Z` contains
+**36 members, including eight permanent scheduled tasks**, in 125,324 encrypted
+bytes; ciphertext SHA-256 is
+`afd622504a8e8367f1648daf462105a0b2b937a85db07844dc65255fe43848f2`.
+Every member's size and hash matched. The temporary reboot observer was excluded.
+
+The earlier 21-member archive omitted some host recovery material. This final
+archive adds PostgreSQL server/HBA/identity configuration, protected local admin
+and role configuration, the original machine-bound service credential, and a
+portable service-credential record inside the authenticated encryption envelope.
+The deployment credential was decrypted only in memory and never written or
+printed in plaintext. The replacement-host recovery copy can decrypt this record;
+the original DPAPI blob alone would not establish that. Retired mirror environment
+files remain inert recovery evidence, not runtime configuration.
+
+Host: `D:/TopSignal/data/databento/configuration-recovery-v1/20261114T002845Z`.
+Off device: `C:/Users/drews/.ssh/topsignal-local-first-20261102/configuration-recovery/20261114T002845Z`.
+The off-device receipt is also beside the host archive. Preserve the separately
+protected recovery key: the archive cannot decrypt itself. This configuration
+archive complements the consistent PostgreSQL/auth dump and full-cache snapshot;
+it does not replace either one or automatically provision execution authority.
+
+The backup helper at `tools/backup-remediation-v4` matches commit
+`77ca014d67c414fa542bd1c2630e56b1e3d2c7c3`, with all six CI jobs successful
+(run 43532730256). At 00:21:07 UTC an isolated Windows fixture copied and verified
+4,464,640 bytes / two files, restored SQLite content/integrity, and observed
+BelowNormal CPU with normal I/O/memory priorities. Its 1 MiB/s verification cap
+produced a 14-second run. Production data was untouched. The future recurring
+profile remains 8 MiB/s; its prepared configuration is v21 and local runner v20.
+The ongoing full snapshot still uses v20/v3 plus the recorded in-place priority
+correction. Schedule enablement awaits full off-device/restore success.
+
+## Latest focused recovery and concurrent load — November 14, 00:44 UTC
+
+The permanent execution-backup task resolved the actual release-99 environment
+and created `20261114T004150Z-1d701a7a1e05` at 00:41:51 UTC, publishing at
+00:44:02 under concurrent full-cache/Plex disk load. The 24,058,916-byte encrypted
+dump covers 38 tables / 13,078 rows. An isolated off-device restore completed at
+00:44:41 UTC in `topsignal_audit_local_storage_20261114_1`: all row/sequence hashes
+matched, one provider credential decrypted, execution authority was absent, and
+local-auth issuance/restart/revocation passed with zero network calls. Dump hash:
+`f497b6758907e0e23ea6b04064e9ad6b1878b711590cf1d8ded6033190a5535d`.
+The receipt was returned beside the host ciphertext files. The disposable local
+PostgreSQL server on loopback port 55432 was then stopped gracefully.
+
+Host bundle: `D:/TopSignal/data/databento/execution-backups-v1/20261114T004150Z-1d701a7a1e05`.
+Off-device bundle: `C:/Users/drews/.ssh/topsignal-local-first-20261102/remediation-backups/20261114T004150Z-1d701a7a1e05`.
+The local pre-restore capacity check found 1.164 TB free against a 65 MB database
+growth estimate; previous audit databases and backups were retained.
+
+A further 20-sample window at 00:32:35–00:34:40 UTC measured CPU median 7.5%,
+available RAM median 1,830 MiB (minimum 1,790), and API private memory 1,095.0–
+1,095.1 MiB. D: read latency was 49.72 ms median / 155.65 ms p95; write latency
+48.81 / 135.27 ms; queue median 7 / p95 13. This later mixed Plex/archive workload
+was heavier than the earlier served-history window; the earlier 7.99 ms read
+median is not a permanent latency guarantee. At 00:26:37 all six recorders were
+healthy with zero commit failures, BUSY retries, discarded events or queued
+observations; maximum observed commit time was 3.047 seconds. These closed-market
+checks establish observed readiness, not new live-position capture completeness.
+
+## Transport helper and preserved snapshot — November 14, 01:23 UTC
+
+The original full snapshot exceeded its two-hour SSH wait at 01:14 UTC. Both
+retries refused to overlap the still-running host process; their failure receipts
+are retained. The original snapshot was not killed or restarted. At 01:21 UTC it
+had reached the worker-evidence databases after copying the raw/totals, research,
+Journal archive and other earlier stores. Transfer, complete receiver verification
+and isolated replay restore are still required at this checkpoint.
+
+Helper commit `abbf31761a6de65e09a619fa7f7f2949166d2c18` passed all six CI lanes
+(run 43539463205). Its transport writer hashes tar headers, payloads and padding
+as written, avoiding a second complete HDD read. The receiver still checks the
+transport hash before extraction and every reconstructed member afterward.
+The 76 targeted evidence/recording/backup checks passed, with one environment
+skip. Two burst tests now wait for the asynchronous drain beyond `close()`'s
+bounded caller wait; every event and the durable hash chain remain checked.
+Application shutdown timing was not changed.
+
+Protected host helper `backup-remediation-v6` and off-device runner
+`scheduled-tools-v22` have exact source receipts. At 01:23:15 UTC the isolated
+Windows fixture verified a 4,474,880-byte tar against an independent file hash
+and all member hashes, after checking the two source files and restored SQLite
+contents. CPU priority was BelowNormal, with normal I/O and memory priority.
+Production data was untouched. The catch-up remains capped at 8 MiB/s and the
+capacity budget remains 250 GB. Future configuration v22 is prepared; its weekly
+schedule remains disabled until successful full verification and restore.
+
+At 01:17 UTC all six account recorders were healthy, with heartbeat ages below
+2.4 seconds and zero commit failures, retries, discarded events or queued work.
+
+## Preserved SQLite failure and continuation — November 14, 02:23 UTC
+
+The original snapshot stopped at 01:57:42 UTC with `OperationalError` while
+reaching worker capture `da176e7c91c3491b8b071c2ec321b125`. Its partial directory
+and failure receipt remain unchanged. That helper did not preserve the SQLite
+code, so the exact cause cannot be assigned from its receipt. A subsequent
+read-only open took 299.656 seconds to process the 2,792,503,072-byte WAL and
+succeeded: WAL mode, 4,096-byte pages, 178,311 logical pages and five schema
+entries. This is evidence of a successful open, not a complete integrity check.
+The source database/WAL modification times remain November 4/5; no application
+rows were changed by the diagnostic.
+
+Commit `571d82c323e61d19a59a627a7a337049f94de6d5` adds the cache-relative member
+and fixed SQLite error code/name to future failure receipts, without persisting
+arbitrary error text. All six CI lanes passed (43544787795), as did 31 focused
+backup checks. Protected helper `backup-remediation-v7` and matching off-device
+`scheduled-tools-v23` are prepared. An isolated host corruption fixture returned
+`SQLITE_NOTADB`/26 and the correct member at 02:23:13; production data was untouched.
+
+A tested continuation began in new staging directory
+`20261114T021916Z-9270ec34` at 02:19:18 UTC. It leaves the failed attempt intact,
+links unchanged completed files, checks raw segments against committed hashes
+on the receiver, hashes reused SQLite copies, and takes fresh online snapshots
+when sources changed or were unfinished. The already-opened large-WAL source
+still uses SQLite's online backup API; its redundant warm-up is skipped. Three
+isolated checks proved preservation, changed-source handling, exclusion of
+uncommitted rows, and rejection of corrupt partial raw bytes at verification.
+The first continuation launcher stopped during preflight because it counted its
+own Python launcher; it created no snapshot. The corrected launcher excludes
+only its exact parent running the same script.
+
+Capacity preflight measured 104,992,528,435 bytes of existing staging and allowed
+40,236,722,934 bytes of conservative growth within the unchanged 250 GB limit.
+The rate remains 8 MiB/s. The eventual transport tar will use the protected host
+SSD staging folder, whose 74.9 GB free space exceeded the estimate plus reserve;
+primary recordings and snapshots remain on D:. Full receiver verification,
+isolated restore, schedule enablement and reboot are still pending here.
+At 02:23 all six account recorders were healthy, with zero commit failures,
+retries, discarded observations or queued events.
+
+## Invariant-root I/O reduction — November 14, 02:45 UTC
+
+A live stack during the continuation's inventory scan showed filesystem work
+while repeatedly resolving invariant storage roots. Commit
+`781659c2c94c29b971020f14125b956a91dc0148` resolves those roots once per snapshot
+and resolves each marker once, while preserving member resolution, containment,
+size, hash and ownership checks. The regression fails against the prior helper
+(root resolutions grow from four for one segment to thirteen for four) and
+passes with the change; all 32 focused backup checks and all six CI lanes passed
+(43547234180). No running helper was modified.
+
+Protected helper `backup-remediation-v8` and matching off-device
+`scheduled-tools-v24` / configuration v24 are staged. At 02:45:31 UTC its isolated
+host fixture verified eight files including three sealed raw segments, SQLite
+contents, every file hash, and an independently checked 4,495,360-byte transport
+tar. Priorities remained BelowNormal CPU / normal I/O / normal memory. The
+continuation remains pinned to helper v6; packing, receiver verification and
+future scheduling are prepared against v8. At 02:43 the continuation had staged
+5,943 raw files / 2,051,414,915 bytes by reusing the preserved partial. This is
+progress evidence, not a completed backup receipt.
