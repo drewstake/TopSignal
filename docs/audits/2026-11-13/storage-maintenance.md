@@ -2,8 +2,114 @@
 
 The owner authorized the prepared maintenance after the 4 p.m. New York stock
 market close. MNQ futures continue through 5 p.m.; fresh broker checks, recovery
-gates and existing execution safeguards still apply. This receipt records work
-in progress and does not declare Supabase retired.
+gates and existing execution safeguards still apply. The application fixes are
+deployed; the current scope and deferred recovery/restart checks are recorded
+below. This receipt does not declare all original acceptance work complete.
+
+## Commit, push and deployment review — November 13, 23:03 New York
+
+The owner subsequently requested finishing commit/push/deployment review without
+the archive transfer. **Application release 99 is already deployed and healthy.**
+Comparison of commit `2ba78b62f04bf67c4ec6036e71efcd8be9702c5b` with
+`af4db13cb68eef3a61bad23bbbf8d71ce843cbb4` found no changes in `backend/app`,
+`frontend`, `scripts`, `db`, or the root package manifests. Subsequent changes
+are the separate cache-backup helper, its tests, and documentation. There is no
+new dashboard/API/database change requiring another application restart.
+
+Fresh served checks at 23:03 New York (04:03 UTC) returned HTTP 200 for health,
+readiness and worker health. The dashboard HTML and its JavaScript/CSS bytes
+exactly matched immutable release 99. Journal routes returned 404; recorder
+status returned 200; the diagnostic session signed out and was rejected with
+401 afterward. At 23:01 all six owned account recorders were healthy, with maximum
+heartbeat age 1.322 seconds and zero commit failures, retries, discarded events
+or queued observations. The application, independent recorder and Discord helper
+remained running; no optional maintenance process was active.
+
+The component inventory again verified loopback PostgreSQL configuration for
+the application, recorder, Discord and execution backup, local trusted-device
+authentication, no active cloud/Journal/Gemini settings, retired sync, an empty
+outbox, disabled capture triggers and retained authority fences. No reboot test
+was performed. The later backup helper is installed separately at protected v9
+and passed 33 focused checks, the isolated Windows fixture and all six CI jobs
+(43553484611); the archive job remains disabled and does not run this helper.
+
+The existing release-99 activation receipt remains the deployment receipt,
+including its completed broker, integrity, served-asset and recording gates.
+No redundant package/activation or weakened recovery gate was used for this
+documentation finish. The final commit retains the full maintenance chronology
+and pause checkpoint below. Archive transfer/full restore, schedule enablement,
+host-reboot acceptance and further session-flow warming remain deferred; none
+is represented as a completed check or silently restarted by this request.
+
+## Paused at the owner's request — November 14, 03:54 UTC
+
+**Maintenance is paused, not complete. The development PC can be shut down;
+peteamdpc must remain powered and connected for recording.** No host reboot,
+new rollout, backup transfer, restore, cache warm-up or schedule enablement was
+started after the pause request. The private dashboard connection will close
+when the development PC shuts down; host recording does not depend on it.
+
+At 03:56 UTC, the application, independent depth recorder and Discord helper
+were still running. All six account recorders were healthy at 03:55:28 UTC,
+with heartbeat ages below 1.91 seconds and zero new commit failures, BUSY retries,
+discarded observations or queued work. Release 99 and its settings remain active.
+The normal execution-backup task remains enabled/Ready. The cloud-sync task,
+temporary reboot observer and off-device archive schedule remain disabled.
+No optional maintenance backup, transport, fixture or warm-up process remained.
+
+The completed **59,635-file / 16,014,080,224-byte** source snapshot is preserved at
+`D:/TopSignal/archive-backup-staging/20261114T021916Z-9270ec34`. After verifying
+the exact executable, command, PID and creation time, only the unfinished tar
+writer (PID 14980) was terminated; its source snapshot had already completed at
+03:40 UTC. The local maintenance driver (PID 35600) was stopped first to prevent
+automatic retries or transfer. Its SSH child and the host writer/wrapper exited.
+Application, recorder and trading processes were not stopped.
+
+The partial tar is retained at
+`C:/ProgramData/TopSignal/staging/archive-transports-20261113/20261114T021916Z-9270ec34.tar`:
+636,866,048 bytes, SHA-256
+`2130a4b773e0b00adabb4a0e3b2d35bc8930f10caf26646c8f181ee3fb24ae03`.
+The completed source manifest remained unchanged (SHA-256
+`68f74ad237dbe19c67b635839c2103cc43162efd69a8b2f58214b5653752162c`).
+`packer-v8-paused.json` is beside the partial tar and copied to the development
+checkout's `tmp/remediation-20261113/`. No source, failed snapshot or partial tar
+was deleted. The new full snapshot is **not yet verified off device**; the last
+full-cache off-device restore remains November 4. The newer focused
+PostgreSQL/auth, configuration and Journal restore receipts below remain valid
+for their narrower scopes.
+
+The temporary pre-reboot diagnostic sign-in was revoked, its 401 rejection
+verified, and only its private token file removed. Other sessions were untouched.
+No reboot was requested; the host's observed boot remains October 29.
+
+Resume only when the owner asks. The precise machine checkpoint is
+`tmp/remediation-20261113/resume-99-state.json`. Resume work is:
+
+1. Revalidate the completed snapshot, preserved partial and helper v9 source/CI
+   (`af4db13cb68eef3a61bad23bbbf8d71ce843cbb4`, CI 43553484611 passed). Reuse
+   that completed snapshot; do not restart its long source-copy phase.
+2. Adapt the prepared `finish_continuation_backup_v9.py` to the actual
+   **pause** receipt (`packer-v8-paused.json`). Its current guard expects the
+   unused planned replacement receipt, so it must not be run unchanged. Pack to
+   the separate `.v9.tar`, then transfer, verify every file/SQLite database,
+   perform the isolated input/model restore and publish the verified receipt.
+3. Enable the reviewed daily 17:10 New York pull using configuration v26, runner
+   v25 and helper v9 only after full verification. The old weekly preparation is
+   obsolete. Refresh PostgreSQL/auth off-device restore evidence for the two-hour
+   reboot gate; the 00:41 backup is too old for that gate.
+4. Update the reboot gate's old snapshot ID to `20261114T021916Z-9270ec34` and
+   its protected source receipt, issue a fresh own diagnostic session, and obtain
+   fresh all-account flat/order checks before the already-authorized unforced
+   reboot. Verify automatic startup, auth persistence/revocation, all runtime
+   components and served UI; then finish bounded session-flow derivation.
+5. Update final acceptance documentation/PR and run required CI. Do not claim
+   full Supabase retirement or complete recovery acceptance before these checks.
+
+This chat's earlier Computer Use connection was released. A read-only cleanup
+check found shared native helper PID 73792 (created 00:50 UTC); the recent-chat
+inventory did not establish exclusive ownership, so it was preserved. This is
+the standing cleanup workaround's shared-ownership limitation, not a guaranteed
+fix for the application's capture-resource lifecycle bug.
 
 ## Current checkpoint — November 14, 02:54 UTC
 
@@ -20,7 +126,7 @@ their earlier release numbers and pending items are not the current runtime.
 | Recovery | Journal archive and final 36-member configuration archive verified off device; PostgreSQL/auth isolated restore passed at 00:44 UTC and must be refreshed for the reboot freshness gate |
 | Full cache | Original attempt preserved after SQLite failure; continuation `20261114T021916Z-9270ec34` is running, with 22,347 raw files / 6,193,328,940 bytes staged at 02:54 UTC; off-device verification and isolated replay restore are still required |
 | Backup helper | Protected v8 matches `781659c2c94c29b971020f14125b956a91dc0148`; 32 focused checks, six CI lanes and isolated host copy/transport verification passed; the active continuation remains pinned to v6 |
-| Remaining acceptance | Complete full recovery verification, enable reviewed weekly pull, refresh PostgreSQL/auth recovery, perform gated unforced reboot, verify automatic startup/auth and finish session-flow derivation |
+| Remaining acceptance | Complete full recovery verification, enable the reviewed pull schedule, refresh PostgreSQL/auth recovery, perform gated unforced reboot, verify automatic startup/auth and finish session-flow derivation |
 
 ## Recovery and preparation
 
@@ -599,3 +705,55 @@ continuation remains pinned to helper v6; packing, receiver verification and
 future scheduling are prepared against v8. At 02:43 the continuation had staged
 5,943 raw files / 2,051,414,915 bytes by reusing the preserved partial. This is
 progress evidence, not a completed backup receipt.
+
+## Backup cadence review — November 14, 03:34 UTC
+
+The prepared Saturday-only schedule was never enabled. Review found that it
+would exceed the application's existing 36-hour off-device freshness threshold
+between every run. That warning correctly describes recovery exposure and was
+not weakened. The replacement preparation preserves daily recovery, moving the
+former 18:15 start to **17:10 America/New_York**, during the regular futures
+maintenance break. This is a start time, not a guarantee that heavy work finishes
+before the next session; the 8 MiB/s limit and recorder-health admission remain.
+
+Private configuration v25 uses the same verified helper v8 and local runner v24;
+only its schedule description differs from v24. The daily enablement script
+passed PowerShell parsing and still requires the completed verified continuation,
+isolated restore and published receipt. Nothing has been enabled at this point.
+Snapshots reuse unchanged members, verify every reconstructed file off device,
+and run the isolated input/model restore at least weekly. The recovery PC must
+be on, signed in and privately connected. Capacity remains 250 GB with no
+automatic cleanup; retained attempts and daily growth still need review.
+
+## Completed source snapshot and transport timer finding — November 14, 03:49 UTC
+
+The continuation completed at **03:40:32.339875 UTC**. Its manifest, created at
+03:39:38.377069 UTC, contains **59,635 files / 16,014,080,224 bytes**, including
+28,546 sealed depth segments. It reuses 18,688 members from the verified November
+4 backup. The preserved failed attempt contributed 19,195 raw files, 20,813 other
+files and 39 SQLite copies; 26 SQLite databases were snapshotted afresh. The
+previously failing worker database produced a 730,361,856-byte consistent online
+copy. Manifest SHA-256:
+`68f74ad237dbe19c67b635839c2103cc43162efd69a8b2f58214b5653752162c`.
+This completes host staging, not off-device verification or restore.
+
+Transport packaging began at 03:42:12 UTC into the protected C: SSD directory.
+Its preflight measured 117,907,719,168 staging bytes and 75,494,543,360 bytes of
+SSD free space against a 16,277,233,009-byte conservative transport estimate.
+Observed throughput was about 1 MiB/s despite the configured 8 MiB/s cap.
+A memory-only host probe reproduced the cause: 16 KiB pacing steps took 2.000
+seconds for 2 MiB, while 1 MiB steps took 0.250 seconds. The host rounded the tiny
+requested sleeps to coarse timer ticks; this result did not depend on HDD load.
+
+Commit `af4db13cb68eef3a61bad23bbbf8d71ce843cbb4` changes tarfile's copy buffer
+to the same bounded 1 MiB chunks used by ordinary copies. The byte cap, health
+admission, hashing and receiver checks remain intact. A deterministic coarse-timer
+regression fails on the old packer (4.015625 seconds for 4 MiB), and all 33 focused
+backup checks pass with the change. Protected helper v9 and local runner v25 /
+daily configuration v26 are staged separately; the active v8 process was not
+modified. At 03:49:34 UTC the isolated host fixture verified every member, SQLite
+contents and the independent hash of a 17,858,560-byte tar in 2.422 seconds
+(7.023 MiB/s payload throughput). CPU/I/O/memory priorities remained 16384/2/5.
+Production data was untouched. Transport replacement still requires exact-commit
+CI and exact process identity checks; the completed snapshot and partial tar
+will be preserved. Final off-device verification and reboot remain pending here.
