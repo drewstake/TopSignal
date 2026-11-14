@@ -79,20 +79,6 @@ def test_sqlite_scratch_capacity_failure_preserves_sources(tmp_path, monkeypatch
     assert source.read_bytes() == original and not target.exists()
 
 
-def test_sqlite_priority_restores_background_mode_after_error(monkeypatch):
-    from tools import backup_market_cache as tool
-    calls = []
-    monkeypatch.setattr(tool, '_BACKGROUND_RESOURCES', True)
-    monkeypatch.setattr(tool, '_set_windows_priority', calls.append)
-    with pytest.raises(ValueError):
-        with tool._sqlite_priority():
-            assert not tool._BACKGROUND_RESOURCES
-            with tool._sqlite_priority():
-                raise ValueError('failed SQLite operation')
-    assert tool._BACKGROUND_RESOURCES
-    assert calls == [0x00200000, 0x00004000, 0x00100000]
-
-
 def test_integrity_uses_identical_scratch_bytes_and_preserves_original(tmp_path):
     from tools import backup_market_cache as tool
     source = tmp_path/'snapshot.sqlite3'
@@ -113,7 +99,7 @@ def test_integrity_refuses_corrupted_scratch_copy(tmp_path, monkeypatch):
     with closing(sqlite3.connect(source)) as db:
         db.execute('CREATE TABLE entries(id INTEGER PRIMARY KEY)'); db.commit()
     digest = tool.checksum(source)
-    monkeypatch.setattr(tool.shutil, 'copyfile', lambda src, dst: Path(dst).write_bytes(b'corrupt copy'))
+    monkeypatch.setattr(tool, 'paced_copy', lambda src, dst: Path(dst).write_bytes(b'corrupt copy'))
     with pytest.raises(ValueError, match='scratch checksum mismatch'):
         tool.verify_sqlite(source, digest, scratch=tmp_path)
     assert tool.checksum(source) == digest
@@ -437,3 +423,4 @@ def test_runner_requests_reuse_only_against_its_own_verified_backup(tmp_path, mo
     with pytest.raises(RuntimeError, match='stop after'):
         runner.attempt(config, previous=dict(previous, destination=str(tmp_path/'elsewhere')))
     assert '--previous' not in scripts[-1]
+

@@ -11,7 +11,7 @@ fully verified backup. A reused file is NOT re-read on this host; this is a
 backup, not a scrub of the source disk.
 """
 import argparse
-from contextlib import closing, contextmanager
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -23,7 +23,6 @@ import tempfile
 import time
 from datetime import datetime, timezone
 
-_BACKGROUND_RESOURCES = False
 _IO_GUARD = None
 SQLITE_SUFFIXES = {'.sqlite3', '.sqlite', '.db'}
 
@@ -49,23 +48,6 @@ def _set_windows_priority(value):
     kernel.SetPriorityClass.restype = wintypes.BOOL
     if not kernel.SetPriorityClass(kernel.GetCurrentProcess(), value):
         raise RuntimeError('Unable to set backup scheduling priority')
-
-
-@contextmanager
-def _sqlite_priority():
-    """Keep bulk work subordinate; avoid starving bounded SQLite operations."""
-    global _BACKGROUND_RESOURCES
-    if not _BACKGROUND_RESOURCES:
-        yield
-        return
-    _set_windows_priority(0x00200000)  # End background resource mode.
-    _BACKGROUND_RESOURCES = False
-    try:
-        _set_windows_priority(0x00004000)  # CPU stays below normal.
-        yield
-    finally:
-        _set_windows_priority(0x00100000)
-        _BACKGROUND_RESOURCES = True
 
 
 def filesystem_path(path):
@@ -132,7 +114,7 @@ def verify_sqlite(path, expected_sha256, *, scratch=None):
         scratch = system_temp
 
     def integrity(candidate):
-        with _sqlite_priority(), closing(sqlite3.connect(readonly_sqlite_uri(candidate), uri=True)) as db:
+        with closing(sqlite3.connect(readonly_sqlite_uri(candidate), uri=True)) as db:
             db.execute('PRAGMA cache_size=-131072')
             if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
                 raise ValueError('SQLite integrity failure: '+path.name)
@@ -148,8 +130,8 @@ def verify_sqlite(path, expected_sha256, *, scratch=None):
         assert owned.is_relative_to(scratch) and owned != scratch
         candidate = owned/'snapshot.sqlite3'
         # This is a closed backup file, never a live database. Copy and hash
-        # at background priority; only the SSD integrity scan raises I/O priority.
-        shutil.copyfile(path, candidate)
+        # with the same pacing as other backup reads.
+        paced_copy(path, candidate)
         if checksum(candidate) != expected_sha256:
             raise ValueError('SQLite integrity scratch checksum mismatch')
         integrity(candidate)
@@ -186,11 +168,6 @@ def source_state(path):
 
 
 def backup_sqlite(source, destination, *, progress=None, timeout_seconds=900):
-    with _sqlite_priority():
-        return _backup_sqlite(source, destination, progress=progress, timeout_seconds=timeout_seconds)
-
-
-def _backup_sqlite(source, destination, *, progress=None, timeout_seconds=900):
     """Bound a WAL snapshot so continuous writers cannot restart every step.
 
     WAL readers leave writers free to commit. For rollback-journal databases,
@@ -242,22 +219,19 @@ def snapshot_sqlite(path, target, *, scratch=None):
     # busy Windows HDD can starve even when the destination is an SSD. Warm
     # the bounded current file prefix using sequential reads first. These
     # bytes are never used as the backup: the online API supplies consistency.
-    # The warm-up itself must not run in background resource mode: with live
-    # recorders on the same disk a multi-gigabyte WAL then takes hours to read.
-    with _sqlite_priority():
-        for member in (path, wal):
-            try:
-                remaining = member.stat().st_size
-                with member.open('rb') as stream:
-                    while remaining:
-                        block = stream.read(min(8 * 1024 * 1024, remaining))
-                        if not block:
-                            break
-                        remaining -= len(block)
-                        io_checkpoint(len(block))
-            except FileNotFoundError:
-                if member == path:
-                    raise
+    for member in (path, wal):
+        try:
+            remaining = member.stat().st_size
+            with member.open('rb') as stream:
+                while remaining:
+                    block = stream.read(min(8 * 1024 * 1024, remaining))
+                    if not block:
+                        break
+                    remaining -= len(block)
+                    io_checkpoint(len(block))
+        except FileNotFoundError:
+            if member == path:
+                raise
     with tempfile.TemporaryDirectory(prefix='topsignal-sqlite-', dir=scratch) as directory:
         owned = filesystem_path(directory)
         assert owned.is_relative_to(scratch) and owned != scratch
@@ -467,12 +441,10 @@ def main():
     _IO_GUARD = BackupIO(args.max_mib_per_second,args.recorder_status)
     io_checkpoint()
     if os.name == 'nt':
-        # Bulk scans/copies yield I/O to live recording. Bounded SQLite steps
-        # temporarily retain normal I/O/cache priority and below-normal CPU;
-        # background resource mode starved their small page reads on the HDD.
-        global _BACKGROUND_RESOURCES
-        _set_windows_priority(0x00100000)
-        _BACKGROUND_RESOURCES = True
+        # Background resource mode starves both small reads and ordinary file
+        # copies on the recording HDD. Keep CPU below normal; the explicit byte
+        # rate and recorder-health guard bound disk work without starving it.
+        _set_windows_priority(0x00004000)
     if args.pack and args.output:
         print(json.dumps(pack(args.pack,args.output)))
         return

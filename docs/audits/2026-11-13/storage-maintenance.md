@@ -338,3 +338,93 @@ uses valid recorded observations inside the paused window, retains live-price
 following when returning live, and preserves manual price pan/zoom. The three
 affected heatmap test files pass. This correction still requires its own
 immutable release and served visual check.
+
+## Release 99 and served chart acceptance
+
+Release `20261113-local-storage-99` (`2ba78b62f04bf67c4ec6036e71efcd8be9702c5b`)
+completed guarded activation at 23:46:48 UTC. Exact-commit CI run 43528625164
+passed all six jobs. Local validation passed 3,435 backend tests plus eight
+subtests (21 intentional skips), 1,292 frontend tests, all 47 deployment checks,
+lint, dependency audits and production build. The initial local packaging
+invocation used the system Python without pytest; that failed before tests ran.
+Its receipt is preserved separately, and the complete successful run used the
+repository's existing virtual environment. All six provider accounts were flat
+with zero open orders at 23:44:10 UTC; activation repeated its own strict gates.
+
+The served session-open heatmap now centers on recorded prices and visibly
+renders depth bands, quote paths and executed-trade bubbles. Whole-session
+navigation renders the full retained session with explicit coverage gaps and
+the existing zoom-dependent bubble filter. Browser console errors were absent.
+The lower full-session chart was already visually verified on release 98 and
+its backend is unchanged in 99. Screenshots are preserved off device under
+`tmp/remediation-20261113/heatmap-chart-99.jpg`, `heatmap-session-99.jpg` and
+`history-chart-98.jpg`. All verification browser tabs were closed; a read-only
+process check found no native capture helper.
+
+Actual served Journal probes returned 404. A separately issued local test
+session read recording status successfully, signed out with 200, and was then
+rejected with 401. This did not revoke the user's browser session.
+
+At 23:46:24 UTC the application, recorder, Discord and backup database
+environments all selected loopback PostgreSQL and contained no active
+Supabase/Journal/Gemini bindings. The served frontend had no Supabase bindings.
+Trusted-device auth remained selected. The execution backup resolves the
+current scheduled release; the sync configuration remained retired. The
+outbox contained zero rows, all 30 capture triggers were disabled and all 30
+serialize/authority triggers enabled. The dedicated local sync login remained
+disabled. The recorder role remained non-superuser, NOINHERIT, without role/DB
+creation, limited to two connections and default read-only transactions.
+
+### Measured resource comparison
+
+These are 60-sample operational windows with different workloads, not a
+controlled causal experiment. The last window includes the full-cache snapshot,
+history delivery, flow aggregation and UI verification. API memory changed
+with these workloads; these short samples do not establish a memory leak.
+
+| Metric | Initial 19:08–19:20 UTC | Final backend 23:32:59–23:44:22 UTC |
+| --- | ---: | ---: |
+| CPU median / p95 | 10% / 37% | 10.5% / 29% |
+| Available RAM median / minimum | 2,106.5 / 1,082 MiB | 1,839 / 1,484 MiB |
+| API private memory median | 1,188.5 MiB | 1,175.3 MiB |
+| D: read latency median / p95 | 46.674 / 117.522 ms | 7.990 / 40.256 ms |
+| D: write latency median / p95 | 33.557 / 111.498 ms | 4.009 / 42.731 ms |
+| D: queue median / p95 / maximum | 6 / 14 / 17 | 1 / 7 / 8 |
+
+Release 98's 23:39:55 load check still showed zero BUSY retries, failed commits,
+discarded callbacks, snapshot failures or queued events for all six accounts;
+maximum commit latency was 1.719 seconds. Release 99's first six-account check
+also showed zero in those failure/loss counters. Prior callback losses recorded
+above remain historical losses; process restarts resetting counters do not
+erase them. Depth PID 17264 stayed running throughout these application switches,
+with eight reconnect errors unchanged. A second recoverable status-publication
+PermissionError occurred at 23:39:20 UTC; it did not terminate recording, and
+fresh status publication resumed.
+
+The host power inspection found AC sleep and hibernation disabled, automatic
+PostgreSQL/SSH/Tailscale services, and boot/retry triggers for the application,
+recorder and Discord. Its last actual boot remained October 29; Windows also
+reported pending update/component-servicing reboot state. These settings are
+not a completed reboot or wake test. Actual host restart verification and the
+new full-cache off-device restore remain outstanding at this point.
+
+## Full-cache copy priority correction — November 14, 00:10 UTC
+
+The still-running v20 copy fell from megabytes per second to tens of kilobytes
+per second. A nonblocking stack inspection found ordinary file open/write calls,
+not the rate limiter. Its Windows process/thread priorities were Idle CPU,
+very-low I/O (0) and memory (1). The six account recorders remained healthy.
+After exact PID/path/creation-time validation, only the owned backup PID 13444
+was changed to BelowNormal CPU, normal I/O (2) and memory (5), without a restart
+or snapshot modification. The 8 MiB/s cap and recorder-health admission remained.
+At 00:11:47 the backup wrote approximately 1.16 MB/s. The same sample also found
+Plex reading approximately 19 MB/s, so disk contention was not exclusively caused
+by TopSignal; unrelated processes were left alone. This is an observed recovery,
+not a controlled attribution experiment.
+
+The future helper now uses BelowNormal CPU and the explicit rate/health limits
+throughout, removing background-resource-mode transitions that could starve bulk
+file copies as well as SQLite pages. Closed SQLite integrity copies are paced as
+well. Source, WAL consistency, checksum, authority, capacity and retention rules
+are unchanged. The active application remains release 99; helper rollout and the
+full off-device/restore result are recorded separately below when verified.
