@@ -4,6 +4,16 @@ import pytest
 from tools.backup_io import BackupIO
 
 
+def test_transport_writer_refuses_short_write():
+    from tools.backup_io import HashingWriter
+    class ShortWriter:
+        def write(self,data):return len(data)-1
+    writer=HashingWriter(ShortWriter())
+    with pytest.raises(OSError,match='Incomplete archive write'):
+        writer.write(b'payload')
+    assert writer.bytes_written==0
+
+
 def test_pacing_does_not_accumulate_burst_credit_and_bounds_each_sleep():
     clock = [100.0]
     delays = []

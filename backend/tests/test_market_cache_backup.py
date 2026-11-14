@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -7,6 +8,27 @@ import tarfile
 from contextlib import closing
 
 import pytest
+
+
+def test_transport_hash_covers_headers_padding_and_payload_without_readback(tmp_path, monkeypatch):
+    from tools import backup_market_cache as tool
+    source=tmp_path/'source';source.mkdir()
+    (source/'evidence.bin').write_bytes(b'important evidence' * 257)
+    snapshot=tmp_path/'snapshot'
+    tool.backup(source,snapshot)
+    def no_second_pass(_):
+        raise AssertionError('Packing must not reread its completed archive')
+    monkeypatch.setattr(tool,'checksum',no_second_pass)
+    output=tmp_path/'transport.tar'
+    receipt=tool.pack(snapshot,output)
+    actual=output.read_bytes()
+    assert receipt['sha256']==hashlib.sha256(actual).hexdigest()
+    assert receipt['bytes']==len(actual)
+    with tarfile.open(output) as archive:
+        assert archive.extractfile('evidence.bin').read()==(source/'evidence.bin').read_bytes()
+    assert len(actual)%tarfile.RECORDSIZE==0
+    with pytest.raises(FileExistsError):
+        tool.pack(snapshot,output)
 
 
 def test_wal_snapshot_finishes_under_continuous_external_writes(tmp_path):
@@ -423,4 +445,3 @@ def test_runner_requests_reuse_only_against_its_own_verified_backup(tmp_path, mo
     with pytest.raises(RuntimeError, match='stop after'):
         runner.attempt(config, previous=dict(previous, destination=str(tmp_path/'elsewhere')))
     assert '--previous' not in scripts[-1]
-

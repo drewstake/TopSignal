@@ -1,5 +1,6 @@
 """Optional pacing and recorder-health admission for bulk filesystem backups."""
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -46,3 +47,23 @@ class PacedReader:
         result = self.stream.read(size)
         self.checkpoint(len(result))
         return result
+
+
+class HashingWriter:
+    """Hash the exact sequential transport bytes; the receiver checks the file."""
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.digest = hashlib.sha256()
+        self.bytes_written = 0
+
+    def write(self, data):
+        written = self.stream.write(data)
+        if written != len(data):
+            raise OSError('Incomplete archive write')
+        self.digest.update(data)
+        self.bytes_written += written
+        return written
+
+    def tell(self):
+        return self.bytes_written

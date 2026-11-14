@@ -409,15 +409,22 @@ def pack(root, output):
         if not path.is_file() or path.stat().st_size != expected['bytes']:
             raise ValueError('Snapshot member missing or resized: '+name)
         members.append(name)
-    with tarfile.open(output, 'x') as archive:
-        for name in members:
-            try:
-                from .backup_io import PacedReader
-            except ImportError:
-                from backup_io import PacedReader
-            with (root/name).open('rb') as stream:
-                archive.addfile(archive.gettarinfo(root/name, arcname=name), PacedReader(stream,io_checkpoint))
-    return dict(sha256=checksum(output), bytes=output.stat().st_size, members=len(members)-1,
+    try:
+        from .backup_io import HashingWriter, PacedReader
+    except ImportError:
+        from backup_io import HashingWriter, PacedReader
+    # Hash headers, members and padding as they are written. The receiver checks
+    # the resulting file before extraction and verifies every reconstructed
+    # member. Re-reading this entire tar here only repeats HDD work.
+    with output.open('xb') as transport:
+        writer = HashingWriter(transport)
+        with tarfile.open(fileobj=writer, mode='w') as archive:
+            for name in members:
+                with (root/name).open('rb') as stream:
+                    archive.addfile(archive.gettarinfo(root/name, arcname=name), PacedReader(stream,io_checkpoint))
+    if output.stat().st_size != writer.bytes_written:
+        raise ValueError('Archive size changed after packing')
+    return dict(sha256=writer.digest.hexdigest(), bytes=writer.bytes_written, members=len(members)-1,
                 reused=len(manifest['files'])-(len(members)-1))
 
 
