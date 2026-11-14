@@ -20,6 +20,7 @@ export interface ProgressTimeline {
 }
 interface RecorderStatus {
   enrolled: boolean; healthy: boolean; heartbeat: number | null; error: string | null; free_bytes?: number;
+  open_positions?: number; recording_state?: string;
 }
 interface Matches {
   matches: { id: string; opened: number; ended: number | null; direction: string; reasons: string[] }[];
@@ -31,37 +32,68 @@ const label = (value: string) => value.replaceAll("_", " ");
 const base = (account: number) => `/api/accounts/${account}/trade-progress`;
 
 export function ProgressRecorderStatus({ account, disabled = false }: { account: number; disabled?: boolean }) {
+  return disabled ? null : <ScopedRecorderStatus key={account} account={account} />;
+}
+
+function ScopedRecorderStatus({ account }: { account: number }) {
   const [status, setStatus] = useState<RecorderStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const mounted = useRef(true);
+  const mutation = useRef<AbortController | null>(null);
+  const pollRequest = useRef<AbortController | null>(null);
   useEffect(() => {
     mounted.current = true;
-    if (disabled) return;
     const controller = new AbortController();
-    const refresh = () => requestJson<RecorderStatus>(`${base(account)}/status`, { signal: controller.signal })
-      .then((result) => { if (!controller.signal.aborted) { setStatus(result); setError(null); } })
-      .catch(() => { if (!controller.signal.aborted) setError("Recorder status unavailable"); });
+    let pending = false;
+    let revision = 0;
+    const refresh = async () => {
+      if (pending || mutation.current) return;
+      pending = true;
+      const current = ++revision;
+      const deadline = new AbortController();
+      let timedOut = false;
+      pollRequest.current = deadline;
+      const abort = () => deadline.abort();
+      controller.signal.addEventListener("abort", abort, { once: true });
+      const timeout = setTimeout(() => { timedOut = true; abort(); }, 12000);
+      try {
+        const result = await requestJson<RecorderStatus>(`${base(account)}/status`, { signal: deadline.signal });
+        if (!controller.signal.aborted && !deadline.signal.aborted && current === revision && !mutation.current) { setStatus(result); setError(null); }
+      } catch {
+        if (!controller.signal.aborted && (!deadline.signal.aborted || timedOut) && !mutation.current) setError("Recorder status unavailable");
+      } finally {
+        clearTimeout(timeout);
+        controller.signal.removeEventListener("abort", abort);
+        pending = false;
+      }
+    };
     void refresh();
     const timer = setInterval(() => void refresh(), 15000);
-    return () => { mounted.current = false; controller.abort(); clearInterval(timer); };
-  }, [account, disabled]);
+    return () => { mounted.current = false; controller.abort(); mutation.current?.abort(); clearInterval(timer); };
+  }, [account]);
   async function toggle() {
-    if (!status) return;
+    if (!status || busy || error) return;
     setBusy(true);
+    pollRequest.current?.abort();
+    const controller = new AbortController();
+    mutation.current = controller;
     try {
-      const result = await requestJson<RecorderStatus>(`${base(account)}/enrollment`, { method: "PUT", query: { enabled: !status.enrolled } });
+      const result = await requestJson<RecorderStatus>(`${base(account)}/enrollment`, { method: "PUT", query: { enabled: !status.enrolled }, signal: controller.signal });
       if (mounted.current) { setStatus(result); setError(null); }
     } catch (err) { if (mounted.current) setError(err instanceof Error ? err.message : "Recording enrollment unavailable"); }
-    finally { if (mounted.current) setBusy(false); }
+    finally { mutation.current = null; if (mounted.current) setBusy(false); }
   }
-  if (disabled) return null;
+  const stateLabel = error ? "Status unavailable" : !status ? "Checking recorder…" : !status.enrolled ? "Not enrolled"
+    : status.recording_state === "heartbeat_stale" ? "Stale heartbeat"
+    : !status.healthy ? "Enrolled · coverage unavailable"
+    : status.open_positions === 0 ? "Recording · account flat" : "Recording";
   return <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-800 bg-slate-950/45 px-4 py-2 text-xs">
-    <div><span className={status?.healthy ? "text-emerald-300" : "text-amber-200"}>Trade progress · {status ? status.enrolled ? status.healthy ? "Recording" : "Enrolled · coverage unavailable" : "Not enrolled" : "Checking recorder…"}</span>
+    <div><span className={!error && status?.healthy ? "text-emerald-300" : "text-amber-200"}>Trade progress · {stateLabel}</span>
       <p className="mt-1 text-slate-400">{SAMPLE_INTERVAL_SECONDS}-second observations · includes manual trades · {status?.heartbeat ? `Last recorder check ${time(status.heartbeat)} ET` : "No recorder heartbeat"}</p>
       {(error || status?.error) && <p className="mt-1 text-amber-200" role="status">{error || label(status?.error ?? "")}</p>}
     </div>
-    <Button size="sm" variant="ghost" disabled={!status || busy} onClick={() => void toggle()}>{busy ? "Saving…" : status?.enrolled ? "Stop recording" : "Enable recording"}</Button>
+    <Button size="sm" variant="ghost" disabled={!status || busy || Boolean(error)} onClick={() => void toggle()}>{busy ? "Saving…" : status?.enrolled ? "Stop recording" : "Enable recording"}</Button>
   </div>;
 }
 

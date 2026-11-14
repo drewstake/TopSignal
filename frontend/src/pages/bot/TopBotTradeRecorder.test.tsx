@@ -62,7 +62,7 @@ it("discards previous-account history and status when the account changes", asyn
   expect(screen.queryByRole("button", { name: "Review path for MNQ trade 123" })).toBeNull();
   expect(screen.getByRole("link", { name: "All trades" }).getAttribute("href")).toBe("/trades?account=2");
   await user.click(screen.getByRole("button", { name: "Enable recording" }));
-  expect(requestJson).toHaveBeenCalledWith("/api/accounts/2/trade-progress/enrollment", { method: "PUT", query: { enabled: true } });
+  expect(requestJson).toHaveBeenCalledWith("/api/accounts/2/trade-progress/enrollment", expect.objectContaining({ method: "PUT", query: { enabled: true }, signal: expect.any(AbortSignal) }));
 });
 
 it("shows read failures and supports retry without presenting missing trades as a flat path", async () => {

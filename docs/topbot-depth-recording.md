@@ -1,13 +1,27 @@
 # Continuous TopBot depth recording
 
+The [November 13 live audit](audits/2026-11-13/peteamdpc-health.md) verified this
+independent task writing MNQ Z26 raw depth and totals without a browser, but also
+found overnight coverage holes. Continuous collection is an objective, not a
+losslessness guarantee. The boot-started recorder has no 6 p.m.–4 p.m. timer;
+charts use a 6 p.m.–5 p.m. New York session with the market halt excluded. Bot
+entry/flatten cutoffs do not stop this recorder.
+
+The November 13 maintenance moved startup to protected local credentials and the
+restricted `topsignal_depth_recorder` PostgreSQL role. Its independent v2 process
+survived application deployments and a recoverable status-publication denial.
+See [maintenance evidence and remaining acceptance](audits/2026-11-13/storage-maintenance.md).
+The four verified overnight raw gaps remain explicit; no observations were invented.
+
 The standalone research workspace was retired on November 10, 2026. Shared
 read-only depth helpers, derived-feature tools, and the recorder remain in use
 by Bot. Retiring the pages does not remove recorded segments or change host tasks.
 
 Deployed on peteamdpc (`DESKTOP-6EUPDU1`) on October 30, 2026. The independent
 `TopSignal Depth Recorder` Windows scheduled task records the active MNQ delivery
-contract from the existing owner's ProjectX credentials. TopBot remains in paper
-mode. This recorder does not supply model inputs or place orders.
+contract from the existing owner's ProjectX credentials. Its preserved dry-run
+configuration is separate from the active practice bot's execution settings.
+This recorder does not supply model inputs or place orders.
 
 The [deployment audit](audits/2026-10-30/topbot-level2-recording.md) contains the
 observed Level 2 verification, preservation checks and backup evidence.
@@ -16,15 +30,15 @@ observed Level 2 verification, preservation checks and backup evidence.
 
 | Purpose | Host path |
 | --- | --- |
-| Recorder bundle and config | `C:/ProgramData/TopSignal/tools/depth-recorder-v1/` |
+| Recorder bundle and config | `C:/ProgramData/TopSignal/tools/storage-remediation-v2/` |
 | Status, process lock and optional STOP file | `C:/ProgramData/TopSignal/runtime/depth-recorder/` |
 | Raw compressed depth, trades and quotes | `D:/TopSignal/data/databento/depth-recordings-v1/` |
-| Pinned backend dependencies and environment | `C:/ProgramData/TopSignal/releases/20261030-dashboard-18/backend/` |
+| Pinned backend dependencies and environment | `C:/ProgramData/TopSignal/tools/storage-remediation-v2/backend/` |
 
 Storage follows [the Supabase storage policy](supabase-storage-policy.md). The
 recording root must match `TOPSIGNAL_DATABENTO_CACHE_DIR/depth-recordings-v1`.
 There are no new Supabase tables, historical cloud writes, or result arrays.
-Credentials are read in a PostgreSQL read-only transaction for bot configuration
+Credentials are read from local PostgreSQL through a dedicated read-only role for bot configuration
 32. Both live-routing environment flags must be exactly `false`, and the bot
 configuration must be `dry_run` for MNQ. The market client rejects order routes.
 
@@ -32,8 +46,8 @@ The task uses the existing limited `TopSignalSvc` account, runs without a browse
 or interactive login, starts at boot, and has a one-minute restart-on-failure
 setting and five-minute recovery trigger. An OS-owned lock and `IgnoreNew` task
 policy prevent overlapping recorders. The service has read/execute access to its
-code and modify access to its own recording/runtime directories. The main TopBot
-task is unchanged. Keep the pinned backend release available; a later dependency
+code and modify access to its own recording/runtime directories. The recorder and API tasks use scheduler priority 4 (normal I/O/memory); optional
+helpers retain background priority. Keep the pinned helper bundle available; a later dependency
 upgrade must update and verify the recorder's config and scheduled Python path.
 
 ## Recording contract and limits
@@ -151,10 +165,13 @@ TopSignal runtime's STOP file for recorder maintenance.
 
 ## Off-device backup
 
-The existing `TopSignal Off-device Archive Backup` task now includes only completed
-depth segments present at its snapshot boundary. It still runs at 18:15 Eastern
-on the development PC, requiring that PC to be on, the user signed in, and private
-SSH available. Recording itself has no development-PC dependency.
+The existing `TopSignal Off-device Archive Backup` task includes completed depth
+segments present at its snapshot boundary. Its configured 18:15 Eastern schedule
+was **disabled** at the November 13 inspection; the latest full verified
+off-device copy/restore was November 4. When authorized and enabled, it requires
+the development PC to be on, the user signed in and private SSH available.
+Recording itself has no development-PC dependency. Focused progress backups do
+not protect later raw depth/worker archives.
 
 The host helper is the recorder bundle's `backup_market_cache.py`. The installed
 development tools remain under

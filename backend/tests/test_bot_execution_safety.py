@@ -1797,7 +1797,12 @@ def test_live_daily_loss_preflight_uses_every_trade_history_page(db_session, mon
             assert kwargs["limit"] == 1
             offset = int(kwargs["offset"])
             self.trade_offsets.append(offset)
-            return list(pages[offset])
+            # Return both pages inside the requested trading day, even when the
+            # suite runs just after the 18:00 New York rollover. Session-boundary
+            # filtering is tested separately; this verifies complete pagination.
+            at = (kwargs["end"] if offset == 0 else
+                  kwargs["start"] + (kwargs["end"]-kwargs["start"])/2)
+            return [dict(row, timestamp=at) for row in pages[offset]]
 
     client = PagedClient()
     result = evaluate_bot_config(

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { streamProjectXMarketPrice } from "./api";
 import { setDemoModeEnabled } from "./demoMode";
 
-vi.mock("./supabase", () => ({ getAccessToken: vi.fn().mockResolvedValue(null) }));
+vi.mock("./auth", () => ({ getAccessToken: vi.fn().mockResolvedValue(null) }));
 
 const contractId = "CON.F.US.MNQ.U26";
 const price = { contract_id: contractId, symbol: "F.US.MNQ", price: 20000.25, timestamp: "2026-09-08T14:00:00Z" };

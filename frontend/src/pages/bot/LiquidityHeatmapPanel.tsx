@@ -189,24 +189,33 @@ function HeatmapDisplay({ store, contractId, symbol, tickSize, demoMode = false,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [history, tier, Math.floor(start / 1000), Math.floor(end / 1000), historyStatus?.version]);
 
-  // Latest observed mid: live sample first, else the newest recorded frame/bucket.
+  // Live follows the latest observation. A paused view follows only observations
+  // inside its window; today's book or the summary's final frame may be far away.
   const midTick = useMemo(() => {
     if (!tickSize) return null;
-    for (let i = live.frames.length - 1; i >= 0; i--) {
-      const f = live.frames[i];
-      if (f.gap) continue;
-      if (f.bestBid !== null && f.bestAsk !== null) return (f.bestBid + f.bestAsk) / 2 / tickSize;
-      if (f.bestBid !== null || f.bestAsk !== null) return (f.bestBid ?? f.bestAsk)! / tickSize;
-    }
-    const sources = [...tiles].reverse().concat(historyStatus?.summary ? [historyStatus.summary] : []);  // Newest first.
+    const paused = viewport.end !== null;
+    const inWindow = (time: number, span: number) => !paused || (time < end && time + span > start);
+    let recorded: { time: number; mid: number } | null = null;
+    const sources = [...tiles].reverse().concat(historyStatus?.summary ? [historyStatus.summary] : []);
     for (const tile of sources) {
       const f = tile.frames;
       for (let i = (f?.time.length ?? 0) - 1; f && i >= 0; i--) {
-        if (f.bestBid[i] !== INT32_NONE && f.bestAsk[i] !== INT32_NONE) return (f.bestBid[i] + f.bestAsk[i]) / 2;
+        if (!inWindow(f.time[i], f.span) || !f.valid[i]) continue;
+        if (f.bestBid[i] !== INT32_NONE && f.bestAsk[i] !== INT32_NONE) {
+          if (!recorded || f.time[i] > recorded.time) recorded = { time: f.time[i], mid: (f.bestBid[i] + f.bestAsk[i]) / 2 };
+          break;
+        }
       }
     }
-    return null;
-  }, [live, tiles, historyStatus?.summary, tickSize]);
+    if (paused && recorded) return recorded.mid;
+    for (let i = live.frames.length - 1; i >= 0; i--) {
+      const f = live.frames[i];
+      if (f.gap || !inWindow(f.time, HEATMAP_SAMPLE_MS)) continue;
+      if (f.bestBid !== null && f.bestAsk !== null) return (f.bestBid + f.bestAsk) / 2 / tickSize;
+      if (f.bestBid !== null || f.bestAsk !== null) return (f.bestBid ?? f.bestAsk)! / tickSize;
+    }
+    return recorded?.mid ?? null;
+  }, [live, tiles, historyStatus?.summary, tickSize, viewport.end, start, end]);
   useEffect(() => { setViewport(view => followPrice(view, midTick)); }, [midTick]);
 
   // Live trade prints (display-only subscription; paused after the page stays hidden).

@@ -1,5 +1,5 @@
 import { isDemoModeEnabled } from "./demoMode";
-import { getAccessTokenSync } from "./supabase";
+import { getAccessTokenSync } from "./auth";
 
 function decodeJwtPayload(accessToken: string): Record<string, unknown> | null {
   const payload = accessToken.split(".")[1];
@@ -42,12 +42,12 @@ export function getBrowserStorageScope(): string {
 
   const payload = decodeJwtPayload(accessToken);
   const subject = typeof payload?.sub === "string" ? payload.sub : null;
-  const issuer = typeof payload?.iss === "string" ? payload.iss : "supabase";
+  const issuer = typeof payload?.iss === "string" ? payload.iss : "unknown-issuer";
   if (subject) {
     return `user-${stableHash(`${issuer}|${subject}`)}`;
   }
 
-  // Supabase access tokens are JWTs. This fallback keeps an unexpected opaque
+  // Access tokens are JWTs. This fallback keeps an unexpected opaque
   // token isolated without placing the credential itself in the key.
   return `session-${stableHash(accessToken)}`;
 }

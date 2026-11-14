@@ -101,6 +101,9 @@ CREATE TABLE IF NOT EXISTS revisions(seq INTEGER PRIMARY KEY, stream TEXT NOT NU
 CREATE TABLE IF NOT EXISTS decisions(id TEXT PRIMARY KEY, at TEXT NOT NULL, config INTEGER NOT NULL, payload BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS decision_commits(id TEXT PRIMARY KEY REFERENCES decisions(id), confirmed_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS decisions_time ON decisions(at);
+-- Recovery walks newest decisions, checking confirmation before reading payload.
+-- Include id so already-confirmed decisions need no random table-page reads.
+CREATE INDEX IF NOT EXISTS decisions_recovery_time_id ON decisions(at,id);
 CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY, kind TEXT NOT NULL, at TEXT NOT NULL, contract TEXT, payload BLOB NOT NULL);
 CREATE INDEX IF NOT EXISTS events_kind_time ON events(kind,at);
 CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, payload BLOB NOT NULL);

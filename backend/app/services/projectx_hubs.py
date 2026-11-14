@@ -6,13 +6,15 @@ import json
 import logging
 import os
 import time
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
 
 import websockets
 
 from .projectx_client import ProjectXClient, validate_projectx_url
-from .streaming_pnl_tracker import StreamingPnlTracker
+
+if TYPE_CHECKING:
+    from .streaming_pnl_tracker import StreamingPnlTracker
 
 logger = logging.getLogger(__name__)
 
@@ -434,7 +436,12 @@ class ProjectXHubRunner:
         if not isinstance(arguments, list):
             return
 
+        # SignalR method names are case-insensitive. Position dispatch below
+        # already folds case; archive/fill callbacks must see the same events.
         target_name = str(frame.get("target") or "")
+        target_name = {name.casefold(): name for name in (
+            "GatewayQuote", "GatewayUserOrder", "GatewayUserTrade", "GatewayUserPosition"
+        )}.get(target_name.casefold(), target_name)
         if self._on_archive_event is not None and target_name in {"GatewayQuote", "GatewayUserOrder", "GatewayUserTrade", "GatewayUserPosition"}:
             for argument in arguments:
                 if isinstance(argument, Mapping):

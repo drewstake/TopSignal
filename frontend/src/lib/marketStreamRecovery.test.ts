@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { streamProjectXMarketDepth, streamProjectXMarketPrice, streamProjectXMarketTrades, type MarketPriceStreamHealth } from "./api";
 import { setDemoModeEnabled } from "./demoMode";
 
-vi.mock("./supabase", () => ({ getAccessToken: vi.fn().mockResolvedValue(null) }));
+vi.mock("./auth", () => ({ getAccessToken: vi.fn().mockResolvedValue(null) }));
 
 const contractId = "CON.F.US.MNQ.Z26";
 const encoder = new TextEncoder();

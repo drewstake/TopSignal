@@ -308,6 +308,8 @@ def store_trade_events(
     resolved_user_id = _resolve_user_id(user_id)
     if not events:
         return 0
+    if any(event.get("user_id") not in (None, resolved_user_id) for event in events):
+        raise ValueError("Provider event cannot change the synchronization owner")
 
     events_sorted = sorted(
         events,
@@ -382,6 +384,7 @@ def _store_trade_events_orm(
     existing_by_fallback = {
         (int(row.account_id), str(row.order_id), _as_utc(row.trade_timestamp)): row
         for row in candidate_rows
+        if row.source_trade_id is None
     }
 
     inserted_count = 0
@@ -416,7 +419,10 @@ def _store_trade_events_orm(
         _apply_event_to_trade_row(row, event)
 
         fallback_key = (int(row.account_id), str(row.order_id), _as_utc(row.trade_timestamp))
-        existing_by_fallback[fallback_key] = row
+        if row.source_trade_id is None:
+            existing_by_fallback[fallback_key] = row
+        else:
+            existing_by_fallback.pop(fallback_key, None)
         if row.source_trade_id:
             existing_by_source[(int(row.account_id), str(row.source_trade_id))] = row
 

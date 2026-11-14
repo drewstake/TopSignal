@@ -207,7 +207,6 @@ function installAccountsApi({ accounts, summaries = {}, calendars = {}, trades =
   const getTrades = vi
     .spyOn(accountsApi, "getTrades")
     .mockImplementation(async (accountId) => resolveFixture(trades[accountId], []));
-  const getJournalDays = vi.spyOn(accountsApi, "getJournalDays").mockResolvedValue({ days: [] });
   const refreshTrades = vi.spyOn(accountsApi, "refreshTrades").mockResolvedValue({
     fetched_count: 0,
     inserted_count: 0,
@@ -219,7 +218,6 @@ function installAccountsApi({ accounts, summaries = {}, calendars = {}, trades =
     getSummaryWithPointBases,
     getPnlCalendar,
     getTrades,
-    getJournalDays,
     refreshTrades,
   };
 }

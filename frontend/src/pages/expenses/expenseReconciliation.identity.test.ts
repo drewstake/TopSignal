@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const auth = vi.hoisted(() => ({ token: null as string | null, read: vi.fn<() => Promise<string | null>>() }));
-vi.mock("../../lib/supabase", () => ({ getAccessToken: auth.read, getAccessTokenSync: () => auth.token }));
+vi.mock("../../lib/auth", () => ({ getAccessToken: auth.read, getAccessTokenSync: () => auth.token }));
 import { observeAuthIdentity } from "../../lib/authIdentity";
 import { createAccountOperation } from "../../lib/accountOperation";
 import { createExpense } from "../../lib/api";

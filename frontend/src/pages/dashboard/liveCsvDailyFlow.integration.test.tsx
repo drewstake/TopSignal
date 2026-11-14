@@ -11,7 +11,6 @@ import type {
   AccountPnlCalendarDay,
   AccountSummary,
   AccountTrade,
-  JournalEntry,
   TradeImportConfirmResult,
   TradeImportPreview,
   TradeImportPreviewTrade,
@@ -168,7 +167,6 @@ interface LocalReadState {
   trades: AccountTrade[];
   summary: AccountSummary;
   calendar: AccountPnlCalendarDay[];
-  journal: JournalEntry[];
 }
 
 function deferred<T>() {
@@ -237,29 +235,6 @@ function refreshDerivedState(state: LocalReadState) {
     : [];
 }
 
-function withPulledTradeStats(entry: JournalEntry, state: LocalReadState): JournalEntry {
-  return {
-    ...entry,
-    stats_source: "account_trades",
-    stats_json: {
-      snapshot_version: 1,
-      trade_count: state.trades.length,
-      total_pnl: state.summary.net_pnl,
-      total_fees: state.summary.fees,
-      win_rate: state.summary.win_rate,
-      avg_win: state.summary.avg_win,
-      avg_loss: state.summary.avg_loss,
-      largest_win: Math.max(...state.trades.map((trade) => trade.pnl ?? 0)),
-      largest_loss: Math.min(...state.trades.map((trade) => trade.pnl ?? 0)),
-      largest_position_size: Math.max(...state.trades.map((trade) => Math.abs(trade.size))),
-      gross: state.summary.gross_pnl,
-      net: state.summary.net_pnl,
-      net_realized_pnl: state.summary.net_pnl,
-    },
-    stats_pulled_at: "2026-07-24T16:05:00Z",
-    updated_at: "2026-07-24T16:05:00Z",
-  };
-}
 
 function previewTrade(trade: AccountTrade, rowNumber: number, status: TradeImportPreviewTrade["status"]): TradeImportPreviewTrade {
   return {
@@ -316,7 +291,6 @@ function installStatefulAccountsApi(accounts: AccountInfo[] = [liveAccount]) {
     trades: [],
     summary: { ...emptySummary },
     calendar: [],
-    journal: [],
   };
   const tokenRows = new Map<string, AccountTrade[]>();
   const summaryReadTradeCounts: number[] = [];
@@ -340,48 +314,6 @@ function installStatefulAccountsApi(accounts: AccountInfo[] = [liveAccount]) {
   vi.spyOn(accountsApi, "getSummary").mockImplementation(async () => state.summary);
   const getTrades = vi.spyOn(accountsApi, "getTrades").mockImplementation(async () => [...state.trades]);
   const getPnlCalendar = vi.spyOn(accountsApi, "getPnlCalendar").mockImplementation(async () => [...state.calendar]);
-  vi.spyOn(accountsApi, "getJournalDays").mockImplementation(async () => ({
-    days: state.journal.map((entry) => entry.entry_date),
-  }));
-  vi.spyOn(accountsApi, "getJournalEntries").mockImplementation(async () => ({
-    items: [...state.journal],
-    total: state.journal.length,
-  }));
-  vi.spyOn(accountsApi, "listJournalImages").mockResolvedValue([]);
-  const createJournalEntry = vi.spyOn(accountsApi, "createJournalEntry").mockImplementation(async (_accountId, input) => {
-    const existing = state.journal.find((entry) => entry.entry_date === input.entry_date);
-    if (existing) {
-      return { ...existing, already_existed: true };
-    }
-    const created: JournalEntry = {
-      id: 501,
-      account_id: LIVE_ACCOUNT_ID,
-      entry_date: input.entry_date,
-      title: input.title,
-      mood: input.mood,
-      tags: input.tags,
-      body: input.body,
-      version: 1,
-      stats_source: null,
-      stats_json: null,
-      stats_pulled_at: null,
-      is_archived: false,
-      created_at: "2026-07-24T16:05:00Z",
-      updated_at: "2026-07-24T16:05:00Z",
-    };
-    state.journal = [created];
-    return { ...created, already_existed: false };
-  });
-  const pullJournalTradeStats = vi.spyOn(accountsApi, "pullJournalTradeStats").mockImplementation(async (_accountId, entryId) => {
-    const existing = state.journal.find((entry) => entry.id === entryId);
-    if (!existing) {
-      throw new Error("Journal entry not found");
-    }
-    const updated = withPulledTradeStats(existing, state);
-    state.journal = state.journal.map((entry) => (entry.id === entryId ? updated : entry));
-    return updated;
-  });
-
   const previewTradeImport = vi.spyOn(accountsApi, "previewTradeImport").mockImplementation(async (_accountId, file) => {
     previewSequence += 1;
     const token = `${file.name}-${previewSequence}`;
@@ -441,8 +373,6 @@ function installStatefulAccountsApi(accounts: AccountInfo[] = [liveAccount]) {
     getSummaryWithPointBases,
     getTrades,
     getPnlCalendar,
-    createJournalEntry,
-    pullJournalTradeStats,
     previewTradeImport,
     confirmTradeImport,
   };
@@ -571,8 +501,6 @@ describe("Live CSV daily-flow production page bridge", () => {
       getSummaryWithPointBases,
       getTrades,
       getPnlCalendar,
-      createJournalEntry,
-      pullJournalTradeStats,
     } = mountDailyFlow();
 
     await waitForImportReady();
@@ -612,14 +540,12 @@ describe("Live CSV daily-flow production page bridge", () => {
     expect(router.state.location.pathname).toBe("/dashboard");
     expect(router.state.location.search).toContain(`account=${LIVE_ACCOUNT_ID}`);
     expect(screen.queryByRole("button", { name: /journal/i })).toBeNull();
-    expect(createJournalEntry).not.toHaveBeenCalled();
-    expect(pullJournalTradeStats).not.toHaveBeenCalled();
     expect(await screen.findAllByText("FLOW-1001")).not.toHaveLength(0);
   });
 
   it("clears the selected trade day when switching accounts", async () => {
     const user = userEvent.setup();
-    const { router, createJournalEntry } = mountDailyFlow([liveAccount, secondLiveAccount]);
+    const { router } = mountDailyFlow([liveAccount, secondLiveAccount]);
 
     await waitForImportReady();
     importFile("fresh.csv");
@@ -636,7 +562,6 @@ describe("Live CSV daily-flow production page bridge", () => {
     await waitFor(() => expect(router.state.location.search).toContain(`account=${secondLiveAccount.id}`));
     expect(router.state.location.pathname).toBe("/dashboard");
     expect(screen.queryByRole("button", { name: /Jul 24, 2026/, pressed: true })).toBeNull();
-    expect(createJournalEntry).not.toHaveBeenCalled();
   });
 
   it("keeps duplicates compact, stores only the new overlap row, and blocks a conflicting identity", async () => {

@@ -43,6 +43,6 @@ def test_guard_blocks_local_database_url_when_unreachable(monkeypatch):
     monkeypatch.setattr(db, "DATABASE_URL", "postgresql+psycopg://user:pass@localhost:5432/postgres")
     monkeypatch.setattr(db, "engine", _EngineDown())
 
-    with pytest.raises(RuntimeError, match="local DB mode"):
+    with pytest.raises(RuntimeError, match="Local application database unavailable"):
         db.guard_against_local_database_url()
 

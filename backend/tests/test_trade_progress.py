@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import json
 import sqlite3
+from time import monotonic
 
 import pytest
 
@@ -36,6 +37,74 @@ def ready(owner="owner", account=1):
     engine.connection("user",True,T)
     engine.snapshot([],T,T)
     return engine
+
+
+def test_status_distinguishes_flat_stale_and_scoped_positions(local, monkeypatch):
+    monkeypatch.setattr(store, 'now', lambda: T)
+    monkeypatch.setattr(store, 'verify_destination', lambda: dict(free_bytes=store.FLOOR, files={}))
+    assert store.status('owner', 1)['recording_state'] == 'not_enrolled'
+    with store.connect(write=True) as db:
+        db.execute('INSERT INTO trade_progress_scopes VALUES(?,?,?,?,?)', ('owner',1,1,T,None))
+    assert store.status('owner', 1)['recording_state'] == 'recording_flat'
+    foreign = ready('other', 1)
+    foreign.position(pos(), T)
+    foreign.flush()
+    assert store.status('owner', 1)['open_positions'] == 0
+    engine = ready()
+    engine.position(pos(), T)
+    engine.flush()
+    assert store.status('owner', 1)['recording_state'] == 'recording'
+    monkeypatch.setattr(store, 'now', lambda: T+31)
+    assert store.status('owner', 1)['recording_state'] == 'heartbeat_stale'
+
+
+def test_future_clock_fill_is_preserved_with_timing_uncertainty(local):
+    engine=ready()
+    engine.fill(dict(id=99,accountId=1,contractId=C,creationTimestamp=iso(T+.02),
+                     profitAndLoss=10,fees=.36,commissions=.25,size=1,price=105),T)
+    engine.flush()
+    with store.connect() as db:
+        row=json.loads(db.execute('select payload from trade_progress_fills').fetchone()[0])
+    assert row['ts']==T+.02
+    assert row['clock_issue']=='provider_timestamp_after_receipt'
+
+
+def test_reconnected_fill_clock_metadata_does_not_create_a_broker_correction(local):
+    engine=ready()
+    fill=dict(id=99,accountId=1,contractId=C,creationTimestamp=iso(T+.02),profitAndLoss=10,size=1,price=105)
+    engine.fill(fill,T); engine.flush()
+    engine.fill(fill,T+1); engine.flush()
+    with store.connect() as db:
+        assert db.execute('select count(*) from trade_progress_fill_revisions').fetchone()[0]==1
+        head=json.loads(db.execute('select payload from trade_progress_fills').fetchone()[0])
+    assert head['realized_dollars']==10 and not head.get('revision_conflict')
+    assert head['clock_issue']=='provider_timestamp_after_receipt'
+
+
+def test_policy_manages_only_its_enrollments_and_retains_audited_optouts(local, monkeypatch):
+    monkeypatch.setattr(store,'verify_destination',lambda: {})
+    store.enroll('owner',1,True)
+    assert store.reconcile_policy('owner',[2],2)
+    assert store.scopes()==[('owner',1),('owner',2)]
+    assert store.reconcile_policy('owner',[3],2)
+    assert store.scopes()==[('owner',1),('owner',3)]
+    store.enroll('owner',3,False)
+    assert store.reconcile_policy('owner',[3],2)
+    assert store.scopes()==[('owner',1)]
+    assert not store.reconcile_policy('owner',[4,5],2)
+    assert store.scopes()==[('owner',1)]
+    with store.connect() as db:
+        assert db.execute('select count(*) from trade_progress_enrollment_changes where account=3').fetchone()[0]==2
+
+
+def test_snapshot_can_replace_receipt_only_identity_without_false_continuity(local):
+    engine=ready()
+    engine.position(dict(accountId=1,contractId=C,netQty=1,averagePrice=100),T+1)
+    first=engine.active[C]['id']
+    engine.snapshot([pos(1)],T+2,T+3)
+    assert engine.active[C]['id']!=first
+    assert engine.active[C]['identity'] is not None
+    assert 'lifecycle_identity_uncertain' in engine.dirty[first]['reasons']
 
 
 def saved(engine):
@@ -327,6 +396,22 @@ def test_callbacks_are_bounded_nonblocking_and_connection_is_observed(local):
     assert worker.queue.get_nowait()[0]=="fill"
 
 
+def test_same_owner_market_is_shared_but_positions_and_other_owners_are_isolated(local):
+    from app.services.trade_progress_recorder import AccountRecorder,SharedRecorderMarket
+    market=SharedRecorderMarket('owner',lambda:None)
+    first=AccountRecorder('owner',1,{},lambda:None,market=market)
+    second=AccountRecorder('owner',2,{},lambda:None,market=market)
+    first.tracker.contracts=second.tracker.contracts=frozenset({C})
+    market.add(first);market.add(second)
+    assert market.active_contracts()=={C}
+    assert not first.runtime.runner._market_hub_url and not second.runtime.runner._market_hub_url
+    market.ingest_market_event(quote(101,T))
+    assert first.queue.get_nowait()[0]=='quote' and second.queue.get_nowait()[0]=='quote'
+    with pytest.raises(ValueError):market.add(AccountRecorder('other',1,{},lambda:None))
+    first.tracker.ingest_position_event(pos())
+    assert first.queue.qsize()==1 and second.queue.empty()
+
+
 def test_midpoint_fallback_and_invalid_quote_do_not_invent_observations(local):
     engine=ready(); engine.position(pos(),T)
     engine.quote(dict(contractId=C,lastPrice=102,timestamp=iso(T+1)),T+1)
@@ -378,6 +463,22 @@ def test_mirror_rejects_feature_even_if_a_table_were_registered(local):
                    {"trade_progress_samples":["id"]})
 
 
+def test_replayed_legacy_fill_digest_does_not_manufacture_a_revision(local):
+    from hashlib import sha256
+    engine=ready()
+    fill=dict(id=12,accountId=1,contractId=C,creationTimestamp=iso(T),size=1,price=100,profitAndLoss=10)
+    engine.fill(fill,T+1);engine.flush()
+    with store.connect(write=True) as db:
+        row=db.execute('SELECT payload FROM trade_progress_fill_revisions').fetchone()
+        legacy_digest=sha256(row['payload'].encode()).hexdigest()
+        db.execute('UPDATE trade_progress_fill_revisions SET digest=?',(legacy_digest,))
+    engine.fill(fill,T+2);engine.flush()
+    with store.connect() as db:
+        assert db.execute('SELECT count(*) FROM trade_progress_fill_revisions').fetchone()[0]==1
+        payload=json.loads(db.execute('SELECT payload FROM trade_progress_fills').fetchone()[0])
+        assert payload['realized_dollars']==10 and not payload.get('revision_conflict')
+
+
 def test_writer_rechecks_runner_connection_after_queued_stale_state(local,monkeypatch):
     from app.services import trade_progress_recorder as runtime
     engine=ready(); engine.position(pos(),T)
@@ -396,3 +497,211 @@ def test_writer_rechecks_runner_connection_after_queued_stale_state(local,monkey
         state=json.loads(db.execute("SELECT state FROM trade_progress_positions").fetchone()[0])
         assert "user_disconnected" in state["reasons"]
         assert not engine.connected["user"]
+
+
+def test_busy_writer_retries_same_batch_without_losing_or_duplicating_observations(local):
+    import threading
+    from app.services.trade_progress_recorder import AccountRecorder
+    engine = ready()
+    engine.position(pos(), T)
+    engine.fill(dict(id=91, accountId=1, contractId=C, creationTimestamp=iso(T),
+                     size=1, price=100, profitAndLoss=0), T)
+    # A separate connection (like a maintenance process) owns the real SQLite
+    # write lock longer than the existing one-second busy timeout.
+    with store.connect(write=True):
+        pass
+    locked = threading.Event()
+    def competing_writer():
+        with sqlite3.connect(store.location()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            locked.set()
+            threading.Event().wait(1.3)
+    thread = threading.Thread(target=competing_writer)
+    thread.start()
+    assert locked.wait(2)
+    worker = AccountRecorder('owner', 1, {'MNQ': 2}, lambda: None)
+    worker.flush(engine)
+    thread.join(3)
+    assert not thread.is_alive()
+    assert worker.metrics['commit_busy_retries'] >= 1
+    assert worker.metrics['discarded_after_write_failure'] == 0
+    with store.connect() as db:
+        assert db.execute('SELECT count(*) FROM trade_progress_samples').fetchone()[0] == 1
+        assert db.execute('SELECT count(*) FROM trade_progress_fills').fetchone()[0] == 1
+        assert db.execute('SELECT count(*) FROM trade_progress_fill_revisions').fetchone()[0] == 1
+    assert not engine.samples and not engine.fills
+
+
+def test_six_account_writers_serialize_and_preserve_scope(local, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from app.services.trade_progress_recorder import AccountRecorder
+    engines = {account: ready(account=account) for account in range(1, 7)}
+    for account, engine in engines.items():
+        engine.position(pos() | {'accountId': account}, T)
+    original_connect = sqlite3.connect
+    class SlowCommit(sqlite3.Connection):
+        def commit(self):
+            threading.Event().wait(.22)
+            return super().commit()
+    def slow_connect(*args, **kwargs):
+        return original_connect(*args, **kwargs, factory=SlowCommit)
+    monkeypatch.setattr(sqlite3, 'connect', slow_connect)
+    barrier = threading.Barrier(6)
+    def capture(account):
+        engine = engines[account]
+        worker = AccountRecorder('owner', account, {'MNQ': 2}, lambda: None)
+        barrier.wait(timeout=3)
+        worker.flush(engine)
+        return worker.metrics
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(capture, range(1, 7)))
+    assert sum(row['commit_busy_retries'] for row in results) >= 1
+    assert all(row['discarded_after_write_failure'] == 0 for row in results)
+    with store.connect() as db:
+        assert [r[0] for r in db.execute('SELECT account FROM trade_progress_positions ORDER BY account')] == list(range(1, 7))
+        assert db.execute('SELECT count(*) FROM trade_progress_samples').fetchone()[0] == 6
+
+
+@pytest.mark.parametrize('code, expected_calls', [(sqlite3.SQLITE_BUSY, 4), (sqlite3.SQLITE_IOERR, 1)])
+def test_write_retry_is_bounded_and_never_retries_storage_failure(local, code, expected_calls):
+    from app.services.trade_progress_recorder import AccountRecorder
+    worker = AccountRecorder('owner', 1, {}, lambda: None)
+    class BrokenEngine:
+        calls = 0
+        def flush(self):
+            self.calls += 1
+            exc = sqlite3.OperationalError('controlled failure')
+            exc.sqlite_errorcode = code
+            raise exc
+    engine = BrokenEngine()
+    with pytest.raises(sqlite3.OperationalError):
+        worker.flush(engine)
+    assert engine.calls == expected_calls
+    assert worker.metrics['last_write_error']['sqlite_code'] == code
+
+
+def test_group_commit_batches_six_accounts_without_merging_owners_or_fill_legs(local, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from app.services.trade_progress_recorder import GroupCommitter
+    engines = [ready(owner=owner, account=account)
+               for owner in ('owner', 'other') for account in range(1, 4)]
+    for engine in engines:
+        engine.position(pos() | {'accountId': engine.account}, T)
+        for identity in (91, 92):
+            engine.fill(dict(id=identity, accountId=engine.account, contractId=C,
+                creationTimestamp=iso(T), size=1, price=100, profitAndLoss=0), T)
+    # Hold the first transaction until all account writers are queued, then let
+    # the next shared transaction consume all six batches with one fsync.
+    original_connect = sqlite3.connect
+    commits = []
+    class CountCommit(sqlite3.Connection):
+        def commit(self):
+            commits.append(True)
+            return super().commit()
+    monkeypatch.setattr(sqlite3, 'connect', lambda *a, **kw: original_connect(*a, **kw, factory=CountCommit))
+    committer = GroupCommitter()
+    # Block dequeue until submissions are ready; this avoids wall-clock flakiness.
+    original_get = committer.queue.get
+    queued = threading.Event()
+    monkeypatch.setattr(committer.queue, 'get', lambda *a, **kw: (queued.wait(3), original_get(*a, **kw))[1])
+    committer.start()
+    try:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = [pool.submit(committer.flush, engine) for engine in engines]
+            deadline = monotonic()+3
+            while committer.queue.qsize() < 6 and monotonic() < deadline:
+                threading.Event().wait(.005)
+            assert committer.queue.qsize() == 6
+            queued.set()
+            for future in futures:
+                future.result(timeout=3)
+        assert len(commits) == 1
+        assert all(not engine.samples and not engine.fills for engine in engines)
+        with store.connect() as db:
+            assert db.execute('SELECT count(*) FROM trade_progress_samples').fetchone()[0] == 6
+            assert db.execute('SELECT count(*) FROM trade_progress_fills').fetchone()[0] == 12
+            assert db.execute('SELECT count(*) FROM trade_progress_fill_revisions').fetchone()[0] == 12
+            scopes = [tuple(row) for row in db.execute('SELECT owner,account FROM trade_progress_positions ORDER BY owner,account')]
+            assert scopes == [(owner, account) for owner in ('other', 'owner') for account in range(1, 4)]
+    finally:
+        queued.set()
+        assert committer.stop()
+    with pytest.raises(RuntimeError, match='not running'):
+        committer.flush(engines[0])
+
+
+def test_group_commit_rolls_back_every_batch_and_retry_preserves_pending_samples(local, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from app.services.trade_progress_recorder import GroupCommitter
+    engines = [ready(account=account) for account in (1, 2)]
+    for engine in engines:
+        engine.position(pos() | {'accountId': engine.account}, T)
+    with store.connect(write=True) as db:
+        db.execute("CREATE TRIGGER fail_second BEFORE INSERT ON trade_progress_positions "
+                   "WHEN NEW.account=2 BEGIN SELECT RAISE(ABORT,'controlled failure'); END")
+    committer = GroupCommitter()
+    original_get = committer.queue.get
+    queued = threading.Event()
+    monkeypatch.setattr(committer.queue, 'get', lambda *a, **kw: (queued.wait(3), original_get(*a, **kw))[1])
+    committer.start()
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(committer.flush, engine) for engine in engines]
+            deadline = monotonic()+3
+            while committer.queue.qsize() < 2 and monotonic() < deadline:
+                threading.Event().wait(.005)
+            assert committer.queue.qsize() == 2
+            queued.set()
+            for future in futures:
+                with pytest.raises(sqlite3.IntegrityError):
+                    future.result(timeout=3)
+        assert all(len(engine.samples) == 1 and engine.dirty for engine in engines)
+        with store.connect(write=True) as db:
+            assert db.execute('SELECT count(*) FROM trade_progress_positions').fetchone()[0] == 0
+            assert db.execute('SELECT count(*) FROM trade_progress_samples').fetchone()[0] == 0
+            db.execute('DROP TRIGGER fail_second')
+        for engine in engines:
+            committer.flush(engine)
+        with store.connect() as db:
+            assert db.execute('SELECT count(*) FROM trade_progress_positions').fetchone()[0] == 2
+            assert db.execute('SELECT count(*) FROM trade_progress_samples').fetchone()[0] == 2
+    finally:
+        queued.set()
+        assert committer.stop()
+
+
+def test_group_commit_shutdown_drains_accepted_batch_before_releasing_writer(local, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from app.services.trade_progress_recorder import GroupCommitter
+    engine = ready()
+    engine.position(pos(), T)
+    entered, release = threading.Event(), threading.Event()
+    write = engine.write_pending
+    def blocked_write(db, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        return write(db, **kwargs)
+    monkeypatch.setattr(engine, 'write_pending', blocked_write)
+    committer = GroupCommitter()
+    committer.start()
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            flushing = pool.submit(committer.flush, engine)
+            assert entered.wait(3)
+            stopping = pool.submit(committer.stop)
+            assert committer.halt.wait(3)
+            assert not stopping.done() and not flushing.done()
+            with pytest.raises(RuntimeError, match='not running'):
+                committer.flush(engine)
+            release.set()
+            flushing.result(timeout=3)
+            assert stopping.result(timeout=3)
+        with store.connect() as db:
+            assert db.execute('SELECT count(*) FROM trade_progress_samples').fetchone()[0] == 1
+    finally:
+        release.set()
+        assert committer.stop()

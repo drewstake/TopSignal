@@ -60,6 +60,7 @@ def db_session():
 
 @pytest.fixture(autouse=True)
 def allow_legacy_env_projectx_credentials(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "false")
     monkeypatch.setenv("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", "true")
     monkeypatch.setenv("SUPABASE_URL", "http://127.0.0.1:54321")
 
@@ -1481,9 +1482,10 @@ def test_authenticated_mode_does_not_fall_back_to_shared_env_credentials(db_sess
     assert exc_info.value.detail["code"] == "projectx_credentials_not_configured"
 
 
-def test_local_only_origins_do_not_enable_shared_credentials_in_cloud_runtime(db_session, monkeypatch):
+def test_local_only_origins_do_not_enable_shared_credentials_in_authenticated_runtime(db_session, monkeypatch):
     Base.metadata.create_all(bind=db_session.bind, tables=[ProviderCredential.__table__])
     monkeypatch.setenv("SUPABASE_URL", "https://project-ref.supabase.co")
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
     monkeypatch.setenv("ALLOWED_ORIGINS", "http://localhost:5173")
     monkeypatch.setenv("ALLOWED_ORIGIN_REGEX", main_module._LOCAL_ORIGIN_REGEX)
     monkeypatch.setattr(

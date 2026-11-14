@@ -18,17 +18,32 @@ import sys
 import time
 
 if __package__:
-    from .read_depth_history import safe_path, timestamp, session_bounds, verified_rows
-    from .read_depth_research import inventory
+    from .read_depth_history import safe_path, timestamp, session_bounds, verified_rows, read_manifest, child_signature
+    from .depth_heatmap import Inventory, InventoryPaused
 else:
-    from read_depth_history import safe_path, timestamp, session_bounds, verified_rows
-    from read_depth_research import inventory
+    from read_depth_history import safe_path, timestamp, session_bounds, verified_rows, read_manifest, child_signature
+    from depth_heatmap import Inventory, InventoryPaused
 
 VERSION = 'session-provider-flow-v1'
 CACHE_VERSION = 'session-provider-flow-cache-v2'
 MAX_READ_BYTES = 128 * 1024**2
 MAX_CACHE_BYTES = 64 * 1024**2
 FIELDS = ('buy', 'sell', 'unknown', 'trades', 'invalid', 'bad_time')
+_inventory = None
+
+
+def inventory(root, owner, deadline):
+    # One configured root in the long-running API; callers serialize reads.
+    # Interrupted cold scans retain verified progress, then resume on retry.
+    global _inventory
+    if _inventory is None or _inventory.root != root:
+        _inventory = Inventory(root)
+    try:
+        entries = _inventory.scan(should_stop=lambda: time.monotonic() >= deadline)
+    except InventoryPaused as exc:
+        raise RuntimeError('Session order-flow history is preparing. Retry shortly.') from exc
+    return [(timestamp(e['manifest']['first_received_at']), timestamp(e['manifest']['last_received_at']),
+             e['marker'], e['manifest']) for e in entries if e['owner'] == owner], _inventory.errors
 
 
 def valid_number(value):
@@ -107,24 +122,28 @@ def flow_window(buckets, start, end):
                 classified_percent=100*classified/volume if volume else None)
 
 
-def read_session_flow(root, query, *, now=None, max_read_bytes=MAX_READ_BYTES):
+def read_session_flow(root, query, *, now=None, max_read_bytes=MAX_READ_BYTES, max_seconds=12):
     root = Path(root)
+    root_identity = str(root.resolve())
+    started = time.monotonic()
+    deadline = started + max_seconds
     owner, contract, live = query.get('owner_hash', ''), query.get('contract_id', ''), query.get('data_live', False)
     if not re.fullmatch('[a-f0-9]{64}', owner) or not re.fullmatch(r'CON\.F\.US\.MNQ\.[A-Z0-9]{1,12}', contract) or type(live) is not bool:
         raise ValueError('Invalid session scope')
     now = now or datetime.now(timezone.utc)
     start, end = session_bounds(now)
     end = end.replace(second=0, microsecond=0)
-    manifests, errors = inventory(root, owner)
+    manifests, errors = inventory(root, owner, deadline)
+    manifests.sort(key=lambda v: (v[0], v[3]['capture_id'], v[3]['first_index']))
     selected = [entry for entry in manifests if entry[1] >= start and entry[0] < end+timedelta(seconds=2)
                 and entry[3]['data_live'] is live]
     buckets, bounds, reasons, latest = {}, [], Counter(), None
     earliest = None
     processed = pending = read_bytes = 0
-    started = time.monotonic()
     connection = None
     seen = set()
     previous = None
+    validated_runs = set()
     try:
         if selected:
             cache_dir = safe_path(root.parent/'session-orderflow-v1'/owner, root.parent)
@@ -137,7 +156,10 @@ def read_session_flow(root, query, *, now=None, max_read_bytes=MAX_READ_BYTES):
             size = connection.execute('PRAGMA page_size').fetchone()[0]
             connection.execute(f'PRAGMA max_page_count={MAX_CACHE_BYTES//size}')
             connection.execute('CREATE TABLE IF NOT EXISTS segments (key TEXT PRIMARY KEY, summary TEXT NOT NULL)')
-        for first, last, marker, manifest in selected:
+        for offset, (first, last, marker, manifest) in enumerate(selected):
+            if time.monotonic() >= deadline:
+                pending += len(selected) - offset
+                break
             identity = (manifest['capture_id'], manifest['first_index'], manifest['last_index'])
             if identity in seen:
                 continue
@@ -145,19 +167,26 @@ def read_session_flow(root, query, *, now=None, max_read_bytes=MAX_READ_BYTES):
             try:
                 if not re.fullmatch(r'\d{8}\.ndjson\.gz', manifest['file']):
                     raise ValueError('Invalid filename')
-                raw_path = safe_path(marker.parent/manifest['file'], root)
-                stat = raw_path.stat()
-                if stat.st_size != manifest['bytes']:
+                if marker.parent not in validated_runs:
+                    safe_path(marker.parent, root)
+                    validated_runs.add(marker.parent)
+                current = read_manifest(marker, root, validated_parent=marker.parent)
+                if current != manifest or current.get('owner_hash') != owner:
+                    _inventory.runs.pop(marker.parent, None)
+                    raise ValueError('Selected recording receipt changed')
+                raw_path = marker.parent/manifest['file']
+                file_identity = child_signature(raw_path, marker.parent)
+                if file_identity[2] != manifest['bytes']:
                     raise ValueError('Segment size changed')
                 # Cache is tied to immutable source checksum, scope and file identity.
-                material = [CACHE_VERSION, str(root.resolve()), contract, live, manifest,
-                            stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino]
+                material = [CACHE_VERSION, root_identity, contract, live, manifest,
+                            file_identity[3], file_identity[4], file_identity[1]]
                 key = hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
                 cached = connection.execute('SELECT summary FROM segments WHERE key=?', (key,)).fetchone()
                 if cached:
                     summary = json.loads(cached[0])
                 else:
-                    if read_bytes+manifest['uncompressed_bytes'] > max_read_bytes or time.monotonic()-started > 12:
+                    if read_bytes+manifest['uncompressed_bytes'] > max_read_bytes:
                         pending += 1
                         continue
                     read_bytes += manifest['uncompressed_bytes']

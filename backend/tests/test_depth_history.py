@@ -133,10 +133,71 @@ def test_history_api_passes_authenticated_owner_and_disables_response_caching(mo
     monkeypatch.setattr(main,'get_authenticated_user_id',lambda:'owner')
     monkeypatch.setattr(main,'_require_owned_projectx_account',lambda *a,**kw:None)
     calls=[]
-    monkeypatch.setattr(service,'account_history',lambda **kwargs:calls.append(kwargs) or {'points':[]})
+    monkeypatch.setattr(service,'account_history',lambda **kwargs:calls.append(kwargs) or b'{"points":[]}')
     response=Response()
-    main.get_order_book_history(123,response,db=SimpleNamespace(rollback=lambda:None))
+    result=main.get_order_book_history(123,response,db=SimpleNamespace(rollback=lambda:None))
     assert calls[0]['user_id']=='owner' and response.headers['cache-control']=='no-store'
+    assert result.headers['cache-control']=='no-store' and result.headers['vary']=='Accept-Encoding'
+    assert json.loads(result.body)=={'points':[]}
+
+
+def test_full_session_larger_than_memory_budget_reuses_bounded_compressed_cache(tmp_path, monkeypatch):
+    import gzip
+    monkeypatch.setattr(service, 'history_source_path', lambda: tmp_path/'source.json')
+    calls = []
+    expected = {'points': [], 'description': 'x'*(25*1024**2)}
+    monkeypatch.setattr(service, '_read_account_history', lambda **kw: calls.append(kw) or expected)
+    first = service.account_history(user_id='large-session', representation='gzip')
+    second = service.account_history(user_id='large-session', representation='json')
+    assert len(calls) == 1 and len(first) < 24*1024**2
+    assert gzip.decompress(first) == second and json.loads(second) == expected
+    assert sum(len(row[1]) for row in service._cache.values()) <= 24*1024**2
+
+
+def test_history_response_rendering_does_not_block_api_event_loop(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from starlette.responses import JSONResponse
+    import app.main as main
+    monkeypatch.setattr(main, 'get_authenticated_user_id', lambda: 'owner')
+    monkeypatch.setattr(main, '_require_owned_projectx_account', lambda *a, **k: None)
+    monkeypatch.setattr(service, 'history_source_path', lambda: tmp_path/'source.json')
+    monkeypatch.setattr(service, '_read_account_history', lambda **kw: {'points': [], 'render_hold': True})
+    started, release = Event(), Event()
+    original_render, original_json = Response.render, JSONResponse.render
+    def hold(content):
+        if ((isinstance(content, dict) and content.get('render_hold')) or
+                (isinstance(content, bytes) and b'"render_hold":true' in content)):
+            started.set()
+            assert release.wait(3)
+    def render(self, content):
+        hold(content)
+        return original_render(self, content)
+    def render_json(self, content):
+        hold(content)
+        return original_json(self, content)
+    monkeypatch.setattr(Response, 'render', render)
+    monkeypatch.setattr(JSONResponse, 'render', render_json)
+    app = FastAPI()
+    app.add_api_route('/history', main.get_order_book_history)
+    app.dependency_overrides[main.get_db] = lambda: SimpleNamespace(rollback=lambda: None)
+    @app.get('/ping')
+    async def ping():
+        return {'ok': True}
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        history = pool.submit(client.get, '/history?account_id=1', headers={'Accept-Encoding': 'identity'})
+        try:
+            assert started.wait(3)
+            assert pool.submit(client.get, '/ping').result(timeout=1).json() == {'ok': True}
+        finally:
+            release.set()
+        assert history.result(timeout=3).json() == {'points': [], 'render_hold': True}
+        compressed = client.get('/history?account_id=1', headers={'Accept-Encoding': 'gzip'})
+        assert compressed.headers['content-encoding'] == 'gzip'
+        assert compressed.headers['cache-control'] == 'no-store'
+        assert compressed.json() == {'points': [], 'render_hold': True}
 
 
 def test_duplicate_tabs_share_bounded_owner_scoped_reads(tmp_path, monkeypatch):
@@ -166,3 +227,40 @@ def test_duplicate_tabs_share_bounded_owner_scoped_reads(tmp_path, monkeypatch):
     monkeypatch.setattr(service,'monotonic',lambda:float('inf'))
     service.account_history(user_id='a',window='session')
     assert calls==['a','b','a']
+
+
+def test_timed_out_waiter_does_not_release_the_active_disk_slot(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, BoundedSemaphore
+    monkeypatch.setattr(service, 'history_source_path', lambda: tmp_path/'source.json')
+    monkeypatch.setattr(service, 'cache_root', lambda: tmp_path)
+    monkeypatch.setattr(service, '_slots', BoundedSemaphore(1))
+    monkeypatch.setattr(service, 'READ_SECONDS', -6.98)  # 20ms follower wait; disk call remains blocked.
+    started, release = Event(), Event()
+    def blocked(*args, **kwargs):
+        started.set()
+        assert release.wait(3)
+        return {'points':[]}
+    monkeypatch.setattr(service, 'read_history', blocked)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        leader=pool.submit(service.account_history,user_id='bounded-leader')
+        assert started.wait(2)
+        try:
+            with pytest.raises(RuntimeError,match='still preparing'):
+                service.account_history(user_id='bounded-leader')
+            with pytest.raises(RuntimeError,match='busy'):
+                service.account_history(user_id='other-owner')
+        finally:
+            release.set()
+        assert leader.result()['points']==[]
+    assert service.account_history(user_id='other-owner')['points']==[]
+
+
+def test_history_deadline_returns_recoverable_503(monkeypatch):
+    import app.main as main
+    monkeypatch.setattr(main,'get_authenticated_user_id',lambda:'owner')
+    monkeypatch.setattr(main,'_require_owned_projectx_account',lambda *a,**k:None)
+    monkeypatch.setattr(service,'account_history',lambda **k:(_ for _ in ()).throw(RuntimeError('History is still preparing')))
+    with pytest.raises(HTTPException) as caught:
+        main.get_order_book_history(123,Response(),db=SimpleNamespace(rollback=lambda:None))
+    assert caught.value.status_code==503 and caught.value.headers=={'Retry-After':'5','Cache-Control':'no-store'}

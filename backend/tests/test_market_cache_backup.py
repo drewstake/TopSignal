@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -7,6 +8,50 @@ import tarfile
 from contextlib import closing
 
 import pytest
+
+
+def test_transport_hash_covers_headers_padding_and_payload_without_readback(tmp_path, monkeypatch):
+    from tools import backup_market_cache as tool
+    source=tmp_path/'source';source.mkdir()
+    (source/'evidence.bin').write_bytes(b'important evidence' * 257)
+    snapshot=tmp_path/'snapshot'
+    tool.backup(source,snapshot)
+    def no_second_pass(_):
+        raise AssertionError('Packing must not reread its completed archive')
+    monkeypatch.setattr(tool,'checksum',no_second_pass)
+    output=tmp_path/'transport.tar'
+    receipt=tool.pack(snapshot,output)
+    actual=output.read_bytes()
+    assert receipt['sha256']==hashlib.sha256(actual).hexdigest()
+    assert receipt['bytes']==len(actual)
+    with tarfile.open(output) as archive:
+        assert archive.extractfile('evidence.bin').read()==(source/'evidence.bin').read_bytes()
+    assert len(actual)%tarfile.RECORDSIZE==0
+    with pytest.raises(FileExistsError):
+        tool.pack(snapshot,output)
+
+
+def test_transport_pacing_remains_useful_with_coarse_windows_timers(tmp_path, monkeypatch):
+    import math
+    from tools import backup_market_cache as tool
+    from tools.backup_io import BackupIO
+    source = tmp_path/'source'; source.mkdir()
+    payload = b'evidence' * (4 * 1024 * 1024 // 8)
+    (source/'evidence.bin').write_bytes(payload)
+    snapshot = tmp_path/'snapshot'
+    tool.backup(source, snapshot)
+    elapsed = [0.0]
+    # Observed on the host: a requested 2 ms sleep takes one 15.625 ms tick.
+    # A 16 KiB tar read consequently turns an 8 MiB/s cap into 1 MiB/s.
+    def sleep(seconds):
+        elapsed[0] += math.ceil(seconds / .015625) * .015625
+    monkeypatch.setattr(tool, '_IO_GUARD', BackupIO(8, clock=lambda: elapsed[0], sleep=sleep))
+    output = tmp_path/'transport.tar'
+    receipt = tool.pack(snapshot, output)
+    assert .5 <= elapsed[0] < 1.5  # Preserve the cap without a per-small-read timer penalty.
+    assert hashlib.sha256(output.read_bytes()).hexdigest() == receipt['sha256']
+    with tarfile.open(output) as archive:
+        assert archive.extractfile('evidence.bin').read() == payload
 
 
 def test_wal_snapshot_finishes_under_continuous_external_writes(tmp_path):
@@ -79,20 +124,6 @@ def test_sqlite_scratch_capacity_failure_preserves_sources(tmp_path, monkeypatch
     assert source.read_bytes() == original and not target.exists()
 
 
-def test_sqlite_priority_restores_background_mode_after_error(monkeypatch):
-    from tools import backup_market_cache as tool
-    calls = []
-    monkeypatch.setattr(tool, '_BACKGROUND_RESOURCES', True)
-    monkeypatch.setattr(tool, '_set_windows_priority', calls.append)
-    with pytest.raises(ValueError):
-        with tool._sqlite_priority():
-            assert not tool._BACKGROUND_RESOURCES
-            with tool._sqlite_priority():
-                raise ValueError('failed SQLite operation')
-    assert tool._BACKGROUND_RESOURCES
-    assert calls == [0x00200000, 0x00004000, 0x00100000]
-
-
 def test_integrity_uses_identical_scratch_bytes_and_preserves_original(tmp_path):
     from tools import backup_market_cache as tool
     source = tmp_path/'snapshot.sqlite3'
@@ -113,7 +144,7 @@ def test_integrity_refuses_corrupted_scratch_copy(tmp_path, monkeypatch):
     with closing(sqlite3.connect(source)) as db:
         db.execute('CREATE TABLE entries(id INTEGER PRIMARY KEY)'); db.commit()
     digest = tool.checksum(source)
-    monkeypatch.setattr(tool.shutil, 'copyfile', lambda src, dst: Path(dst).write_bytes(b'corrupt copy'))
+    monkeypatch.setattr(tool, 'paced_copy', lambda src, dst: Path(dst).write_bytes(b'corrupt copy'))
     with pytest.raises(ValueError, match='scratch checksum mismatch'):
         tool.verify_sqlite(source, digest, scratch=tmp_path)
     assert tool.checksum(source) == digest
@@ -218,6 +249,27 @@ def seal_segment(source, payload):
     recorder.append(CONTRACT, 'connect', payload)
     recorder.close()
     return next(recorder.path.glob('*.ndjson.gz'))
+
+
+def test_snapshot_does_not_reopen_storage_roots_for_each_segment(tmp_path, monkeypatch):
+    tool, _ = incremental_tools(monkeypatch)
+    original = Path.resolve
+    counts = []
+    for count in (1, 4):
+        source = tmp_path/f'source-{count}'
+        for index in range(count):seal_segment(source, {'connection': index})
+        root_reads = []
+        def observed(path, *args, **kwargs):
+            if path.name in (source.name, 'depth-recordings-v1'):
+                root_reads.append(path)
+            return original(path, *args, **kwargs)
+        with monkeypatch.context() as context:
+            context.setattr(Path, 'resolve', observed)
+            tool.backup(source, tmp_path/f'snapshot-{count}', deep_verify=False)
+        counts.append(len(root_reads))
+    # Windows resolution opens filesystem metadata; more segments must not
+    # multiply I/O for invariant roots. Each member remains resolved/checked.
+    assert counts[0] == counts[1]
 
 
 def cache(tmp_path):
@@ -334,10 +386,11 @@ def test_snapshot_without_a_previous_manifest_is_a_full_copy(tmp_path, monkeypat
     tool.verify(output)
 
 
-def test_derived_heatmap_cache_is_rebuilt_not_archived(tmp_path, monkeypatch):
+@pytest.mark.parametrize('cache_name', ['depth-heatmap-v1', 'depth-history-cache-v1'])
+def test_derived_heatmap_cache_is_rebuilt_not_archived(tmp_path, monkeypatch, cache_name):
     tool, _ = incremental_tools(monkeypatch)
     source, segment, _ = cache(tmp_path)
-    derived = source/'depth-heatmap-v1'/('a'*64)/'sessions'/'2026-11-03.sqlite3'
+    derived = source/cache_name/('a'*64)/'sessions'/'2026-11-03.sqlite3'
     derived.parent.mkdir(parents=True)
     with closing(sqlite3.connect(derived)) as db:
         db.execute('PRAGMA journal_mode=WAL')
@@ -346,7 +399,7 @@ def test_derived_heatmap_cache_is_rebuilt_not_archived(tmp_path, monkeypatch):
         output = tmp_path/'full'
         tool.backup(source, output, previous=tmp_path/'absent')
     files = json.loads((output/'backup-manifest.json').read_text())['files']
-    assert not any(name.startswith('depth-heatmap-v1/') for name in files)
+    assert not any(name.startswith(cache_name+'/') for name in files)
     # Raw segments (the source of the derived cache) and other stores are still archived.
     assert any(name.endswith(segment.name) for name in files)
     assert 'live.sqlite3' in files
@@ -370,6 +423,21 @@ def test_failed_snapshot_leaves_its_reason_beside_the_staging_directory(tmp_path
     assert completed.returncode != 0
     receipt = json.loads((tmp_path/'staging'/'attempt.failure.json').read_text())
     assert receipt['type'] == 'FileExistsError' and receipt['message'] is None
+
+
+def test_sqlite_failure_receipt_names_member_and_fixed_error_code(tmp_path):
+    import subprocess, sys
+    source = tmp_path/'source'; source.mkdir()
+    (source/'damaged.sqlite3').write_bytes(b'not a sqlite database' * 100)
+    output = tmp_path/'staging'/'attempt'
+    completed = subprocess.run([sys.executable, '-B', str(Path(__file__).parents[1]/'tools/backup_market_cache.py'),
+                                '--source', str(source), '--output', str(output)], capture_output=True, text=True, timeout=30)
+    assert completed.returncode != 0
+    receipt = json.loads((tmp_path/'staging'/'attempt.failure.json').read_text())
+    assert receipt['member'] == 'damaged.sqlite3'
+    assert receipt['sqlite_errorcode'] == sqlite3.SQLITE_NOTADB
+    assert receipt['sqlite_errorname'] == 'SQLITE_NOTADB'
+    assert receipt['message'] is None
 
 
 def test_capacity_counts_hard_linked_members_once(tmp_path, monkeypatch):
@@ -406,7 +474,8 @@ def test_runner_refuses_to_overlap_a_running_snapshot_and_records_the_stage(tmp_
         runner.execute(runner_config(tmp_path, destination), sleep=lambda seconds: None)
     status = json.loads((tmp_path/'state.json').read_text())
     assert status['last_failure']['stage'] == 'overlap_check' and status['last_failure']['type'] == 'RuntimeError'
-    assert calls[0][1] == 900  # the size estimate is no longer cut off after 60 seconds
+    assert calls[0][1] == 120  # refuse overlap before a potentially expensive capacity walk
+    assert not any('ConvertTo-Json' in script for script, _ in calls)
     assert not any('--source' in script for script, _ in calls)
 
 

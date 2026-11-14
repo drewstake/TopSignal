@@ -376,10 +376,12 @@ create table if not exists projectx_trade_events (
     references trade_import_batches (id, user_id, account_id, account_row_id, account_external_id)
     on delete restrict,
   constraint uq_projectx_trade_events_account_source_trade
-    unique (user_id, account_id, source_trade_id),
-  constraint uq_projectx_trade_events_account_order_ts
-    unique (user_id, account_id, order_id, trade_timestamp)
+    unique (user_id, account_id, source_trade_id)
 );
+
+create unique index if not exists uq_projectx_trade_events_account_order_ts
+  on projectx_trade_events (user_id, account_id, order_id, trade_timestamp)
+  where source_trade_id is null;
 
 
 -- ============================================

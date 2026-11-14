@@ -12,10 +12,21 @@ import hashlib
 import io
 import json
 import math
+import os
+import stat
 from pathlib import Path
 import re
 import sys
 from threading import Lock
+from time import monotonic
+import sqlite3
+
+try:
+    from .depth_history_index import optional_index, signature
+    from .recording_inventory import directories
+except ImportError:
+    from depth_history_index import optional_index, signature
+    from recording_inventory import directories
 
 MAX_POINTS = 100000
 MAX_RAW_BYTES = 64 * 1024**2
@@ -34,17 +45,32 @@ _manifest_cache_bytes = 0
 _manifest_cache_lock = Lock()
 
 
-def read_manifest(marker, root):
+def read_manifest(marker, root, *, validated_parent=None, file_info=None):
     global _manifest_cache_bytes
-    safe_path(marker, root)
-    info = marker.stat()
+    if validated_parent is None:
+        safe_path(marker, root)
+    elif marker.parent != validated_parent or not re.fullmatch(r'\d{8}\.segment\.json', marker.name):
+        raise ValueError('Invalid manifest under verified run directory.')
+    # Inventory validates the run's ancestors once, then supplies fresh Windows
+    # enumeration metadata for each immediate child. Every request rechecks
+    # selected run ancestry and each selected child identity/reparse flags.
+    info = file_info or marker.stat(follow_symlinks=False)
+    if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        raise ValueError('Recording reparse points are unsupported.')
     if info.st_size > 16384:
         raise ValueError('Oversized manifest.')
     key = str(marker.absolute())
     signature = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
     with _manifest_cache_lock:
         cached = _manifest_cache.get(key)
-        if cached and cached[0] == signature:
+        # Windows directory enumeration omits device/inode. Compare its fresh
+        # metadata, then retain the complete identity when the selected-receipt
+        # path check supplies it. Never discard a known complete identity.
+        same_identity = (cached and (not all(signature[:2]) or not all(cached[0][:2])
+                                    or cached[0][:2] == signature[:2]))
+        if cached and same_identity and cached[0][2:] == signature[2:]:
+            if all(signature[:2]):
+                _manifest_cache[key] = (signature,cached[1],cached[2])
             _manifest_cache.move_to_end(key)
             return cached[1]
     # Use a bounded read even if a file changes between stat and open.
@@ -82,12 +108,12 @@ FIELDS = ('mid_price', 'bid_contracts', 'ask_contracts', 'imbalance')
 BOUNDARIES = {'connect', 'disconnect', 'gap', 'roll', 'end', 'reset', 'epoch_changed',
               'contract_changed', 'receipt_gap', 'receipt_time_reversed'}
 ADVISORY = {'bid_provider_time_unreliable', 'ask_provider_time_unreliable'}
+KNOWN_FLAGS = BOUNDARIES | ADVISORY | {'missing_side', 'bid_stale', 'ask_stale', 'locked_or_crossed'}
 
 
 def metric_reasons(point, field):
     flags = set(point['quality_flags'])
-    known = BOUNDARIES | ADVISORY | {'missing_side', 'bid_stale', 'ask_stale', 'locked_or_crossed'}
-    reasons = flags & BOUNDARIES | flags - known
+    reasons = flags & BOUNDARIES | flags - KNOWN_FLAGS
     sides = ('bid',) if field == 'bid_contracts' else ('ask',) if field == 'ask_contracts' else ('bid', 'ask')
     for side in sides:
         if f'{side}_stale' in flags:
@@ -101,16 +127,23 @@ def metric_reasons(point, field):
     return sorted(reasons)
 
 
-def annotate_continuity(previous, point):
+def point_quality(point):
+    if not point['quality_flags'] and point.get('bid_levels') and point.get('ask_levels'):
+        return {field: [] if point.get(field) is not None else [field+'_unavailable'] for field in FIELDS}
+    return {field: metric_reasons(point,field) for field in FIELDS}
+
+
+def annotate_continuity(previous, point, quality=None):
     """Receipt-based continuity, before reduction. Flags remain on their own observation."""
     stream = (point['contract_id'], point['capture_id'], point['generation'])
-    old = previous.get(stream)
+    old, old_quality = previous.get(stream, (None, {}))
+    quality = quality if quality is not None else point_quality(point)
+    elapsed = point['time'] - old['time'] if old else 0
     point['continuity'] = {}
     point['gap_before'] = {}
     for field in FIELDS:
-        invalid = metric_reasons(point, field)
-        prior_invalid = metric_reasons(old, field) if old else []
-        elapsed = point['time'] - old['time'] if old else 0
+        invalid = quality[field]
+        prior_invalid = old_quality.get(field, [])
         reasons = invalid or prior_invalid
         if old and (elapsed > 2 or elapsed <= 0):
             reasons = sorted(set(reasons + ['missing_observations' if elapsed > 2 else 'receipt_time_reversed']))
@@ -118,19 +151,20 @@ def annotate_continuity(previous, point):
         point['continuity'][field] = point['index'] if changed else old['continuity'][field] if old else 0
         point['gap_before'][field] = (dict(reasons=reasons, seconds=max(0, elapsed), start=old['time'] if old else point['time'], end=point['time'])
                                       if changed else old['gap_before'].get(field) if old else None)
-    previous[stream] = point
+    previous[stream] = (point, quality)
     return point
 
 
-def add_overview_point(buckets, previous, point):
+def add_overview_point(buckets, previous, point, quality=None):
     """Retain actual first/last and metric extrema per 10s. Never union flags onto a sample."""
-    point = annotate_continuity(previous, point)
+    quality = quality if quality is not None else point_quality(point)
+    point = annotate_continuity(previous, point, quality)
     point['sample_interval_ms'] = 10000
     key = (point['contract_id'], point['capture_id'], point['generation'], int(point['time'] // 10))
     bucket = buckets.setdefault(key, {'first': point})
     bucket['last'] = point
     for field in FIELDS:
-        if metric_reasons(point, field):
+        if quality[field]:
             continue
         for suffix, choose in (('min', min), ('max', max)):
             name = field + suffix
@@ -159,6 +193,17 @@ def safe_path(path, root):
         if part.is_symlink() or (hasattr(part, 'is_junction') and part.is_junction()):
             raise ValueError('Recording reparse points are unsupported.')
     return path
+
+
+def child_signature(path, parent):
+    """Fresh file identity after this request checked the run's ancestry."""
+    if path.parent != parent or not re.fullmatch(r'\d{8}\.ndjson\.gz', path.name):
+        raise ValueError('Invalid recording child')
+    info = path.stat(follow_symlinks=False)
+    if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+        raise ValueError('Recording reparse points are unsupported.')
+    return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
 
 
 def verified_rows(marker, manifest, root, *, raw_events=False):
@@ -218,7 +263,24 @@ def recording_health(root, owner):
         return None
 
 
-def read_history(root, query):
+class HistoryReadTimeout(RuntimeError):
+    pass
+
+
+def check_deadline(deadline):
+    if deadline is not None and monotonic() >= deadline:
+        raise HistoryReadTimeout('History is still preparing. Retry shortly or choose a shorter range.')
+
+
+def read_history(root, query, *, deadline=None, cache_path=None):
+    try:
+        with optional_index(cache_path, root) as index:
+            return _read_history(root, query, deadline=deadline, index=index)
+    except sqlite3.Error as exc:
+        raise RuntimeError('History cache is busy or unavailable. Retry shortly.') from exc
+
+
+def _read_history(root, query, *, deadline=None, index=None):
     root = Path(root)
     owner = query.get('owner_hash', '')
     scope = str(query.get('scope', 'all'))
@@ -237,22 +299,33 @@ def read_history(root, query):
     elif window == 'session':
         start, end = session_bounds(datetime.now(timezone.utc))
     manifests, errors, examined = [], 0, 0
+    present_runs = set()
     if root.exists():
         safe_path(root, root)
-        for day in sorted(root.iterdir(), reverse=True):
-            if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', day.name) or not day.is_dir():
-                continue
-            safe_path(day, root)
-            for run in sorted(day.iterdir()):
-                if not re.fullmatch('[a-f0-9]{32}', run.name) or not run.is_dir():
+        for day, _ in directories(root, r'\d{4}-\d{2}-\d{2}', reverse=True):
+            check_deadline(deadline)
+            for run, _ in directories(day, '[a-f0-9]{32}'):
+                check_deadline(deadline)
+                present_runs.add(str(run))
+                if index is not None and index.run_current(run):
                     continue
+                before = signature(run)
                 safe_path(run, root)
-                for marker in sorted(run.glob('*.segment.json')):
+                found = []
+                known = index.known(run) if index is not None else {}
+                with os.scandir(run) as entries:
+                    markers = sorted((Path(e.path), e.stat(follow_symlinks=False)) for e in entries if e.name.endswith('.segment.json'))
+                for marker, info in markers:
+                    if deadline is not None and monotonic() >= deadline:
+                        if index is not None:
+                            index.save_partial(run, found)
+                        check_deadline(deadline)
                     examined += 1
                     if examined > MAX_FILES:
                         raise ValueError('Recording inventory is too large; archive review is required.')
                     try:
-                        m = read_manifest(marker, root)
+                        m = known.get(str(marker)) or read_manifest(marker, root, validated_parent=run, file_info=info)
+                        found.append((marker, m))
                         if m.get('owner_hash') != owner:
                             continue
                         if m['schema'] != 'mnq-depth-segment-v1' or m['synthetic'] is not False:
@@ -260,9 +333,23 @@ def read_history(root, query):
                         first, last = timestamp(m['first_received_at']), timestamp(m['last_received_at'])
                         if first > last:
                             raise ValueError('Invalid segment range.')
-                        manifests.append((first, last, marker, m))
+                        if index is None:
+                            manifests.append((first, last, marker, m))
                     except (ValueError, KeyError, OSError, TypeError):
                         errors += 1
+                if index is not None:
+                    index.save_run(run, before, found)
+        if index is not None:
+            index.remove_missing_runs(present_runs)
+            for marker, m in index.manifests(owner):
+                check_deadline(deadline)
+                try:
+                    first, last = timestamp(m['first_received_at']), timestamp(m['last_received_at'])
+                    if m['schema'] != 'mnq-depth-segment-v1' or m['synthetic'] is not False or first > last:
+                        raise ValueError('Invalid indexed segment')
+                    manifests.append((first, last, marker, m))
+                except (ValueError, KeyError, TypeError):
+                    errors += 1
     manifests.sort(key=lambda entry: (entry[0], str(entry[2])))
     earliest = min((v[0] for v in manifests), default=None)
     latest = max((v[1] for v in manifests), default=None)
@@ -275,39 +362,31 @@ def read_history(root, query):
     buckets, previous = {}, {}
     quality_counts, excluded_counts = Counter(), Counter()
     raw_count = flagged_count = 0
+    validated_runs = set()
     for first, last, marker, m in manifests:
+        check_deadline(deadline)
         if last < start or first >= end:
             continue
         try:
+            # An index is a locator, never authority for ownership or integrity.
+            if marker.parent not in validated_runs:
+                safe_path(marker.parent, root)
+                validated_runs.add(marker.parent)
+            current = read_manifest(marker, root, validated_parent=marker.parent)
+            if current != m:
+                if index is not None:
+                    index.invalidate_run(marker.parent)
+                raise ValueError('Indexed receipt changed; rediscovery required')
+            if current.get('owner_hash') != owner:
+                raise ValueError('Recording ownership changed')
             raw_bytes += m['uncompressed_bytes']
             if raw_bytes > (MAX_SESSION_RAW_BYTES if overview else MAX_RAW_BYTES):
                 raise OverflowError('Choose a shorter time range to read this recording.')
-            rows = verified_rows(marker, m, root)
-            segment_points = []
-            for row in rows:
-                at = timestamp(row['received_at'])
-                if not start <= at < end:
-                    continue
-                p = row['payload']
-                totals = p if scope == 'all' else p['nearest'][scope]
-                flags = p['quality_flags']
-                if not isinstance(flags, list) or any(not isinstance(f, str) or not re.fullmatch('[a-z_]{1,64}', f) for f in flags):
-                    raise ValueError('Invalid quality flags.')
-                contract = row['contract_id']
-                if not re.fullmatch(r'CON\.F\.US\.MNQ\.[A-Z0-9]{1,12}', contract):
-                    raise ValueError('Invalid contract.')
-                segment_points.append(dict(
-                    timestamp=at.isoformat(), time=at.timestamp(), contract_id=contract,
-                    capture_id=row['capture_id'], generation=p['generation'], index=row['index'],
-                    bid_contracts=number(totals['bid_contracts'], nonnegative=True),
-                    ask_contracts=number(totals['ask_contracts'], nonnegative=True),
-                    bid_levels=number(totals['bid_levels'], nonnegative=True),
-                    ask_levels=number(totals['ask_levels'], nonnegative=True),
-                    imbalance=number(totals['imbalance']), mid_price=number(p['mid_price']),
-                    last_trade_price=number(p['last_trade_price']), spread=number(p['spread']),
-                    quality_flags=flags, side_age_ms=p.get('side_age_ms'), provider_age_ms=p.get('provider_age_ms'),
-                ))
+            segment_points = segment_measurements(marker, m, root, scope, index=index,
+                deadline=deadline, validated_parent=marker.parent)
             for point in segment_points:
+                if not start.timestamp() <= point['time'] < end.timestamp():
+                    continue
                 key = (point['capture_id'], point['index'])
                 if key in seen:
                     continue
@@ -315,11 +394,12 @@ def read_history(root, query):
                 raw_count += 1
                 flagged_count += bool(point['quality_flags'])
                 quality_counts.update(point['quality_flags'])
-                excluded_counts.update(field for field in FIELDS if metric_reasons(point, field))
+                quality = point_quality(point)
+                excluded_counts.update(field for field in FIELDS if quality[field])
                 if overview:
-                    add_overview_point(buckets, previous, point)
+                    add_overview_point(buckets, previous, point, quality)
                     continue
-                points.append(annotate_continuity(previous, point))
+                points.append(annotate_continuity(previous, point, quality))
         except (ValueError, KeyError, OSError, TypeError, EOFError):
             errors += 1
         if max(len(points), len(buckets) * 10) > MAX_POINTS or len(seen) > 400000:
@@ -339,14 +419,60 @@ def read_history(root, query):
                 generated_at=datetime.now(timezone.utc).isoformat())
 
 
+def segment_measurements(marker, manifest, root, scope, *, index=None, deadline=None, validated_parent=None):
+    name = manifest['file']
+    if not re.fullmatch(r'\d{8}\.ndjson\.gz', name):
+        raise ValueError('Invalid segment filename.')
+    path = marker.parent / name
+    before = (child_signature(path, validated_parent) if validated_parent is not None
+              else signature(safe_path(path, root)))
+    identity = json.dumps([before, manifest], sort_keys=True)
+    if index is not None:
+        cached = index.load_points(marker, scope, identity)
+        if cached is not None:
+            return cached
+    points = []
+    for i, row in enumerate(verified_rows(marker, manifest, root)):
+        if i % 64 == 0:
+            check_deadline(deadline)
+        at = timestamp(row['received_at'])
+        p = row['payload']
+        totals = p if scope == 'all' else p['nearest'][scope]
+        flags = p['quality_flags']
+        if not isinstance(flags, list) or any(not isinstance(f, str) or not re.fullmatch('[a-z_]{1,64}', f) for f in flags):
+            raise ValueError('Invalid quality flags.')
+        contract = row['contract_id']
+        if not re.fullmatch(r'CON\.F\.US\.MNQ\.[A-Z0-9]{1,12}', contract):
+            raise ValueError('Invalid contract.')
+        points.append(dict(timestamp=at.isoformat(), time=at.timestamp(), contract_id=contract,
+            capture_id=row['capture_id'], generation=p['generation'], index=row['index'],
+            bid_contracts=number(totals['bid_contracts'], nonnegative=True),
+            ask_contracts=number(totals['ask_contracts'], nonnegative=True),
+            bid_levels=number(totals['bid_levels'], nonnegative=True),
+            ask_levels=number(totals['ask_levels'], nonnegative=True),
+            imbalance=number(totals['imbalance']), mid_price=number(p['mid_price']),
+            last_trade_price=number(p['last_trade_price']), spread=number(p['spread']),
+            quality_flags=flags, side_age_ms=p.get('side_age_ms'), provider_age_ms=p.get('provider_age_ms')))
+    if signature(path) != before:
+        raise ValueError('Recording changed while reading')
+    if index is not None:
+        try:
+            index.save_points(marker, scope, identity, points)
+        except sqlite3.Error:
+            pass  # Optional cache failure never creates or discards observations.
+    return points
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', required=True, type=Path)
     args = parser.parse_args()
     try:
         query = json.loads(sys.stdin.read(4097))
-        print(json.dumps(read_history(args.root, query), separators=(',', ':'), allow_nan=False))
-    except (ValueError, OSError, KeyError, TypeError, OverflowError):
+        cache = args.root.parent.parent / 'depth-history-cache-v1' / 'history.sqlite3'
+        result = read_history(args.root, query, deadline=monotonic() + 20, cache_path=cache)
+        print(json.dumps(result, separators=(',', ':'), allow_nan=False))
+    except (ValueError, OSError, KeyError, TypeError, OverflowError, RuntimeError):
         print(json.dumps({'error': 'History could not be read. Choose a shorter range or check recording integrity.'}))
         raise SystemExit(1)
 

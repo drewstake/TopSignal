@@ -85,8 +85,12 @@ jobs:
           alter table accounts drop column if exists balance;
           update instrument_metadata set tick_value = 9.99 where symbol = 'NQ';
           delete from instrument_metadata where symbol = 'ES';
+          drop index uq_projectx_trade_events_account_order_ts;
+          alter table projectx_trade_events add constraint uq_projectx_trade_events_account_order_ts
+            unique (user_id, account_id, order_id, trade_timestamp);
           delete from topsignal_schema_migrations
           where version in (
+            '20261113_preserve_provider_trade_legs.sql',
             '20260710_add_bot_submission_unknown_status.sql',
             '20260710_add_cached_account_balance.sql',
             '20260710_enforce_bot_quantity_safety.sql',
@@ -117,6 +121,11 @@ jobs:
               where schemaname = 'public' and tablename like 'databento_%'
             ) then
               raise exception 'retired Databento migration recreated market tables';
+            end if;
+            if not exists (select 1 from pg_indexes where schemaname='public'
+              and indexname='uq_projectx_trade_events_account_order_ts'
+              and indexdef like '%WHERE (source_trade_id IS NULL)%') then
+              raise exception 'provider leg migration did not establish the partial fallback index';
             end if;
           end
           $$;
@@ -457,7 +466,7 @@ jobs:
           createdb -h 127.0.0.1 -U postgres topsignal_audit_ci
           psql -h 127.0.0.1 -U postgres -d topsignal_audit_ci -v ON_ERROR_STOP=1 -f db/schema.sql
           cd backend
-          python -m pytest -q tests/test_postgres_bot_safety.py
+          python -m pytest -q tests/test_postgres_bot_safety.py tests/test_local_sync.py
 
   backend_tests:
     name: Backend tests

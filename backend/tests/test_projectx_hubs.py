@@ -41,6 +41,16 @@ def test_signalr_close_frame_interrupts_coverage_without_exposing_provider_messa
     assert "secret-fixture-provider-detail" not in str(caught.value)
 
 
+@pytest.mark.parametrize("target", ["GatewayUserTrade", "gatewayUserTrade", "gatewayusertrade"])
+def test_fill_archive_dispatch_matches_signalr_method_case(target):
+    received=[]
+    runner=ProjectXHubRunner(tracker=StreamingPnlTracker(),client_factory=_unused_client_factory,
+        user_id="owner",account_id=101,market_hub_url="",on_archive_event=lambda kind,payload:received.append((kind,payload)))
+    payload={"id":12,"accountId":101,"contractId":"CON.F.US.MNQ.Z26"}
+    runner._dispatch_signalr_invocation("user",{"target":target,"arguments":[payload]})
+    assert received==[("GatewayUserTrade",payload)]
+
+
 @pytest.mark.parametrize("account_id", [101.5, True, float("inf"), float("nan")])
 def test_account_classification_never_coerces_fractional_or_invalid_account_id(account_id):
     observed = []

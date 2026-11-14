@@ -86,17 +86,19 @@ def test_metadata_cache_is_bounded(tmp_path, monkeypatch, limit):
 
 
 def test_cached_manifest_still_checks_path(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import stat
     capture(tmp_path)
     root = tmp_path / 'totals'
     reader.read_history(root, dict(owner_hash=OWNER))
-    original = reader.safe_path
+    original = Path.stat
 
-    def reject_marker(path, storage_root):
+    def reparse_marker(path, *args, **kwargs):
         if path.name.endswith('.segment.json'):
-            raise ValueError('Recording reparse points are unsupported.')
-        return original(path, storage_root)
+            return SimpleNamespace(st_mode=stat.S_IFREG, st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT)
+        return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(reader, 'safe_path', reject_marker)
+    monkeypatch.setattr(Path, 'stat', reparse_marker)
     result = reader.read_history(root, dict(owner_hash=OWNER))
     assert result['points'] == []
     assert result['skipped_segments'] == 1

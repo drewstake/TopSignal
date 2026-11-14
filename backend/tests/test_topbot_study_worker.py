@@ -321,11 +321,19 @@ def test_post_exit_retention_survives_take_profit_and_paused_entries(db_session,
     @contextmanager
     def sessions(): yield db_session
     calls = []
-    monkeypatch.setattr(worker.feed, "retain", lambda owner, contract, factory, until, params: calls.append((owner, contract, until)))
+    def retained(owner, contract, factory, until, params):
+        calls.append((owner, contract, until))
+        monkeypatch.setitem(worker.feed.streams, (str(owner),contract), {"retain_until":until})
+    monkeypatch.setattr(worker.feed, "retain", retained)
     worker.StudyRecorder(sessions, lambda db, *, user_id: "client").cycle()
     assert calls and calls[0][2] == datetime.fromisoformat(request["strategySnapshot"]["research_cutoff"])
     activity = worker.account_activity(str(row.user_id), int(row.account_id))
     assert activity["retention"][row.id]["state"] == "retained"
+    monkeypatch.delitem(worker.feed.streams, (str(row.user_id),row.contract_id))
+    monkeypatch.setattr(worker.feed, "retain", lambda *args: None)  # Capacity/shutdown race can silently decline.
+    worker.StudyRecorder(sessions, lambda db, *, user_id: "client").cycle()
+    refused = worker.account_activity(str(row.user_id), int(row.account_id))["retention"][row.id]
+    assert refused['state']=='failed' and refused['reason']=='retention_not_established'
     def broken(*args): raise ConnectionError("provider down")
     monkeypatch.setattr(worker.feed, "retain", broken)
     worker.StudyRecorder(sessions, lambda db, *, user_id: "client").cycle()  # Must not raise or hide the failure.

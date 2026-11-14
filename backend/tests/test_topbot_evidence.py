@@ -37,6 +37,9 @@ def test_default_queue_absorbs_market_open_burst(tmp_path, monkeypatch):
     finally:
         release.set()
         cap.close()
+    # close() requests a drain and only waits two seconds for the caller. The
+    # background writer may still be syncing on a contended Windows CI disk.
+    cap.thread.join(timeout=10)
     assert not cap.thread.is_alive()
     assert len(list(recorded_batches(cap.path))) == 2501
 
@@ -72,6 +75,7 @@ def test_backlogged_burst_drains_without_excessive_durable_commits(tmp_path, mon
     finally:
         release.set()
         cap.close()
+    cap.thread.join(timeout=10)
     assert not cap.thread.is_alive()
     rows = list(recorded_batches(cap.path))
     assert len(rows) == 4001 and cap.durable_index == 4000
@@ -162,7 +166,22 @@ def test_full_queue_does_not_block_trading_and_reports_loss(tmp_path, monkeypatc
     state.apply(book(now+timedelta(seconds=1), 2), now+timedelta(seconds=1))
     assert state.snapshot(now+timedelta(seconds=1))["ready"]
     assert cap.dropped == 1 and cap.index == 2
+    assert cap.status()['drop_reasons']=={'queue_event_limit':1}
     cap.close()
+
+
+def test_rejected_large_book_is_preserved_without_relaxing_model(tmp_path):
+    cap=Capture('owner',CONTRACT,root=tmp_path,free_floor=0)
+    state=DepthState(CONTRACT);state.capture=cap
+    at=datetime.now(timezone.utc)
+    event=book(at,1)
+    event['data']['bids']=[{'price':20000-i*.25,'size':10} for i in range(3000)]
+    state.apply(event,at)
+    assert not state.snapshot(at)['ready']
+    cap.close()
+    assert cap.dropped==0
+    rows=list(recorded_batches(cap.path))
+    assert len(rows[1]['event']['data']['bids'])==3000
 
 
 def test_capture_strips_nonconsumed_messages(tmp_path):

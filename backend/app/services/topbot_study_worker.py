@@ -323,8 +323,14 @@ class StudyRecorder:
                 key = (owner, account, entry["entry_id"])
                 try:
                     feed.retain(owner, contract, lambda: self.client(owner), cutoff, snapshot["rules"]["entry"])
-                    retention[key] = {"state": "retained", "at": now.isoformat(), "until": cutoff.isoformat(),
-                                      "contract_id": contract}
+                    # retain() can return without a stream when the fixed
+                    # eight-stream capacity is full, or race stream shutdown.
+                    # A returned call is not proof that observation is retained.
+                    with feed.lock:
+                        stream = feed.streams.get((str(owner), contract))
+                        held = bool(stream and stream.get("retain_until", now) >= cutoff)
+                    retention[key] = {"state": "retained" if held else "failed", "at": now.isoformat(), "until": cutoff.isoformat(),
+                                      "contract_id": contract, "reason": None if held else "retention_not_established"}
                 except Exception as exc:
                     retention[key] = {"state": "failed", "at": now.isoformat(), "until": cutoff.isoformat(),
                                       "contract_id": contract, "error_type": type(exc).__name__}

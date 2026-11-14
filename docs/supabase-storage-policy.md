@@ -1,5 +1,21 @@
 # Supabase storage policy and quota recovery
 
+## Current deployment boundary (verified November 13, 2026)
+
+The November 13 maintenance made the application, trusted-device authentication,
+independent recorder, Discord helper and execution backup local-only. PostgreSQL
+on peteamdpc remains the sole execution authority. Mirror consumption and all
+30 capture triggers are retired, with an empty outbox and dedicated logins set
+NOLOGIN; authority/cloud fences remain. Journal is removed and its records/images
+have verified encrypted local and off-device recovery copies. Cloud user/audit
+records and historical definitions are retained, not deleted.
+
+See [maintenance evidence and outstanding acceptance](audits/2026-11-13/storage-maintenance.md),
+[retirement recovery](supabase-retirement.md) and [storage recovery](local-first-storage.md).
+The earlier live audit and incident sections below are dated history, not current
+health checks. Full-cache freshness must be assessed separately from focused
+PostgreSQL/auth/configuration backups. No retirement step authorizes data deletion.
+
 ## Permanent storage boundary
 
 Databento backtest history belongs on the backend filesystem, not in Supabase.
@@ -9,9 +25,11 @@ the development default is `backend/storage/databento`.
 
 | Data | Location and policy |
 | --- | --- |
+| Trade history sync coverage/revisions, frozen trade-review bundles and copied replay results | Local cache `trade-history-sync-v1/` and `trade-review-v1/`; keep hashes, originals and off-device receipts; no cloud arrays |
 | Original Databento definition/OHLCV ZIPs | Local cache `sources/`; preserve checksums and an off-device backup |
 | Bulk historical candles, derived timeframes, replay arrays | Local Parquet/mmap cache; new instruments follow this policy |
-| Accounts, executed trades, journals, expenses, credentials, bot configuration | Application database with existing tenant protections |
+| Accounts, executed trades, expenses, credentials, bot configuration | Local application database with existing tenant protections |
+| Retired Journal records and referenced images | Retained historical tables plus encrypted `retired-journal-v1/` archive and verified off-device copy; no active feature |
 | Saved backtest results | Application database, with bounded detail; do not embed the complete input candle history |
 | Raw observations, ProjectX candle caches, detailed research snapshots | Local SQLite under `TOPSIGNAL_DATABENTO_CACHE_DIR`; cloud definitions remain fenced |
 | Trade progress samples, lifecycle timelines, fill revisions, enrollment and recorder metadata | Local `trade-progress-v1/progress.sqlite3` under `TOPSIGNAL_DATABENTO_CACHE_DIR`; never Supabase or the cloud mirror; no automatic retention deletion |
@@ -38,13 +56,15 @@ filesystem.
 
 ## Capacity checks before growth
 
-Run [the read-only storage report](../db/diagnostics/storage_usage.sql) in the
-Supabase SQL editor weekly, before a bulk import, before increasing sync
+Inspect local PostgreSQL and C:/D: capacity before local growth. For any separately authorized future
+cloud writes, run [the read-only storage report](../db/diagnostics/storage_usage.sql) in the
+Supabase SQL editor weekly, before increasing mirrored volume or sync
 lookback/retention, and before releases that add stored data. Review the
 organization Usage page and project disk metrics as well; a single database
 query does not include every organization project, WAL, or system overhead.
 
-For the current 0.5 GB Free-plan database allowance, use these internal buffers:
+For deployments using the incident's 0.5 GB Free-plan allowance, use these
+internal buffers (the live audit did not reverify billing/plan limits):
 
 - At **350 MB** (decimal), investigate growth and prepare a capacity/archival plan.
 - At **400 MB**, stop optional bulk writes until the plan is reviewed.

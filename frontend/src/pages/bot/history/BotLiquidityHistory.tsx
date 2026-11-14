@@ -46,10 +46,9 @@ export function HistoryView({ accountId, compact = false, liveStore }: { account
     inFlight.current = controller;
     const previous = recordedRef.current;
     const incremental = query.window === "session" && previous?.scope === query.scope && Date.parse(previous.start) / 1000 === sessionWindow(Date.now()).start;
-    const wide = (query.window === "session" && !incremental) || (query.start && query.end && Date.parse(query.end) - Date.parse(query.start) > 3600000);
     void boundedBotRequest(requestJson<BookHistory>(`/api/accounts/${accountId}/order-book-history`, {
       query: incremental ? { scope: query.scope } : query, signal: controller.signal,
-    }), controller, "The recording host took too long to respond. Check its connection and try again.", wide ? 125000 : 30000)
+    }), controller, "The recording host took too long to respond. Retry or choose a shorter range; saved observations are preserved.", 30000)
       .then(result => {
         if (!active || controller.signal.aborted) return;
         setError(null);

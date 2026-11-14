@@ -16,9 +16,9 @@ from typing import Literal, NamedTuple
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy import func, inspect, text
@@ -56,7 +56,6 @@ from .db import (
     init_db,
     log_runtime_connection_targets,
     resolve_database_host_mode,
-    resolve_supabase_mode,
 )
 from .bot_worker import (
     BotWorkerRuntime,
@@ -77,22 +76,6 @@ from .expense_schemas import (
     ExpenseUpdateIn,
     FinancialSummaryOut,
     WeekStart,
-)
-from .journal_schemas import (
-    AIJournalRecapIn,
-    AIJournalRecapOut,
-    JournalEntryCreateIn,
-    JournalEntryCreateOut,
-    JournalEntryListOut,
-    JournalDaysOut,
-    JournalImageOut,
-    JournalMergeIn,
-    JournalMergeOut,
-    JournalEntrySaveOut,
-    JournalEntryUpdateIn,
-    JournalEntryOut,
-    JournalMood,
-    PullTradeStatsIn,
 )
 from .bot_schemas import (
     AccountEmergencyFlattenOut,
@@ -164,33 +147,6 @@ from .services.metrics import (
     get_streak_metrics,
     get_summary_metrics,
 )
-from .services.journal import (
-    MAX_JOURNAL_IMAGE_BYTES,
-    JournalEntryDateConflictError,
-    VersionConflictError,
-    archive_journal_entry,
-    create_journal_entry_image,
-    create_journal_entry,
-    delete_journal_entry,
-    delete_journal_entry_image_record,
-    get_journal_entry_image,
-    get_journal_image_bytes,
-    get_journal_image_file_path,
-    list_journal_days,
-    list_journal_entry_images,
-    list_journal_entries,
-    merge_journal_entries,
-    pull_journal_entry_trade_stats,
-    serialize_journal_entry,
-    serialize_journal_entry_save,
-    serialize_journal_entry_image,
-    unarchive_journal_entry,
-    update_journal_entry,
-    validate_date_range as validate_journal_date_range,
-)
-from .services.gemini_client import GeminiClientError
-from .services.journal_ai_recap import generate_ai_journal_recap
-from .services.journal_storage import delete_journal_image as delete_journal_image_file, journal_storage_backend
 from .services.combine_expenses import add_missing_combine_expenses
 from .services.projectx_accounts import (
     ACCOUNT_STATE_ACTIVE,
@@ -463,6 +419,9 @@ async def app_lifespan(_: FastAPI):
     from .services.trade_progress_recorder import TradeProgressRecorder
     progress_recorder = TradeProgressRecorder(SessionLocal, _projectx_client_for_user_without_open_transaction)
     progress_recorder.start()
+    from .services.trade_history_sync import HistorySynchronizer
+    history_sync = HistorySynchronizer(SessionLocal, _projectx_client_for_user_without_open_transaction)
+    history_sync.start()
     from .services.topbot_study_worker import StudyRecorder
     study_recorder = StudyRecorder(SessionLocal, _projectx_client_for_user_without_open_transaction)
     study_recorder.start()
@@ -484,6 +443,8 @@ async def app_lifespan(_: FastAPI):
         yield
     finally:
         heatmap_deriver.request_stop()  # Instant; the wait happens last.
+        if not await asyncio.to_thread(history_sync.stop):
+            logger.error("trade_history_sync_shutdown_incomplete")
         if not await asyncio.to_thread(progress_recorder.stop):
             logger.error("trade_progress_recorder_shutdown_incomplete")
         study_stopped = await asyncio.to_thread(study_recorder.stop)
@@ -542,7 +503,7 @@ app.add_middleware(
     RequestBodyLimitMiddleware,
     # Multipart framing is permitted up to 1 MiB beyond the per-file limit;
     # handlers retain their existing 10 MiB validation of the file itself.
-    max_body_bytes=max(MAX_JOURNAL_IMAGE_BYTES, MAX_TRADE_IMPORT_BYTES) + 1024 * 1024,
+    max_body_bytes=MAX_TRADE_IMPORT_BYTES + 1024 * 1024,
 )
 app.add_middleware(
     CORSMiddleware,
@@ -598,7 +559,7 @@ async def _authenticate_token_off_event_loop(token: str):
     # Admission happens before executor submission, so the dedicated pool has
     # no unbounded queue and a cold-key refresh owner can never sit behind its
     # same-flight waiters. Keeping these bounded waits out of asyncio's shared
-    # executor prevents JWKS outages from starving unrelated to_thread work.
+    # executor prevents authentication storage delays from starving unrelated to_thread work.
     admission_slots = _AUTH_VERIFICATION_SLOTS
     if not admission_slots.acquire(blocking=False):
         raise AuthUnavailable("auth_verification_busy")
@@ -751,7 +712,6 @@ def _offline_workspace_has_disabled_automation(db: Session) -> bool:
         and os.getenv("TOPSIGNAL_LOCAL_PROJECTX") == "0"
         and os.getenv("TOPSIGNAL_ENV") == "development"
         and not auth_required()
-        and resolve_supabase_mode() == "disabled"
         and _runtime_is_local_only()
         and db.get_bind().dialect.name == "sqlite"
         and not _read_bool_env("TOPSIGNAL_BOT_WORKER_ENABLED", True)
@@ -3899,7 +3859,7 @@ def get_session_order_flow(
     try:
         return account_session_flow(user_id=user_id, contract_id=contract_id, data_live=data_live)
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "5", "Cache-Control": "no-store"}) from exc
 
 
 @app.get("/api/accounts/{account_id}/order-book-history")
@@ -3911,6 +3871,7 @@ def get_order_book_history(
     scope: Literal["all", "1", "5", "10", "20", "50", "100"] = "all",
     window: Literal["latest", "session"] = "latest",
     db: Session = Depends(get_db),
+    request: Request = None,
 ):
     from .services.depth_history import account_history
     user_id = get_authenticated_user_id()
@@ -3922,12 +3883,21 @@ def get_order_book_history(
     )) or (window == "session" and start):
         raise HTTPException(status_code=422, detail="Choose a timezone-aware range of up to 24 hours, or the current session.")
     try:
-        return account_history(user_id=user_id, start=start.isoformat() if start else None,
-                               end=end.isoformat() if end else None, scope=scope, window=window)
+        compressed = request is not None and "gzip" in request.headers.get("accept-encoding", "").lower()
+        payload = account_history(user_id=user_id, start=start.isoformat() if start else None,
+                                  end=end.isoformat() if end else None, scope=scope, window=window,
+                                  representation='gzip' if compressed else 'json')
+        # Already-normalized history can exceed 50 MB. Encode in this synchronous
+        # worker, not FastAPI's event-loop response traversal; keep status/health
+        # requests responsive while delivering full-session charts.
+        headers = {"Cache-Control": "no-store", "Vary": "Accept-Encoding"}
+        if compressed:
+            headers["Content-Encoding"] = "gzip"
+        return Response(content=payload, media_type="application/json", headers=headers)
     except (ValueError, OverflowError) as exc:
         raise HTTPException(status_code=422, detail="History exceeds the bounded session reader; choose a shorter range.") from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "5", "Cache-Control": "no-store"}) from exc
 
 
 @app.get("/api/accounts/{account_id}/liquidity-heatmap")
@@ -3951,7 +3921,8 @@ def get_liquidity_heatmap_history(
     def failure(status: int, message: str) -> HTTPException:
         # The browser aligns its live depth clock to the server even when history is unavailable.
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        return HTTPException(status_code=status, detail={"message": message, "server_time_ms": now_ms}, headers=headers)
+        return HTTPException(status_code=status, detail={"message": message, "server_time_ms": now_ms},
+                             headers={**headers, **({"Retry-After": "5"} if status == 503 else {})})
 
     if not re.fullmatch(r"CON\.F\.US\.MNQ\.[A-Z0-9]{1,12}", contract_id):
         raise failure(422, "Heatmap history requires an explicit MNQ delivery contract.")
@@ -4013,484 +3984,28 @@ def get_forward_results(bot_config_id: int, response: Response,
     return result
 
 
-@app.get("/api/accounts/{account_id}/journal", response_model=JournalEntryListOut)
-def list_projectx_account_journal_entries(
-    account_id: int,
-    start_date: date | None = None,
-    end_date: date | None = None,
-    mood: JournalMood | None = None,
-    q: str | None = Query(default=None, max_length=200),
-    include_archived: bool = False,
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-    db: Session = Depends(get_db),
-):
-    user_id = get_authenticated_user_id()
-    _validate_account_id(account_id)
-    _validate_journal_date_range(start_date=start_date, end_date=end_date)
-
-    try:
-        rows, total = list_journal_entries(
-            db,
-            user_id=user_id,
-            account_id=account_id,
-            start_date=start_date,
-            end_date=end_date,
-            mood=mood,
-            text_query=q,
-            include_archived=include_archived,
-            limit=limit,
-            offset=offset,
-        )
-        return {
-            "items": [serialize_journal_entry(row) for row in rows],
-            "total": total,
-        }
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/api/accounts/{account_id}/journal", response_model=JournalEntryCreateOut, status_code=201)
-def create_projectx_account_journal_entry(
-    account_id: int,
-    payload: JournalEntryCreateIn,
-    response: Response,
-    db: Session = Depends(get_db),
-):
-    user_id = get_authenticated_user_id()
-    _validate_account_id(account_id)
-
-    try:
-        row, already_existed = create_journal_entry(
-            db,
-            user_id=user_id,
-            account_id=account_id,
-            entry_date=payload.entry_date,
-            title=payload.title,
-            mood=payload.mood,
-            tags=payload.tags,
-            body=payload.body,
-        )
-        if already_existed:
-            response.status_code = 200
-        payload_out = serialize_journal_entry(row)
-        payload_out["already_existed"] = already_existed
-        return payload_out
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/api/accounts/{account_id}/journal/ai-recap", response_model=AIJournalRecapOut)
-@app.post("/projectx/accounts/{account_id}/journal/ai-recap", response_model=AIJournalRecapOut)
-def create_projectx_account_ai_journal_recap(
-    account_id: int,
-    payload: AIJournalRecapIn,
-    db: Session = Depends(get_db),
-):
-    user_id = get_authenticated_user_id()
-    _validate_account_id(account_id)
-    _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
-
-    try:
-        return generate_ai_journal_recap(
-            db,
-            user_id=user_id,
-            account_id=account_id,
-            entry_date=payload.entry_date,
-            mode=payload.mode,
-            include_existing_notes=payload.include_existing_notes,
-        )
-    except GeminiClientError as exc:
-        db.rollback()
-        raise _to_gemini_http_exception(exc) from exc
-    except VersionConflictError as exc:
-        db.rollback()
-        return JSONResponse(
-            status_code=409,
-            content=jsonable_encoder(
-                {
-                    "detail": "version_conflict",
-                    "server": serialize_journal_entry(exc.server_row),
-                }
-            ),
-        )
-    except LookupError as exc:
-        db.rollback()
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception:
-        db.rollback()
-        raise
 
 
-@app.post("/api/journal/merge", response_model=JournalMergeOut)
-def merge_projectx_account_journal_entries(
-    payload: JournalMergeIn,
-    db: Session = Depends(get_db),
-):
-    user_id = get_authenticated_user_id()
-    _require_owned_projectx_account(
-        db,
-        user_id=user_id,
-        account_id=payload.from_account_id,
-        error_detail="Source account not found.",
-    )
-    _require_owned_projectx_account(
-        db,
-        user_id=user_id,
-        account_id=payload.to_account_id,
-        error_detail="Destination account not found.",
-    )
-
-    try:
-        return merge_journal_entries(
-            db,
-            user_id=user_id,
-            from_account_id=payload.from_account_id,
-            to_account_id=payload.to_account_id,
-            on_conflict=payload.on_conflict,
-            include_images=payload.include_images,
-        )
-    except VersionConflictError as exc:
-        db.rollback()
-        return JSONResponse(
-            status_code=409,
-            content=jsonable_encoder(
-                {
-                    "detail": "version_conflict",
-                    "server": serialize_journal_entry(exc.server_row),
-                }
-            ),
-        )
-    except JournalEntryDateConflictError as exc:
-        db.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=409, detail="journal image file not found") from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/api/accounts/{account_id}/journal/days", response_model=JournalDaysOut)
-def list_projectx_account_journal_days(
-    account_id: int,
-    start_date: date = Query(...),
-    end_date: date = Query(...),
-    include_archived: bool = False,
-    db: Session = Depends(get_db),
-):
-    user_id = get_authenticated_user_id()
-    _validate_account_id(account_id)
-    _validate_journal_date_range(start_date=start_date, end_date=end_date)
-
-    try:
-        days = list_journal_days(
-            db,
-            user_id=user_id,
-            account_id=account_id,
-            start_date=start_date,
-            end_date=end_date,
-            include_archived=include_archived,
-        )
-        return {"days": days}
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.patch("/api/accounts/{account_id}/journal/{entry_id}", response_model=JournalEntrySaveOut)
-def update_projectx_account_journal_entry(
-    account_id: int,
-    entry_id: int,
-    payload: JournalEntryUpdateIn,
-    db: Session = Depends(get_db),
-):
-    user_id = get_authenticated_user_id()
-    _validate_account_id(account_id)
-    if entry_id <= 0:
-        raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
-    if _journal_update_payload_is_empty(payload):
-        raise HTTPException(status_code=400, detail="at least one field must be provided")
-
-    try:
-        if _journal_update_payload_is_archive_only(payload) and payload.is_archived is not None:
-            if payload.is_archived:
-                row = archive_journal_entry(
-                    db,
-                    user_id=user_id,
-                    account_id=account_id,
-                    entry_id=entry_id,
-                    version=payload.version,
-                )
-            else:
-                row = unarchive_journal_entry(
-                    db,
-                    user_id=user_id,
-                    account_id=account_id,
-                    entry_id=entry_id,
-                    version=payload.version,
-                )
-        else:
-            row = update_journal_entry(
-                db,
-                user_id=user_id,
-                account_id=account_id,
-                entry_id=entry_id,
-                version=payload.version,
-                entry_date=payload.entry_date,
-                title=payload.title,
-                mood=payload.mood,
-                tags=payload.tags,
-                body=payload.body,
-                is_archived=payload.is_archived,
-            )
-        return serialize_journal_entry_save(row)
-    except VersionConflictError as exc:
-        return JSONResponse(
-            status_code=409,
-            content=jsonable_encoder(
-                {
-                    "detail": "version_conflict",
-                    "server": serialize_journal_entry(exc.server_row),
-                }
-            ),
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except JournalEntryDateConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.delete("/api/accounts/{account_id}/journal/{entry_id}", status_code=204)
-def delete_projectx_account_journal_entry(
-    account_id: int,
-    entry_id: int,
-    db: Session = Depends(get_db),
-):
-    user_id = get_authenticated_user_id()
-    _validate_account_id(account_id)
-    if entry_id <= 0:
-        raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
-
-    try:
-        delete_journal_entry(db, user_id=user_id, account_id=account_id, entry_id=entry_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    return Response(status_code=204)
 
 
-@app.post("/api/accounts/{account_id}/journal/{entry_id}/images", response_model=JournalImageOut)
-async def upload_projectx_account_journal_image(
-    account_id: int,
-    entry_id: int,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-):
-    user_id = get_authenticated_user_id()
-    _validate_account_id(account_id)
-    if entry_id <= 0:
-        raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
-
-    try:
-        file_bytes = await file.read(MAX_JOURNAL_IMAGE_BYTES + 1)
-    finally:
-        await file.close()
-
-    try:
-        row = create_journal_entry_image(
-            db,
-            user_id=user_id,
-            account_id=account_id,
-            entry_id=entry_id,
-            file_bytes=file_bytes,
-            mime_type=file.content_type,
-        )
-        return serialize_journal_entry_image(
-            row,
-            url=_journal_image_url(image_id=int(row.id), account_id=int(row.account_id)),
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/api/accounts/{account_id}/journal/{entry_id}/images", response_model=list[JournalImageOut])
-def list_projectx_account_journal_images(
-    account_id: int,
-    entry_id: int,
-    db: Session = Depends(get_db),
-):
-    user_id = get_authenticated_user_id()
-    _validate_account_id(account_id)
-    if entry_id <= 0:
-        raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
-
-    try:
-        rows = list_journal_entry_images(db, user_id=user_id, account_id=account_id, entry_id=entry_id)
-        return [
-            serialize_journal_entry_image(
-                row,
-                url=_journal_image_url(image_id=int(row.id), account_id=int(row.account_id)),
-            )
-            for row in rows
-        ]
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.get("/api/journal-images/{image_id}")
-def serve_journal_image(
-    image_id: int,
-    account_id: int | None = Query(default=None, ge=1),
-    db: Session = Depends(get_db),
-):
-    user_id = get_authenticated_user_id()
-    if image_id <= 0:
-        raise HTTPException(status_code=400, detail="image_id must be a positive integer")
-
-    try:
-        row = get_journal_entry_image(db, user_id=user_id, image_id=image_id, account_id=account_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    if journal_storage_backend() == "supabase":
-        try:
-            file_bytes = get_journal_image_bytes(row.filename)
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="journal image file not found") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail="journal image file not found") from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        return Response(content=file_bytes, media_type=row.mime_type)
-
-    try:
-        path = get_journal_image_file_path(row.filename)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="journal image file not found") from exc
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="journal image file not found")
-
-    return FileResponse(path=path, media_type=row.mime_type, filename=Path(row.filename).name)
 
 
-@app.delete("/api/accounts/{account_id}/journal/{entry_id}/images/{image_id}", status_code=204)
-def delete_projectx_account_journal_image(
-    account_id: int,
-    entry_id: int,
-    image_id: int,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-):
-    user_id = get_authenticated_user_id()
-    _validate_account_id(account_id)
-    if entry_id <= 0:
-        raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
-    if image_id <= 0:
-        raise HTTPException(status_code=400, detail="image_id must be a positive integer")
-
-    try:
-        filename = delete_journal_entry_image_record(
-            db,
-            user_id=user_id,
-            account_id=account_id,
-            entry_id=entry_id,
-            image_id=image_id,
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    background_tasks.add_task(_delete_journal_image_file_safely, object_key=filename)
-    return Response(status_code=204)
 
 
-@app.post("/api/accounts/{account_id}/journal/{entry_id}/pull-trade-stats", response_model=JournalEntryOut)
-def pull_projectx_account_journal_trade_stats(
-    account_id: int,
-    entry_id: int,
-    payload: PullTradeStatsIn,
-    db: Session = Depends(get_db),
-):
-    user_id = get_authenticated_user_id()
-    _validate_account_id(account_id)
-    if entry_id <= 0:
-        raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
-    account = _require_owned_projectx_account(
-        db,
-        user_id=user_id,
-        account_id=account_id,
-    )
-
-    def sync_window(start: datetime | None, end: datetime | None) -> None:
-        client = _projectx_client_for_user_without_open_transaction(db, user_id=user_id)
-        refresh_account_trades(
-            db,
-            client,
-            user_id=user_id,
-            account_id=account_id,
-            start=start,
-            end=end,
-        )
-
-    try:
-        try:
-            row = pull_journal_entry_trade_stats(
-                db,
-                user_id=user_id,
-                account_id=account_id,
-                entry_id=entry_id,
-                trade_ids=payload.trade_ids,
-                entry_date=payload.entry_date,
-                start_date=payload.start_date,
-                end_date=payload.end_date,
-                before_query_sync=(
-                    None
-                    if account.trade_data_source
-                    == TRADE_DATA_SOURCE_CSV_IMPORT
-                    else sync_window
-                ),
-            )
-        except ProjectXClientError as exc:
-            if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
-                raise
-
-            row = pull_journal_entry_trade_stats(
-                db,
-                user_id=user_id,
-                account_id=account_id,
-                entry_id=entry_id,
-                trade_ids=payload.trade_ids,
-                entry_date=payload.entry_date,
-                start_date=payload.start_date,
-                end_date=payload.end_date,
-            )
-        return serialize_journal_entry(row)
-    except ProjectXClientError as exc:
-        raise _to_http_exception(exc) from exc
-    except VersionConflictError as exc:
-        db.rollback()
-        return JSONResponse(
-            status_code=409,
-            content=jsonable_encoder(
-                {
-                    "detail": "version_conflict",
-                    "server": serialize_journal_entry(exc.server_row),
-                }
-            ),
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/accounts/{account_id}/trades/refresh", response_model=ProjectXTradeRefreshOut)
@@ -4700,6 +4215,24 @@ def get_trade_progress_status(account_id: int, db: Session = Depends(get_db)):
         return progress.status(owner, account_id)
     except (OSError, sqlite3.Error):
         raise HTTPException(status_code=503, detail="Local trade progress storage is unavailable.")
+
+
+@app.get("/api/accounts/{account_id}/trade-history/status")
+def get_trade_history_status(account_id: int, db: Session = Depends(get_db)):
+    owner = get_authenticated_user_id()
+    _require_owned_projectx_account(db, user_id=owner, account_id=account_id)
+    from .services import trade_history_sync as history
+    if not history.path().exists():
+        return {"state":"not_configured", "windows":[]}
+    try:
+        with history.state() as local:
+            policy=local.execute('SELECT * FROM policies WHERE owner=?',(owner,)).fetchone()
+            account=local.execute('SELECT * FROM accounts WHERE owner=? AND account=?',(owner,account_id)).fetchone()
+            rows=local.execute('SELECT * FROM windows WHERE owner=? AND account=? ORDER BY day DESC LIMIT 4001',(owner,account_id)).fetchall()
+        return {"state":account['state'] if account else "not_examined", "policy":dict(policy) if policy else None,
+                "account":dict(account) if account else None, "windows":[dict(r) for r in rows[:4000]], "truncated":len(rows)>4000}
+    except (OSError,sqlite3.Error):
+        raise HTTPException(status_code=503,detail="Local history synchronization state is unavailable.")
 
 
 @app.put("/api/accounts/{account_id}/trade-progress/enrollment")
@@ -4959,12 +4492,13 @@ def _allow_legacy_projectx_env_credentials() -> bool:
     # Shared provider credentials are a single-user development escape hatch,
     # never an authenticated/cloud fallback. CORS is not a trust boundary and
     # must not decide whether one user's brokerage credentials serve another.
-    return _read_bool_env("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", False) and _runtime_is_local_only()
+    return (_read_bool_env("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", False)
+            and not auth_required() and _runtime_is_local_only())
 
 
 def _runtime_is_local_only() -> bool:
     _, database_mode = resolve_database_host_mode()
-    return database_mode == "local" and resolve_supabase_mode() in {"disabled", "local"}
+    return database_mode == "local"
 
 
 def _validate_runtime_security_configuration() -> None:
@@ -5002,18 +4536,9 @@ def _validate_runtime_security_configuration() -> None:
             Fernet(os.environ.get("CREDENTIALS_ENCRYPTION_KEY", "").encode("ascii"))
         except (ValueError, TypeError, UnicodeError):
             raise RuntimeError("Production requires a valid CREDENTIALS_ENCRYPTION_KEY") from None
-        try:
-            issuer = urlsplit(os.environ.get("SUPABASE_URL", ""))
-            if not issuer.hostname or issuer.username or issuer.password or issuer.query or issuer.fragment:
-                raise ValueError("invalid issuer")
-            if issuer.scheme != "https" and not (
-                issuer.scheme == "http" and issuer.hostname in {"localhost", "127.0.0.1", "::1"}
-            ):
-                raise ValueError("insecure issuer")
-        except ValueError:
-            raise RuntimeError("Production requires an HTTPS SUPABASE_URL or explicit loopback issuer") from None
-        if not os.environ.get("SUPABASE_JWT_AUDIENCE", "").strip():
-            raise RuntimeError("Production requires SUPABASE_JWT_AUDIENCE")
+        from .local_auth import enabled as local_auth_enabled
+        if not local_auth_enabled():
+            raise RuntimeError("Production requires TOPSIGNAL_LOCAL_AUTH_DB")
         if os.getenv("TOPSIGNAL_DB_SCHEMA_INIT", "skip").strip().lower() != "skip":
             raise RuntimeError("Production requires TOPSIGNAL_DB_SCHEMA_INIT=skip; use the migration runner")
         # Strictly validate worker timing and gate syntax before any startup
@@ -5021,7 +4546,7 @@ def _validate_runtime_security_configuration() -> None:
         BotWorkerSettings.from_env()
     if not auth_required() and not local_only:
         raise RuntimeError(
-            "AUTH_REQUIRED=false is allowed only with a local database and local/disabled Supabase runtime."
+            "AUTH_REQUIRED=false is allowed only with a local database."
         )
     if _read_bool_env("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", False) and not local_only:
         raise RuntimeError(
@@ -5442,11 +4967,6 @@ def _validate_time_range(*, start: datetime | None, end: datetime | None) -> Non
         raise HTTPException(status_code=400, detail="start must be before end")
 
 
-def _validate_journal_date_range(*, start_date: date | None, end_date: date | None) -> None:
-    try:
-        validate_journal_date_range(start_date=start_date, end_date=end_date)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _load_last_trade_timestamps(db: Session, *, user_id: str, account_ids: list[int]) -> dict[int, datetime]:
@@ -5939,26 +5459,8 @@ def _stop_streaming_runtime() -> None:
     _streaming_runtime = None
 
 
-def _journal_update_payload_is_empty(payload: JournalEntryUpdateIn) -> bool:
-    return (
-        payload.entry_date is None
-        and payload.title is None
-        and payload.mood is None
-        and payload.tags is None
-        and payload.body is None
-        and payload.is_archived is None
-    )
 
 
-def _journal_update_payload_is_archive_only(payload: JournalEntryUpdateIn) -> bool:
-    return (
-        payload.is_archived is not None
-        and payload.entry_date is None
-        and payload.title is None
-        and payload.mood is None
-        and payload.tags is None
-        and payload.body is None
-    )
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -5980,15 +5482,8 @@ def _subtract_utc_months(value: datetime, months: int) -> datetime:
     return current.replace(year=year, month=month, day=day)
 
 
-def _delete_journal_image_file_safely(*, object_key: str) -> None:
-    try:
-        delete_journal_image_file(object_key=object_key)
-    except Exception:
-        logger.exception("journal_image_background_delete_failed", extra={"object_key": object_key})
 
 
-def _journal_image_url(*, image_id: int, account_id: int) -> str:
-    return f"/api/journal-images/{image_id}?account_id={account_id}"
 
 
 def _to_http_exception(exc: ProjectXClientError) -> HTTPException:
@@ -6007,14 +5502,3 @@ def _to_http_exception(exc: ProjectXClientError) -> HTTPException:
 
     # Upstream API errors should be surfaced as a gateway error to the frontend.
     return HTTPException(status_code=502, detail=detail)
-
-
-def _to_gemini_http_exception(exc: GeminiClientError) -> HTTPException:
-    message = str(exc)
-    if exc.status_code is None and "Missing Gemini configuration" in message:
-        return HTTPException(status_code=503, detail="Gemini is not configured on the backend.")
-    if exc.status_code == 504:
-        return HTTPException(status_code=504, detail="Gemini recap generation timed out.")
-    if exc.status_code in {429, 503}:
-        return HTTPException(status_code=503, detail=message or "Gemini is temporarily unavailable.")
-    return HTTPException(status_code=502, detail=message or "Gemini recap generation failed.")

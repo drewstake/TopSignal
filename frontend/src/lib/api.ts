@@ -4,92 +4,14 @@ import type { ForwardResults } from "../pages/bot/BotForwardResultsPanel";
 import type { ManualOrderInput, ManualOrderResult, ManualOrderState } from "./manualOrderTypes";
 import { ACCOUNT_EXPENSES_UPDATED_EVENT } from "./financialEvents";
 
-import type {
-  AccountEmergencyFlattenResult,
-  AccountAutomationClassification,
-  AccountArchiveUpdateResult,
-  AccountMainUpdateResult,
-  AccountInfo,
-  AccountLastTradeInfo,
-  AccountRenameResult,
-  AIJournalRecapInput,
-  AIJournalRecapResult,
-  AuthMe,
-  JournalEntry,
-  JournalEntryCreateResult,
-  JournalEntryCreateInput,
-  JournalEntryImage,
-  JournalEntrySaveResult,
-  JournalEntryUpdateInput,
-  JournalEntriesQuery,
-  JournalEntriesResponse,
-  JournalDaysQuery,
-  JournalDaysResponse,
-  JournalMergeInput,
-  JournalMergeResult,
-  JournalPullTradeStatsInput,
-  LiveImportAccountInput,
-  AccountPnlCalendarDay,
-  AccountSummary,
-  AccountSummaryWithPointBases,
-  AccountTrade,
-  AccountTradeRefreshResult,
-  BehaviorMetrics,
-  CombineTrackerSuppressionsResponse,
-  DayPnlPoint,
-  ExpenseCreateInput,
-  ExpenseListQuery,
-  ExpenseListResponse,
-  ExpenseRange,
-  ExpenseRecord,
-  ExpenseTotals,
-  ExpenseUpdateInput,
-  FinancialSummary,
-  PayoutCreateInput,
-  PayoutListQuery,
-  PayoutListResponse,
-  PayoutRecord,
-  PayoutTotals,
-  HourPnlPoint,
-  StreakMetrics,
-  SummaryMetrics,
-  SymbolPnlPoint,
-  TradeRecord,
-  TradeImportConfirmResult,
-  TradeImportPreview,
-  TradeImportStatus,
-  ProjectXCredentialsInput,
-  ProjectXCredentialsStatus,
-  BotActivity,
-  BotLogs,
-  BotBacktestInput,
-  BotBacktestProgress,
-  BotBacktestResult,
-  BotConfig,
-  BotConfigInput,
-  BotConfigListResponse,
-  BotConfigUpdateInput,
-  BotEvaluation,
-  BotEmergencyFlattenResult,
-  BotRuntimeStatus,
-  BotTimeframeUnit,
-  ProjectXContract,
-  ProjectXMarketCandle,
-  ProjectXMarketDepthConnectionState,
-  ProjectXMarketDepthSnapshot,
-  ProjectXMarketDepthState,
-  ProjectXMarketDepthUpdate,
-  ProjectXMarketPrice,
-  TradeEvaluationResult,
-  TradePlanEvaluationInput,
-} from "./types";
+import type { AccountEmergencyFlattenResult, AccountAutomationClassification, AccountArchiveUpdateResult, AccountMainUpdateResult, AccountInfo, AccountLastTradeInfo, AccountRenameResult, AuthMe, LiveImportAccountInput, AccountPnlCalendarDay, AccountSummary, AccountSummaryWithPointBases, AccountTrade, AccountTradeRefreshResult, BehaviorMetrics, CombineTrackerSuppressionsResponse, DayPnlPoint, ExpenseCreateInput, ExpenseListQuery, ExpenseListResponse, ExpenseRange, ExpenseRecord, ExpenseTotals, ExpenseUpdateInput, FinancialSummary, PayoutCreateInput, PayoutListQuery, PayoutListResponse, PayoutRecord, PayoutTotals, HourPnlPoint, StreakMetrics, SummaryMetrics, SymbolPnlPoint, TradeRecord, TradeImportConfirmResult, TradeImportPreview, TradeImportStatus, ProjectXCredentialsInput, ProjectXCredentialsStatus, BotActivity, BotLogs, BotBacktestInput, BotBacktestProgress, BotBacktestResult, BotConfig, BotConfigInput, BotConfigListResponse, BotConfigUpdateInput, BotEvaluation, BotEmergencyFlattenResult, BotRuntimeStatus, BotTimeframeUnit, ProjectXContract, ProjectXMarketCandle, ProjectXMarketDepthConnectionState, ProjectXMarketDepthSnapshot, ProjectXMarketDepthState, ProjectXMarketDepthUpdate, ProjectXMarketPrice, TradeEvaluationResult, TradePlanEvaluationInput } from "./types";
 import { dispatchAccountDisplayNameUpdated } from "./accountSelection";
 import { reclassifyAccountListProviderFreshness } from "./accountProviderState";
 import { isDemoModeEnabled, sanitizeDemoApiResponse, subscribeToDemoModeChanges } from "./demoMode";
 import { beginLiveMutationRequest } from "./liveMutationState";
 import { NavigationReadCache, type NavigationReadOptions } from "./navigationReadCache";
 import { ENABLE_PERF_LOGS, logPerfInfo } from "./perf";
-import { getAccessToken } from "./supabase";
+import { getAccessToken } from "./auth";
 import type { AccountOperation } from "./accountOperation";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -310,7 +232,7 @@ export function clearFinancialReadCache(): void {
 }
 
 /**
- * Stable, non-secret namespace for browser caches. Supabase access tokens are
+ * Stable, non-secret namespace for browser caches. Access tokens are
  * JWTs, so issuer + subject remain stable across token refreshes without ever
  * storing the credential itself. Opaque-token fallback is intentionally
  * session-scoped rather than exposing or persisting the token.
@@ -352,7 +274,7 @@ function getJwtUserScope(accessToken: string): string | null {
     if (typeof decoded.sub !== "string" || decoded.sub.trim() === "") {
       return null;
     }
-    const issuer = typeof decoded.iss === "string" ? decoded.iss : "supabase";
+    const issuer = typeof decoded.iss === "string" ? decoded.iss : "unknown-issuer";
     return `user:${encodeURIComponent(issuer)}:${encodeURIComponent(decoded.sub)}`;
   } catch {
     return null;
@@ -495,13 +417,6 @@ function logApiPerfEnd(context: RequestPerfContext, response: Response) {
     network_ms: networkMs !== null ? Number(networkMs.toFixed(2)) : null,
     response_bytes: parseContentLength(response),
   });
-}
-
-function normalizeJournalImage(image: JournalEntryImage): JournalEntryImage {
-  return {
-    ...image,
-    url: toAbsoluteApiUrl(image.url),
-  };
 }
 
 export async function requestJson<T>(path: string, options: RequestJsonOptions = {}): Promise<T> {
@@ -745,11 +660,8 @@ const accountSummaryWithPointBasesCacheByQuery = new Map<string, TimedCache<Acco
 const inFlightAccountSummaryWithPointBasesByQuery = new Map<string, Promise<AccountSummaryWithPointBases>>();
 const accountPnlCalendarCacheByQuery = new Map<string, TimedCache<AccountPnlCalendarDay[]>>();
 const inFlightAccountPnlCalendarByQuery = new Map<string, Promise<AccountPnlCalendarDay[]>>();
-const accountJournalDaysCacheByQuery = new Map<string, TimedCache<JournalDaysResponse>>();
-const inFlightAccountJournalDaysByQuery = new Map<string, Promise<JournalDaysResponse>>();
 const accountCacheVersionById = new Map<number, number>();
 const tradeRefreshCache = new TradeRefreshCache<AccountTradeRefreshResult>();
-const accountJournalCacheVersionById = new Map<number, number>();
 
 interface RequestSignalOptions {
   signal?: AbortSignal;
@@ -795,10 +707,6 @@ function getAccountCacheVersion(accountId: number) {
   return accountCacheVersionById.get(accountId) ?? 0;
 }
 
-function getAccountJournalCacheVersion(accountId: number) {
-  return accountJournalCacheVersionById.get(accountId) ?? 0;
-}
-
 function accountReadQueryCacheKey(accountId: number, query?: Record<string, QueryValue>) {
   const version = getAccountCacheVersion(accountId);
   const serializedQuery = toSortedQueryCacheKey(query);
@@ -807,24 +715,8 @@ function accountReadQueryCacheKey(accountId: number, query?: Record<string, Quer
     : `account|${accountId}|v${version}`;
 }
 
-function accountJournalReadQueryCacheKey(accountId: number, query?: Record<string, QueryValue>) {
-  const version = getAccountJournalCacheVersion(accountId);
-  const serializedQuery = toSortedQueryCacheKey(query);
-  return serializedQuery.length > 0
-    ? `account-journal|${accountId}|v${version}|${serializedQuery}`
-    : `account-journal|${accountId}|v${version}`;
-}
-
 function clearMapByAccountPrefix<T>(map: Map<string, T>, accountId: number) {
   const prefix = `account|${accountId}|`;
-  for (const key of map.keys()) {
-    if (key.startsWith(prefix)) {
-      map.delete(key);
-    }
-  }
-}
-
-function clearMapByPrefix<T>(map: Map<string, T>, prefix: string) {
   for (const key of map.keys()) {
     if (key.startsWith(prefix)) {
       map.delete(key);
@@ -844,7 +736,6 @@ function invalidateAccountReadCaches(accountId?: number, preserveRefreshObservat
     inFlightAccountSummaryWithPointBasesByQuery.clear();
     accountPnlCalendarCacheByQuery.clear();
     inFlightAccountPnlCalendarByQuery.clear();
-    invalidateAccountJournalCaches();
     return;
   }
 
@@ -857,20 +748,6 @@ function invalidateAccountReadCaches(accountId?: number, preserveRefreshObservat
   clearMapByAccountPrefix(inFlightAccountSummaryWithPointBasesByQuery, accountId);
   clearMapByAccountPrefix(accountPnlCalendarCacheByQuery, accountId);
   clearMapByAccountPrefix(inFlightAccountPnlCalendarByQuery, accountId);
-}
-
-function invalidateAccountJournalCaches(accountId?: number) {
-  navigationReadCache.invalidate(typeof accountId === "number" ? `journal|${accountId}|` : "journal|");
-  if (typeof accountId !== "number") {
-    accountJournalCacheVersionById.clear();
-    accountJournalDaysCacheByQuery.clear();
-    inFlightAccountJournalDaysByQuery.clear();
-    return;
-  }
-
-  accountJournalCacheVersionById.set(accountId, getAccountJournalCacheVersion(accountId) + 1);
-  clearMapByPrefix(accountJournalDaysCacheByQuery, `account-journal|${accountId}|`);
-  clearMapByPrefix(inFlightAccountJournalDaysByQuery, `account-journal|${accountId}|`);
 }
 
 function invalidateAccountsListCaches() {
@@ -1288,103 +1165,6 @@ export const accountsApi = {
         signal: options.signal,
       },
     ),
-  getJournalEntries: (accountId: number, query: JournalEntriesQuery = {}, options: NavigationReadOptions = {}) =>
-    getNavigationRead<JournalEntriesResponse>(`journal|${accountId}`, `/api/accounts/${accountId}/journal`, {
-      start_date: query.start_date,
-      end_date: query.end_date,
-      mood: query.mood,
-      q: query.q,
-      include_archived: query.include_archived,
-      limit: query.limit ?? 20,
-      offset: query.offset ?? 0,
-    }, options),
-  createJournalEntry: (accountId: number, body: JournalEntryCreateInput) =>
-    requestJson<JournalEntryCreateResult>(`/api/accounts/${accountId}/journal`, {
-      method: "POST",
-      body,
-    }).then((result) => {
-      invalidateAccountJournalCaches(accountId);
-      return result;
-    }),
-  updateJournalEntry: (accountId: number, entryId: number, body: JournalEntryUpdateInput) =>
-    requestJson<JournalEntrySaveResult>(`/api/accounts/${accountId}/journal/${entryId}`, {
-      method: "PATCH",
-      body,
-    }).finally(() => invalidateAccountJournalCaches(accountId)),
-  deleteJournalEntry: (accountId: number, entryId: number) =>
-    requestJson<void>(`/api/accounts/${accountId}/journal/${entryId}`, {
-      method: "DELETE",
-    }).then((result) => {
-      invalidateAccountJournalCaches(accountId);
-      return result;
-    }),
-  getJournalDays: (accountId: number, query: JournalDaysQuery) => {
-    const requestQuery = {
-      start_date: query.start_date,
-      end_date: query.end_date,
-      include_archived: query.include_archived,
-    };
-    const cacheKey = accountJournalReadQueryCacheKey(accountId, requestQuery);
-    return getUserScopedTimedCachedRequest({
-      cache: accountJournalDaysCacheByQuery,
-      inFlight: inFlightAccountJournalDaysByQuery,
-      cacheKey,
-      ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
-      load: (accessToken) =>
-        requestJson<JournalDaysResponse>(`/api/accounts/${accountId}/journal/days`, {
-          query: requestQuery,
-          accessTokenOverride: accessToken,
-        }),
-    });
-  },
-  uploadJournalImage: (accountId: number, entryId: number, file: File | Blob, filename?: string) => {
-    const formData = new FormData();
-    const fallbackName =
-      typeof File !== "undefined" && file instanceof File ? file.name : "journal-image";
-    formData.append("file", file, filename ?? fallbackName);
-    return requestMultipart<JournalEntryImage>(`/api/accounts/${accountId}/journal/${entryId}/images`, {
-      formData,
-    }).then((image) => normalizeJournalImage(image))
-      .finally(() => invalidateAccountJournalCaches(accountId));
-  },
-  listJournalImages: (accountId: number, entryId: number, options: NavigationReadOptions = {}) =>
-    getNavigationRead<JournalEntryImage[]>(`journal|${accountId}`, `/api/accounts/${accountId}/journal/${entryId}/images`, {}, options).then((images) =>
-      images.map((image) => normalizeJournalImage(image)),
-    ),
-  deleteJournalImage: (accountId: number, entryId: number, imageId: number) =>
-    requestJson<void>(`/api/accounts/${accountId}/journal/${entryId}/images/${imageId}`, {
-      method: "DELETE",
-    }).finally(() => invalidateAccountJournalCaches(accountId)),
-  pullJournalTradeStats: (accountId: number, entryId: number, body: JournalPullTradeStatsInput = {}) =>
-    requestJson<JournalEntry>(`/api/accounts/${accountId}/journal/${entryId}/pull-trade-stats`, {
-      method: "POST",
-      body,
-    }).then((result) => {
-      invalidateAccountJournalCaches(accountId);
-      return result;
-    }),
-  generateAIJournalRecap: (accountId: number, body: AIJournalRecapInput) =>
-    requestJson<AIJournalRecapResult>(`/projectx/accounts/${accountId}/journal/ai-recap`, {
-      method: "POST",
-      body,
-    }).then((result) => {
-      if (result.created || result.updated) {
-        invalidateAccountJournalCaches(accountId);
-      }
-      return result;
-    }),
-  mergeJournalEntries: (body: JournalMergeInput) =>
-    requestJson<JournalMergeResult>("/api/journal/merge", {
-      method: "POST",
-      body,
-    }).then((result) => {
-      invalidateAccountsListCaches();
-      invalidateAccountReadCaches(body.from_account_id);
-      invalidateAccountReadCaches(body.to_account_id);
-      invalidateAccountJournalCaches(body.from_account_id);
-      invalidateAccountJournalCaches(body.to_account_id);
-      return result;
-  }),
 };
 
 interface ContractSearchQuery {

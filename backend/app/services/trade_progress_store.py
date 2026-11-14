@@ -10,12 +10,22 @@ from pathlib import Path
 import platform
 import shutil
 import sqlite3
+import threading
 
 from .probabilistic_shadow import cache_root
 
 FLOOR = 10_000_000_000
 PREFIX = "trade_progress_"
 SAMPLE_INTERVAL_SECONDS = 1
+# SQLite has one writer. Coordinate account threads before they open a write
+# connection, instead of making every account compete in SQLite's busy handler.
+_writer_lock = threading.Lock()
+
+
+def is_busy(exc):
+    return (isinstance(exc, sqlite3.OperationalError)
+            and getattr(exc, 'sqlite_errorcode', -1) & 0xff
+            in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED))
 
 
 def now():
@@ -35,6 +45,12 @@ CREATE TABLE IF NOT EXISTS trade_progress_meta(key TEXT PRIMARY KEY, value TEXT 
 CREATE TABLE IF NOT EXISTS trade_progress_scopes(
  owner TEXT NOT NULL, account INTEGER NOT NULL, enabled INTEGER NOT NULL,
  heartbeat REAL, error TEXT, PRIMARY KEY(owner,account));
+CREATE TABLE IF NOT EXISTS trade_progress_enrollment_preferences(
+ owner TEXT NOT NULL, account INTEGER NOT NULL, origin TEXT NOT NULL, changed_at REAL NOT NULL,
+ PRIMARY KEY(owner,account));
+CREATE TABLE IF NOT EXISTS trade_progress_enrollment_changes(
+ id INTEGER PRIMARY KEY, owner TEXT NOT NULL, account INTEGER NOT NULL,
+ enabled INTEGER NOT NULL, origin TEXT NOT NULL, changed_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS trade_progress_positions(
  id TEXT PRIMARY KEY, owner TEXT NOT NULL, account INTEGER NOT NULL,
  contract TEXT NOT NULL, opened REAL NOT NULL, ended REAL, state TEXT NOT NULL);
@@ -59,13 +75,21 @@ CREATE TABLE IF NOT EXISTS trade_progress_fill_revisions(
 @contextmanager
 def connect(*, write=False):
     path = location()
+    acquired = False
     if write:
         path.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(path, timeout=1)
-    else:
-        db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=1)
-    db.row_factory = sqlite3.Row
+        acquired = _writer_lock.acquire(timeout=1)
+        if not acquired:
+            exc = sqlite3.OperationalError('Trade progress writer is busy')
+            exc.sqlite_errorcode = sqlite3.SQLITE_BUSY
+            raise exc
+    db = None
     try:
+        if write:
+            db = sqlite3.connect(path, timeout=1)
+        else:
+            db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=1)
+        db.row_factory = sqlite3.Row
         if write:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=FULL")
@@ -75,10 +99,14 @@ def connect(*, write=False):
         if write:
             db.commit()
     except BaseException:
-        db.rollback()
+        if db is not None:
+            db.rollback()
         raise
     finally:
-        db.close()
+        if db is not None:
+            db.close()
+        if acquired:
+            _writer_lock.release()
 
 
 def disk_report():
@@ -132,15 +160,51 @@ def verify_and_register(*, expected_host, expected_root, expected_drive):
     return report
 
 
-def enroll(owner, account, enabled):
-    if not owner or account <= 0:
+def enroll(owner, account, enabled, *, origin='manual'):
+    if not owner or account <= 0 or origin not in {'manual', 'policy'}:
         raise ValueError("Explicit owner and positive account required")
     if enabled:
         verify_destination()
     with connect(write=True) as db:
-        db.execute("INSERT INTO trade_progress_scopes(owner,account,enabled) VALUES(?,?,?) "
-                   "ON CONFLICT(owner,account) DO UPDATE SET enabled=excluded.enabled",
-                   (owner, account, int(enabled)))
+        db.execute('BEGIN IMMEDIATE')
+        _set_enrollment(db, owner, account, enabled, origin)
+
+
+def _set_enrollment(db, owner, account, enabled, origin):
+    previous = db.execute('SELECT s.enabled,p.origin FROM trade_progress_scopes s LEFT JOIN '
+        'trade_progress_enrollment_preferences p USING(owner,account) WHERE s.owner=? AND s.account=?',
+        (owner,account)).fetchone()
+    db.execute("INSERT INTO trade_progress_scopes(owner,account,enabled) VALUES(?,?,?) "
+               "ON CONFLICT(owner,account) DO UPDATE SET enabled=excluded.enabled",
+               (owner, account, int(enabled)))
+    if previous is None or previous['enabled'] != int(enabled) or previous['origin'] != origin:
+        at = now()
+        db.execute('INSERT OR REPLACE INTO trade_progress_enrollment_preferences VALUES(?,?,?,?)',
+                   (owner,account,origin,at))
+        db.execute('INSERT INTO trade_progress_enrollment_changes(owner,account,enabled,origin,changed_at) VALUES(?,?,?,?,?)',
+                   (owner,account,int(enabled),origin,at))
+
+
+def reconcile_policy(owner, eligible, capacity):
+    """Fresh discovery can manage only its own enrollments; manual opt-outs win."""
+    verify_destination()
+    with connect(write=True) as db:
+        db.execute('BEGIN IMMEDIATE')
+        rows = [dict(r) for r in db.execute('SELECT s.account,s.enabled,p.origin FROM trade_progress_scopes s '
+            'LEFT JOIN trade_progress_enrollment_preferences p USING(owner,account) WHERE s.owner=?', (owner,))]
+        existing = {r['account']: r for r in rows}
+        opted_out = {r['account'] for r in rows if not r['enabled'] and r['origin'] != 'policy'}
+        manual_enabled = {r['account'] for r in rows if r['enabled'] and r['origin'] != 'policy'}
+        desired = set(eligible) - opted_out
+        if len(set(eligible)) > capacity or len(manual_enabled | desired) > capacity:
+            return False
+        for r in rows:
+            if r['origin'] == 'policy' and r['enabled'] and r['account'] not in desired:
+                _set_enrollment(db, owner, r['account'], False, 'policy')
+        for account in sorted(desired):
+            if account not in existing or not existing[account]['enabled']:
+                _set_enrollment(db, owner, account, True, 'policy')
+    return True
 
 
 def scopes():
@@ -150,21 +214,39 @@ def scopes():
         return [tuple(row) for row in db.execute("SELECT owner,account FROM trade_progress_scopes WHERE enabled=1")]
 
 
+def diagnostics_key(owner, account):
+    return 'diagnostics:' + encode([owner,account])
+
+
 def status(owner, account):
     result = dict(enrolled=False, heartbeat=None, error=None, healthy=False,
+                  open_positions=0, heartbeat_age_seconds=None,
                   sample_seconds=SAMPLE_INTERVAL_SECONDS, mark_basis="bid_ask_midpoint_else_last", storage="local_sqlite")
     if location().exists():
         with connect() as db:
             row = db.execute("SELECT * FROM trade_progress_scopes WHERE owner=? AND account=?", (owner, account)).fetchone()
+            result['open_positions'] = db.execute(
+                "SELECT count(*) FROM trade_progress_positions WHERE owner=? AND account=? AND ended IS NULL",
+                (owner, account)).fetchone()[0]
+            diagnostics = db.execute('SELECT value FROM trade_progress_meta WHERE key=?',
+                                     (diagnostics_key(owner,account),)).fetchone()
+            result['diagnostics'] = json.loads(diagnostics[0]) if diagnostics else None
         if row:
             result.update(enrolled=bool(row["enabled"]), heartbeat=row["heartbeat"], error=row["error"])
-            result["healthy"] = bool(row["enabled"] and row["heartbeat"] and now()-row["heartbeat"] < 30 and not row["error"])
+            age = now()-row['heartbeat'] if row['heartbeat'] is not None else None
+            result['heartbeat_age_seconds'] = age
+            result["healthy"] = bool(row["enabled"] and age is not None and 0 <= age < 30 and not row["error"])
     if result["enrolled"]:
         try:
             report = verify_destination()
             result.update(free_bytes=report["free_bytes"], files=report["files"])
         except (ValueError, OSError, sqlite3.Error):
             result.update(healthy=False, error="local_storage_unavailable_or_unverified")
+    result['recording_state'] = ('not_enrolled' if not result['enrolled'] else
+        'heartbeat_stale' if result['heartbeat_age_seconds'] is not None and
+            not 0 <= result['heartbeat_age_seconds'] < 30 else
+        'enrolled_unhealthy' if not result['healthy'] else
+        'recording_flat' if result['open_positions'] == 0 else 'recording')
     return result
 
 

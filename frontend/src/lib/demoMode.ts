@@ -355,16 +355,6 @@ function looksLikeAccountInfo(value: JsonObject) {
   );
 }
 
-function looksLikeJournalEntry(value: JsonObject) {
-  return (
-    typeof value.id === "number" &&
-    typeof value.account_id === "number" &&
-    typeof value.entry_date === "string" &&
-    typeof value.title === "string" &&
-    typeof value.body === "string"
-  );
-}
-
 function looksLikeBotConfig(value: JsonObject) {
   return typeof value.id === "number" && typeof value.name === "string" && typeof value.strategy_type === "string";
 }
@@ -380,15 +370,6 @@ function sanitizeKnownObject(value: JsonObject): JsonObject {
       name: demoName,
       provider_name: demoName,
       custom_display_name: null,
-    };
-  }
-
-  if (looksLikeJournalEntry(value)) {
-    return {
-      ...value,
-      title: `Demo journal ${value.entry_date}`,
-      tags: ["demo"],
-      body: "Demo mode hides journal notes and recap text.",
     };
   }
 

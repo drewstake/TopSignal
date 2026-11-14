@@ -12,10 +12,7 @@ export function resolveActiveBotAccount(
   accountFromQuery: number | null,
 ) {
   if (accountFromQuery !== null) {
-    const queryAccount = accounts.find((account) => account.id === accountFromQuery);
-    if (queryAccount) {
-      return queryAccount;
-    }
+    return accounts.find((account) => account.id === accountFromQuery) ?? null;
   }
 
   return accounts.find((account) => account.is_main) ?? accounts[0] ?? null;

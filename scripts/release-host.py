@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,39 @@ urlopen = build_opener(ProxyHandler({})).open
 
 def write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, indent=2, default=str) + "\n", encoding="utf-8")
+
+
+def retire_cloud_configuration(candidate: Path) -> None:
+    """Explicit local-only candidate profile; preserve every other setting/value.
+
+    This edits only a newly extracted candidate, before its integrity receipt.
+    Existing releases and encrypted recovery configuration are never changed.
+    """
+    from dotenv import dotenv_values
+    from dotenv.parser import parse_stream
+    from sqlalchemy.engine import make_url
+    values = dotenv_values(candidate / 'backend/.env', interpolate=False)
+    url = make_url(values.get('DATABASE_URL', ''))
+    if (url.host not in {'127.0.0.1','localhost','::1'} or url.get_backend_name() != 'postgresql'
+            or values.get('TOPSIGNAL_EXECUTION_STORAGE') != 'local_postgres'
+            or values.get('AUTH_REQUIRED') != 'true' or not values.get('TOPSIGNAL_LOCAL_AUTH_DB')
+            or values.get('TOPSIGNAL_LOCAL_AUTH_MODE') != 'trusted_device'):
+        raise ValueError('Cloud retirement requires the verified local authority and trusted-device profile')
+    prefixes = ('SUPABASE_', 'VITE_SUPABASE_', 'JOURNAL_', 'GEMINI_')
+    for folder in ('backend','frontend'):
+        for path in (candidate/folder).glob('.env*'):
+            if path.name == '.env.example' or not path.is_file():
+                continue
+            before = dotenv_values(path, interpolate=False)
+            bindings = list(parse_stream(io.StringIO(path.read_text(encoding='utf-8-sig'))))
+            if any(binding.error for binding in bindings):
+                raise ValueError('Malformed private environment; refuse configuration transition')
+            text = ''.join(binding.original.string for binding in bindings
+                           if not binding.key or not binding.key.startswith(prefixes))
+            after = dotenv_values(stream=io.StringIO(text), interpolate=False)
+            if after != {key:value for key,value in before.items() if not key.startswith(prefixes)}:
+                raise ValueError('Configuration transition changed an unrelated value')
+            path.write_text(text, encoding='utf-8')
 
 
 def inventory(root: Path, *, workers: int = 8) -> dict[str, str]:
@@ -99,6 +133,10 @@ def prepare(stage: Path, config: dict, candidate: Path, previous: Path) -> None:
         for private in (previous / folder).glob(".env*"):
             if private.name != ".env.example" and private.is_file():
                 shutil.copyfile(private, candidate / folder / private.name)
+    if config.get('retire_cloud_configuration') is True:
+        retire_cloud_configuration(candidate)
+    elif config.get('retire_cloud_configuration') not in (None, False):
+        raise ValueError('Cloud retirement profile must be an explicit boolean')
     if (previous / "certs").exists():
         for name, checksum in inventory(previous / "certs").items():
             destination = candidate / "certs" / name

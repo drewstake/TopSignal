@@ -1,16 +1,51 @@
 # Trade progress recording
 
 Introduced on peteamdpc November 11, 2026 as `20261111-trade-progress-77`
-(`46afcd9`). One-second recording is enabled for practice account `29593203`;
-25 consecutive checks over two minutes confirmed healthy connections and
-advancing heartbeats after activation. The subsequent
+(`46afcd9`). At activation, 25 checks confirmed readiness for practice account
+`29593203`. The [November 13 audit](audits/2026-11-13/peteamdpc-health.md) found
+only that account enrolled, with a fresh heartbeat, 91 position lifecycles and
+34,944 observations at 18:49:58 UTC, but 307 gap events and zero fill rows. These
+are dated observations, not proof of complete coverage. The subsequent
 [fixed-bracket deployment and start](audits/2026-11-11/fixed-brackets-deployment.md)
 preserved recording and started the practice bot with persistent 25-point SL/TP.
 See the [deployment record](audits/2026-11-11/trade-progress-deployment.md)
 for activation, validation and backup evidence. This implements
 [the recording proposal](trade-progress-recording-idea.md).
 
+## November 13 maintenance
+
+The durable passive policy now enrolls six currently owned supported accounts:
+29593203, 29671908, 29671939, 29671977, 29672001 and 29672024. Capacity remains
+eight; 820 historical/ineligible accounts were excluded. Explicit opt-outs and
+change history are retained. Trading permission is independent of passive
+eligibility; enrollment does not arm a bot or alter broker permissions.
+
+The URL, selector, API scope and displayed recorder status now agree. Unavailable
+or duplicate account links fail explicitly without silently selecting another
+account. States distinguish not enrolled, flat recording, unhealthy coverage,
+stale heartbeat and unavailable status. Account changes abort stale requests.
+
+Scoped reconciliation verified 178 broker fill legs across the six accounts for
+November 11–12. They retain revisions and response coverage; they do not recreate
+missing one-second observations. See [maintenance evidence](audits/2026-11-13/storage-maintenance.md)
+for live loss/latency findings, current release and remaining acceptance.
+
 ## What is recorded
+
+`Not enrolled` means the selected owner/external account has no enabled scope
+row, not that the global recorder is stopped. `No recorder heartbeat` means that
+scope has no heartbeat value; a disabled scope can retain an old one. The
+cadence/manual-trade subtitle describes the feature, not proof of capture.
+Enrollment does not follow account selection or automatically transfer to new
+accounts in release 87. A heartbeat older than 30 seconds or a stored error makes
+an enrolled scope unhealthy.
+
+Check the active account control and actual API account, not only the URL. On
+November 13, the URL named unavailable account `28278873` while the UI selected
+`29672001`; neither had enrollment. Practice `29593203` remained enabled under
+the same owner. No disable event was established. The audited release 87 had no enrollment change history, so its absence cannot
+prove an account was never enrolled in an older store. New changes now retain
+timestamped policy/manual enrollment history.
 
 An independently enrolled ProjectX account gets read-only user/market hub
 subscriptions, a position reconciliation thread and a local SQLite writer.
@@ -201,8 +236,8 @@ flat. Available space changes with other recorders and backups.
 
 ## Activation on peteamdpc
 
-The current enrollment is complete; these steps also describe future activation
-or recovery on a verified destination.
+The November 11 enrollment covered only practice account `29593203`. These steps
+describe separately authorized activation or recovery, not read-only diagnostics.
 
 1. Deploy an authorized, tested release. Preserve production strategy/risk configuration. The API
    will create no recorder subscriptions until an account is explicitly enrolled.
@@ -259,8 +294,11 @@ before enrollment so scheduled backups retain all recordings without trying to
 copy the active lock. The existing
 `run_market_archive_backup.py` schedule pulls the cache to the development PC and
 verifies hashes and database integrity. No new schedule or destination is needed.
-The development PC and private SSH connection must be available. Production
-staging on D: is not an off-device backup.
+At the November 13 check this schedule was disabled; the last full verified copy
+was November 4. The November 13 focused restore includes 33,822 progress samples
+but is not full-cache coverage. Do not describe a configured schedule as an
+operating daily backup. The development PC and private SSH connection must be
+available. Production staging on D: is not an off-device backup.
 
 Each SQLite snapshot is consistent individually; it is not one transaction with
 the separate execution database. Restore the verified file into a separate review

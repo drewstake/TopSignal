@@ -19,6 +19,27 @@ else:
     from depth_recording import SegmentRecorder, StorageLimit, atomic_json, inventory, utc, verify_segments
 
 
+class StatusPublisher:
+    """A blocked health-file reader must not tear down a durable market feed."""
+    def __init__(self):
+        self.failures = 0
+        self.last_error = None
+
+    def write(self, path, value):
+        value = dict(value, status_publication=dict(failures=self.failures, last_error=self.last_error))
+        try:
+            atomic_json(path, value)
+            return True
+        except PermissionError as error:
+            self.failures += 1
+            self.last_error = dict(at=utc(), file=Path(path).name, type=type(error).__name__,
+                                   errno=error.errno, winerror=getattr(error, 'winerror', None))
+            # Raw receipts and disk-capacity checks retain their fatal handling.
+            # Failed status stays stale; the next successful publication reports
+            # the failure counter. No exception text or credentials are logged.
+            return False
+
+
 def _wall():
     return datetime.now(timezone.utc).timestamp()
 
@@ -29,7 +50,7 @@ class CapacityMonitor:
     A full inventory walks every retained file. On the recording disk that walk
     ran for most of every 30-second interval and, whenever one exceeded 90
     seconds, ended the recorder until the scheduler started it again. Those
-    restarts are the gaps in recorded history.
+    restarts leave gaps in recorded history.
 
     The limits are unchanged and stay enforced between walks. Every uncompressed
     byte written since the last walk STARTED is charged against its result (a
@@ -160,29 +181,11 @@ class ProcessLock:
 
 
 def load_context(config):
-    from dotenv import load_dotenv
-    backend=Path(config['backend_root']).resolve()
-    load_dotenv(backend/'.env',override=True);sys.path.insert(0,str(backend))
-    for name in ('TOPSIGNAL_LIVE_EXECUTION_ENABLED','TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION'):
-        if os.getenv(name)!='false':raise RuntimeError('Paper-only environment required')
-    from app.db import SessionLocal,engine
-    from app.services.projectx_credentials import get_projectx_credentials
-    from app.services.probabilistic_shadow import scope_hash,cache_root
-    from app.services.depth_capture import ReadOnlyMarketClient
-    from sqlalchemy import text
-    with SessionLocal() as db:
-        if engine.dialect.name!='postgresql':raise RuntimeError('Host credential lookup requires read-only PostgreSQL')
-        db.execute(text('SET TRANSACTION READ ONLY'))
-        row=db.execute(text('select user_id,execution_mode,contract_id from bot_configs where id=:id'),{'id':config['bot_config_id']}).mappings().one()
-        if row['execution_mode']!='dry_run' or not row['contract_id'].startswith('CON.F.US.MNQ.'):
-            raise RuntimeError('Paper MNQ configuration required')
-        owner=scope_hash(str(row['user_id']));credentials=get_projectx_credentials(db,user_id=str(row['user_id']))
-    root=cache_root().resolve()/'depth-recordings-v1'
-    if root!=Path(config['recording_root']).resolve():raise RuntimeError('Recording root must be under configured filesystem cache')
-    base=next(os.getenv(k) for k in ('PROJECTX_API_BASE_URL','PROJECTX_BASE_URL','PROJECTX_GATEWAY_URL','TOPSTEP_API_BASE_URL','TOPSTEPX_API_BASE_URL') if os.getenv(k))
-    client=ReadOnlyMarketClient(base_url=base,username=credentials.username,api_key=credentials.api_key,timeout_seconds=15)
-    engine.dispose()
-    return client,owner,root
+    if __package__:
+        from .recorder_startup import load_context as local_context
+    else:
+        from recorder_startup import load_context as local_context
+    return local_context(config)
 
 
 async def record(config,client,owner,root,*,seconds=0):
@@ -192,6 +195,7 @@ async def record(config,client,owner,root,*,seconds=0):
     runtime=Path(config['runtime_root']);status_path=runtime/'status.json';stop=runtime/'STOP'
     started=time.monotonic();recorder=None;contract=None;connections=0;errors=0;failure_streak=0;last_error=None;acks={};connection_at=None;last_frame_at=None
     storage={};last_status=0.;state='starting';reason=None;capacity=None
+    publisher=StatusPublisher()
     def written_bytes():
         if recorder is None:return 0
         if hasattr(recorder, 'totals'):return recorder.raw.raw_bytes + recorder.totals.raw_bytes
@@ -202,14 +206,14 @@ async def record(config,client,owner,root,*,seconds=0):
         now=time.monotonic()
         storage=capacity.check(written_bytes())
         if force or now-last_status>=5:
-            atomic_json(status_path,dict(schema='mnq-depth-recorder-status-v1',at=utc(),pid=os.getpid(),state=state,reason=reason,
+            publisher.write(status_path,dict(schema='mnq-depth-recorder-status-v1',at=utc(),pid=os.getpid(),state=state,reason=reason,
                 started_at=begin,contract_id=contract,data_live=False,paper_only=True,broker_mutation_calls=0,
                 connections=connections,reconnects=max(0,connections-1),errors=errors,last_error=last_error,
                 subscription_acknowledgements=acks,connection_started_at=connection_at,last_frame_at=last_frame_at,storage=storage,
                 recording=recorder.status() if recorder else None))
             recording = recorder.status() if recorder else {}
             totals = recorder.totals.status() if recorder and hasattr(recorder, 'totals') else {}
-            atomic_json(root/'recording-health.json',dict(owner_hash=owner,at=utc(),state=state,reason=reason,
+            publisher.write(root/'recording-health.json',dict(owner_hash=owner,at=utc(),state=state,reason=reason,
                 last_write_at=recording.get('last_durable_at'),last_event_at=recording.get('last_event_at'),
                 last_totals_write_at=totals.get('last_durable_at'),
                 recorded_measurements=totals.get('received_events'),durable_measurement_index=totals.get('durable_event_index'),
@@ -360,8 +364,11 @@ def main():
             asyncio.run(record(config,client,owner,root,seconds=args.seconds))
         except BaseException as exc:
             path=runtime/'status.json'
-            prior=json.loads(path.read_text()) if path.exists() else {}
-            atomic_json(path,dict(prior,at=utc(),state='failed',reason=type(exc).__name__,paper_only=True,broker_mutation_calls=0))
+            try:
+                prior=json.loads(path.read_text()) if path.exists() else {}
+            except (OSError,ValueError):
+                prior={}
+            StatusPublisher().write(path,dict(prior,at=utc(),state='failed',reason=type(exc).__name__,paper_only=True,broker_mutation_calls=0))
             raise SystemExit(1) from None
 
 

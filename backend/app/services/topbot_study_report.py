@@ -304,6 +304,7 @@ def tp_baseline(results, items_by_id=None, *, phase="exploratory"):
                        "includes_losing_trades": True},
             "series": series, "trailing_reference": trailing,
             "partial_observations": partial[:200], "baseline_agreement": agreement,
+            "coverage_by_actual_outcome": outcome_coverage(cohort, items_by_id or {}),
             "minimums": {"entries": MIN_ENTRIES, "sessions": MIN_SESSIONS},
             "interval_methods": {"pointwise": "95% session-cluster bootstrap (1,000 resamples), unavailable below 5 sessions",
                                  "adjusted": f"Bonferroni-adjusted {100*(1-alpha):.3f}% session-cluster bootstrap "
@@ -315,6 +316,30 @@ def tp_baseline(results, items_by_id=None, *, phase="exploratory"):
                 "Excluded entries are not pooled. Partial per-trade observations are listed separately.",
                 "A higher in-sample mean is not proof that a larger target is better; more entries narrow uncertainty but do not settle the question by themselves.",
                 "Simulated fills use a model (latency, one-tick trade-through, adverse stop tick) and may differ from broker fills."]}
+
+
+def outcome_coverage(results, items_by_id):
+    """Inclusion denominators, never a new experiment acceptance rule.
+
+Outcome classification uses the supplied actual record, not a simulated
+baseline. Unknown actual outcomes remain a separate denominator.
+"""
+    groups = {}
+    for row in results:
+        if row.get("phase") != "exploratory":
+            continue
+        actual = items_by_id.get(row["entry_id"], {})
+        pnl = actual.get("net_pnl_usd")
+        outcome = "unknown" if pnl is None else "winner" if pnl > 0 else "loser" if pnl < 0 else "flat"
+        for scope in ("all", (row.get("session") or "unknown")+" / "+(row.get("strategy_version_id") or "unknown")):
+            key = (scope, outcome)
+            counts = groups.setdefault(key, {"scope":scope, "outcome":outcome, "entries":0, "paired_valid":0})
+            counts["entries"] += 1
+            counts["paired_valid"] += bool(row.get("paired_valid"))
+    rows = [dict(v, rate=v["paired_valid"]/v["entries"]) for _,v in sorted(groups.items())]
+    return {"rows":rows, "basis":"Actual recorded net outcome; unknown retained separately",
+            "warning":"Coverage exclusions can select winners and losers differently. Compare rates by session and strategy version; paired results are conditional on inclusion.",
+            "changes_protocol":False}
 
 
 # ---------------------------------------------------------------------------

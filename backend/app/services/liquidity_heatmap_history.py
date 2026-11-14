@@ -11,12 +11,14 @@ work and recorder backpressure instead of adding concurrent archive reads.
 from __future__ import annotations
 
 from collections import OrderedDict
+from datetime import datetime, timezone
 import json
 import logging
 import os
 from pathlib import Path
 import re
 import subprocess
+import sqlite3
 import sys
 from threading import BoundedSemaphore, Event, Lock, Thread
 from time import monotonic, time
@@ -54,17 +56,17 @@ def account_heatmap(*, user_id, contract_id: str, data_live: bool, start_ms: int
         if cached and monotonic() - cached[0] < 10:
             _cache.move_to_end(key)
             return _with_server_time(cached[1])
-    # Two bounded reads at a time; a short wait absorbs a browser's tile burst.
-    if not _slots.acquire(timeout=15):
+    # Do not spend a client's deadline queued behind another archive read.
+    if not _slots.acquire(blocking=False):
         raise RuntimeError('Heatmap history is busy. Retrying shortly.')
     try:
         if config.exists():
             payload = _remote(config, query)
         else:
-            result = read_heatmap(heatmap_cache_root(), query)
+            result = read_heatmap(heatmap_cache_root(), query, deadline=monotonic() + 20)
             result.pop('server_time_ms', None)
             payload = json.dumps(result, separators=(',', ':'), allow_nan=False).encode()
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError) as exc:
         raise RuntimeError('Heatmap history is unavailable.') from exc
     finally:
         _slots.release()
@@ -103,7 +105,7 @@ def _remote(config_path: Path, query: dict) -> bytes:
         'ssh', '-T', '-i', config['identity_file'], '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
         '-o', 'ConnectTimeout=5', '-o', 'ForwardAgent=no', '-o', 'ClearAllForwardings=yes', config['ssh_target'],
         config['python_path'], '-B', config['heatmap_reader_path'], 'read', '--cache', config['heatmap_cache_root'],
-    ], input=json.dumps(query), text=True, encoding='utf-8', capture_output=True, timeout=40,
+    ], input=json.dumps(query), text=True, encoding='utf-8', capture_output=True, timeout=25,
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
     if completed.returncode or len(completed.stdout) > 48 * 1024**2:
         raise RuntimeError('Heatmap history is unavailable on the recording host.')
@@ -125,9 +127,12 @@ class HeatmapDeriverSupervisor:
     this process closes its stdin, so it cannot outlive the backend.
     """
 
-    def __init__(self, *, root: Path | None = None, cache: Path | None = None, mode: str | None = None):
+    def __init__(self, *, root: Path | None = None, cache: Path | None = None, mode: str | None = None,
+                 recorder_status: Path | None = None):
         self.mode = (mode or os.getenv('TOPSIGNAL_HEATMAP_DERIVER', 'auto')).strip().lower()
         self.root = root
+        status = recorder_status or os.getenv('TOPSIGNAL_DEPTH_RECORDER_STATUS')
+        self.recorder_status = Path(status) if status else None
         self.cache = cache
         self.process: subprocess.Popen | None = None
         self.stop_event = Event()
@@ -187,13 +192,29 @@ class HeatmapDeriverSupervisor:
             self.stop_event.wait(delay)
         self.state = 'stopped'
 
+    def _independent_recorder_pressure(self):
+        # The production launcher supplies the protected runtime status file.
+        # A local development backend may have no independent recorder.
+        if self.recorder_status is None:
+            return False
+        try:
+            status = json.loads(self.recorder_status.read_text(encoding='utf-8-sig'))
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(status['at'])).total_seconds()
+            storage = status['storage']
+            if not isinstance(storage, dict):
+                return True
+            return (status['state'] != 'recording' or not 0 <= age <= 30
+                    or bool(storage.get('scan_stalled')) or bool(storage.get('blocked_reason')))
+        except (OSError, ValueError, KeyError, TypeError):
+            return True
+
     def _signal_pressure(self):
-        """Send only state changes; no archive reads or files on the live drive."""
+        """Read the small runtime status and send changes; never scan raw archives."""
         from .topbot_study_worker import ACTIVE, STATE_LOCK, recording_pressure
         try:
             with STATE_LOCK:
                 replaying = bool(ACTIVE)
-            paused = replaying or recording_pressure() is not None
+            paused = replaying or recording_pressure() is not None or self._independent_recorder_pressure()
         except Exception:
             paused = True  # Unknown recorder health must not start optional IO.
         if paused == self._pressure_sent:

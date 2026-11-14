@@ -58,7 +58,8 @@ def test_isolation():
 ''', encoding="utf-8")
     runner = Path(__file__).resolve().parents[1] / "tools" / "run_offline_tests.py"
     result = subprocess.run(
-        [sys.executable, str(runner), str(fixture), "-q"],
+        [sys.executable, str(runner), str(fixture), "-q",
+         f"--rootdir={tmp_path}", f"--confcutdir={tmp_path}"],
         env=dict(os.environ, PROJECTX_API_KEY="fixture-secret", TOPSIGNAL_LIVE_EXECUTION_ENABLED="true"),
         capture_output=True, text=True, timeout=15,
     )

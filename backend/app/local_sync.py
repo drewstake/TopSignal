@@ -192,6 +192,9 @@ def sync_once(source, target, *, after_cloud_commit=None):
     Exceptions leave unacknowledged events durable for retry.
     """
     with source.transaction():
+        from .mirror_retirement import retired
+        if retired(source):
+            raise RuntimeError('Mirror is retired; replay requires explicit reprovisioning')
         if not source.execute('SELECT pg_try_advisory_xact_lock(%s)', (SYNC_LOCK,)).fetchone()[0]:
             return 0
         source_id, active = source.execute('SELECT source_id,active FROM topsignal_local.authority WHERE singleton').fetchone()

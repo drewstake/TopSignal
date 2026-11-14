@@ -157,8 +157,14 @@ class ProgressEngine:
             return False
         if snapshot and state and state["last_event_received"] > payload.get("_request_started", at):
             return True  # A response to an older REST request cannot overwrite a newer stream event.
-        if state and created is not None and created < state["provider_created"]:
+        if state and state["identity"] and created is not None and created < state["provider_created"]:
             return False
+        if snapshot and state and not state["identity"] and identity:
+            # A receipt-only opening notification cannot establish provider
+            # identity. Split at the fresh snapshot; never silently attach its
+            # earlier creation time to an uncertain live lifecycle.
+            self.close(state, "identity_unverified", at, issue="lifecycle_identity_uncertain")
+            state = None
         if not update.net_qty:
             if state:
                 if identity and state["identity"] and identity != state["identity"]:
@@ -255,7 +261,7 @@ class ProgressEngine:
             return
         trade, contract = payload.get("id"), payload.get("contractId")
         ts = timestamp(payload.get("creationTimestamp"))
-        if trade is None or not contract or ts is None or ts>at:
+        if trade is None or not contract or ts is None:
             return
         # Corrected and voided legs replace the same scoped ID; never add an
         # unproven cumulative realized number to unrealized P&L.
@@ -263,6 +269,7 @@ class ProgressEngine:
             realized_dollars=number(payload.get("profitAndLoss")), fees=number(payload.get("fees")),
             commissions=number(payload.get("commissions")), quantity=number(payload.get("size")),
             price=number(payload.get("price")), voided=bool(payload.get("voided")), source="live_broker_fill",
+              clock_issue="provider_timestamp_after_receipt" if ts>at else None,
             order_id=payload.get("orderId"), fill_id=payload.get("fillId"),
             realized_basis="provider_reported_separate_from_unrealized"))
 
@@ -276,32 +283,60 @@ class ProgressEngine:
                 self.sample(state, "periodic", at)
                 state["last_periodic"] = at
 
-    def flush(self, *, error=None):
+    def flush(self, *, error=None, diagnostics=None):
         with store.connect(write=True) as db:
-            for state in self.dirty.values():
-                db.execute("INSERT INTO trade_progress_positions VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET ended=excluded.ended,state=excluded.state",
-                    (state["id"], self.owner, self.account, state["contract"], state["opened"], state["ended"], store.encode(state)))
-            db.executemany("INSERT INTO trade_progress_samples(position,ts,kind,payload) VALUES(?,?,?,?)",
-                [(s["position_id"], s["ts"], s["kind"], store.encode(s)) for s in self.samples])
-            for contract, cursor in self.cursors.items():
-                db.execute("INSERT OR REPLACE INTO trade_progress_cursors VALUES(?,?,?,?)", (self.owner,self.account,contract,store.encode(cursor)))
-            for fill in self.fills:
-                key = fill["trade_id"]
-                encoded = store.encode(fill)
-                digest = sha256(encoded.encode()).hexdigest()
-                db.execute("INSERT OR IGNORE INTO trade_progress_fill_revisions VALUES(?,?,?,?,?,?)",
-                           (self.owner,self.account,key,digest,self.clock(),encoded))
-                revisions = db.execute("SELECT count(*) FROM trade_progress_fill_revisions WHERE owner=? AND account=? AND trade=?",
-                                       (self.owner,self.account,key)).fetchone()[0]
-                if revisions > 1:
-                    # GatewayUserTrade has no revision sequence. An old leg
-                    # replay must not silently undo a correction/void. Preserve
-                    # every distinct payload and withhold an authoritative total.
-                    fill = fill | dict(revision_conflict=True, reported_realized_dollars=fill["realized_dollars"], realized_dollars=None)
-                db.execute("INSERT OR REPLACE INTO trade_progress_fills VALUES(?,?,?,?,?,?)",
-                    (self.owner,self.account,key,fill["contract"],fill["ts"],store.encode(fill)))
-            db.execute("UPDATE trade_progress_scopes SET heartbeat=?,error=? WHERE owner=? AND account=?",
-                       (self.clock(),error,self.owner,self.account))
+            self.write_pending(db, error=error, diagnostics=diagnostics)
+        self.accept_commit()
+
+    def write_pending(self, db, *, error=None, diagnostics=None):
+        """Write this frozen account batch; clear it only after the shared commit."""
+        for state in self.dirty.values():
+            db.execute("INSERT INTO trade_progress_positions VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET ended=excluded.ended,state=excluded.state",
+                (state["id"], self.owner, self.account, state["contract"], state["opened"], state["ended"], store.encode(state)))
+        db.executemany("INSERT INTO trade_progress_samples(position,ts,kind,payload) VALUES(?,?,?,?)",
+            [(s["position_id"], s["ts"], s["kind"], store.encode(s)) for s in self.samples])
+        for contract, cursor in self.cursors.items():
+            db.execute("INSERT OR REPLACE INTO trade_progress_cursors VALUES(?,?,?,?)", (self.owner,self.account,contract,store.encode(cursor)))
+        for fill in self.fills:
+            key = fill["trade_id"]
+            encoded = store.encode(fill)
+            # Receipt clock uncertainty is observation metadata, not a new
+            # broker revision when the same leg replays after reconnect.
+            content = {k:v for k,v in fill.items() if k != 'clock_issue'}
+            digest = sha256(store.encode(content).encode()).hexdigest()
+            # Older stores hashed receipt-clock metadata too. Reuse their
+            # immutable receipt when the actual broker content is equal;
+            # do not manufacture a correction at the upgrade boundary.
+            old = db.execute('SELECT digest,payload FROM trade_progress_fill_revisions '
+                'WHERE owner=? AND account=? AND trade=?', (self.owner,self.account,key)).fetchall()
+            contents = {store.encode(content)}
+            retained_clock_issue = fill.get('clock_issue')
+            for revision in old:
+                prior = json.loads(revision['payload'])
+                normalized = store.encode({k:v for k,v in prior.items() if k != 'clock_issue'})
+                contents.add(normalized)
+                if normalized == store.encode(content):
+                    digest = revision['digest']
+                    retained_clock_issue = prior.get('clock_issue') or retained_clock_issue
+            db.execute("INSERT OR IGNORE INTO trade_progress_fill_revisions VALUES(?,?,?,?,?,?)",
+                       (self.owner,self.account,key,digest,self.clock(),encoded))
+            first = json.loads(db.execute('SELECT payload FROM trade_progress_fill_revisions '
+                'WHERE owner=? AND account=? AND trade=? AND digest=?', (self.owner,self.account,key,digest)).fetchone()[0])
+            fill = fill | dict(clock_issue=first.get('clock_issue') or retained_clock_issue)
+            if len(contents) > 1:
+                # GatewayUserTrade has no revision sequence. An old leg
+                # replay must not silently undo a correction/void. Preserve
+                # every distinct payload and withhold an authoritative total.
+                fill = fill | dict(revision_conflict=True, reported_realized_dollars=fill["realized_dollars"], realized_dollars=None)
+            db.execute("INSERT OR REPLACE INTO trade_progress_fills VALUES(?,?,?,?,?,?)",
+                (self.owner,self.account,key,fill["contract"],fill["ts"],store.encode(fill)))
+        db.execute("UPDATE trade_progress_scopes SET heartbeat=?,error=? WHERE owner=? AND account=?",
+                   (self.clock(),error,self.owner,self.account))
+        if diagnostics is not None:
+            db.execute('INSERT OR REPLACE INTO trade_progress_meta VALUES(?,?)',
+                (store.diagnostics_key(self.owner,self.account),store.encode(diagnostics)))
+
+    def accept_commit(self):
         self.dirty.clear()
         self.samples.clear()
         self.fills.clear()

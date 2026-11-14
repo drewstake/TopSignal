@@ -447,7 +447,7 @@ def test_inventory_reads_only_new_manifests(tmp_path, monkeypatch):
     inventory = heatmap.Inventory(tmp_path / 'depth-recordings-v1')
     reads = []
     original = heatmap.read_manifest
-    monkeypatch.setattr(heatmap, 'read_manifest', lambda marker, root: reads.append(marker.name) or original(marker, root))
+    monkeypatch.setattr(heatmap, 'read_manifest', lambda marker, root, **kwargs: reads.append(marker.name) or original(marker, root, **kwargs))
     assert len(inventory.scan(since_ms=BASE_MS - 1)) == 5
     recorder.append(CONTRACT, 'quote', dict(timestamp=at(9).isoformat()), received_at=at(9).isoformat())
     recorder.close()
@@ -460,7 +460,7 @@ def test_inventory_reads_only_new_manifests(tmp_path, monkeypatch):
 
 def test_cached_responses_carry_a_fresh_server_time(tmp_path, monkeypatch):
     monkeypatch.setattr(service, 'history_source_path', lambda: tmp_path / 'absent.json')
-    monkeypatch.setattr(service, 'read_heatmap', lambda cache, query: dict(schema='x', server_time_ms=1))
+    monkeypatch.setattr(service, 'read_heatmap', lambda cache, query, **kw: dict(schema='x', server_time_ms=1))
     clock = iter([1000.0, 2000.0])
     monkeypatch.setattr(service, 'time', lambda: next(clock))
     args = dict(user_id='owner3', contract_id=CONTRACT, data_live=False, start_ms=0, end_ms=1000, tier=0)
@@ -509,3 +509,59 @@ def test_retention_runs_from_the_deriver_loop(tmp_path):
     summary = derive(tmp_path, keep_sessions=2)
     assert summary['removed_sessions'] == ['2026-10-02', '2026-10-01']
     assert sorted(p.name for p in sessions.glob('*.sqlite3')) == ['2026-10-03.sqlite3', '2026-11-03.sqlite3']
+
+
+def test_inventory_pause_preserves_verified_progress_and_resumes(tmp_path, monkeypatch):
+    recorder = SegmentRecorder(tmp_path / 'depth-recordings-v1', OWNER)
+    for i in range(8):
+        recorder.append(CONTRACT, 'quote', dict(timestamp=at(i).isoformat()), received_at=at(i).isoformat())
+        recorder.seal()
+    inventory = heatmap.Inventory(tmp_path / 'depth-recordings-v1')
+    reads = []
+    original = heatmap.read_manifest
+    def manifest(*args, **kwargs):
+        reads.append(args[0].name)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(heatmap, 'read_manifest', manifest)
+    with pytest.raises(heatmap.InventoryPaused):
+        inventory.scan(should_stop=lambda: len(reads) >= 2)
+    assert len(reads) == 2
+    assert len(inventory.scan()) == 8
+    assert len(reads) == len(set(reads)) == 8
+    recorder.close()
+
+
+def test_heatmap_pressure_during_first_scan_does_not_derive(tmp_path, monkeypatch):
+    write(tmp_path, BOOK + [(1.0, 'quote', {})])
+    deriver = Deriver(tmp_path / 'depth-recordings-v1', tmp_path / 'depth-heatmap-v1', free_reserve=0,
+                      clock=lambda: BASE_MS + 3600000)
+    monkeypatch.setattr(deriver, '_process', lambda *a, **kw: pytest.fail('derived while paused'))
+    assert deriver.run_once(should_stop=lambda: True)['paused'] is True
+    assert not deriver.states
+    deriver.close()
+
+
+@pytest.mark.parametrize('status', [None, 'invalid-json', {'state': 'recording'},
+    {'state': 'recording', 'at': '2020-01-01T00:00:00+00:00'},
+    {'state': 'reconnecting'}, {'state': 'recording', 'storage': {'scan_stalled': True}},
+    {'state': 'recording', 'storage': {'blocked_reason': 'disk_free_reserve'}}])
+def test_heatmap_yields_to_independent_recorder_status(tmp_path, monkeypatch, status):
+    from io import BytesIO
+    from app.services import topbot_study_worker as worker
+    monkeypatch.setattr(worker, 'ACTIVE', {})
+    monkeypatch.setattr(worker, 'recording_pressure', lambda: None)
+    path = tmp_path / 'status.json'
+    if isinstance(status, dict):
+        status = dict(status)
+        status.setdefault('at', datetime.now(timezone.utc).isoformat())
+        path.write_text(json.dumps(status))
+    elif status:
+        path.write_text(status)
+    pipe = BytesIO()
+    supervisor = service.HeatmapDeriverSupervisor(recorder_status=path)
+    supervisor.process = SimpleNamespace(stdin=pipe)
+    supervisor._signal_pressure()
+    assert pipe.getvalue() == b'pause\n'
+    path.write_text(json.dumps({'state': 'recording', 'at': datetime.now(timezone.utc).isoformat(), 'storage': {}}))
+    supervisor._signal_pressure()
+    assert pipe.getvalue() == b'pause\nresume\n'

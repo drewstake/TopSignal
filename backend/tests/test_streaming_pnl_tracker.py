@@ -388,3 +388,17 @@ def test_streaming_tracker_rejects_unscoped_and_mismatched_position_events():
 
     assert tracker.ingest_position_event(payload, user_id="user-a", account_id=202) is False
     assert tracker.position_by_scope == {}
+
+
+def test_closed_lifecycle_without_market_marks_is_unknown_not_zero():
+    from datetime import datetime, timezone, timedelta
+    from app.services.streaming_pnl_tracker import StreamingPnlTracker
+    closed=[]
+    tracker=StreamingPnlTracker(owner_user_id='owner',owner_account_id=1,
+        point_value_by_symbol={'MNQ':2},on_lifecycle_closed=closed.append)
+    now=datetime(2026,11,13,tzinfo=timezone.utc)
+    tracker.ingest_position_event(dict(accountId=1,contractId='CON.F.US.MNQ.Z26',type=1,size=1,averagePrice=100,timestamp=now.isoformat()))
+    tracker.ingest_position_event(dict(accountId=1,contractId='CON.F.US.MNQ.Z26',type=1,size=0,averagePrice=100,timestamp=(now+timedelta(seconds=5)).isoformat()))
+    assert len(closed)==1
+    assert closed[0].mae_usd is None and closed[0].mfe_usd is None
+    assert closed[0].mae_points is None and closed[0].mfe_points is None

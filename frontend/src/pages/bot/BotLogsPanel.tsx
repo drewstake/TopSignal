@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { ApiError, requestJson } from "../../lib/api";
-import { getAccessTokenSync, subscribeSupabaseAuthChanges } from "../../lib/supabase";
+import { getAccessTokenSync, subscribeAuthChanges } from "../../lib/auth";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { BotDiagnosticsPanel } from "./BotDiagnosticsPanel";
@@ -16,7 +16,7 @@ export type SystemLogs = {
 const time = (value: string) => new Date(value).toLocaleString(undefined, { timeZoneName: "short" });
 const inputClass = "h-10 rounded-lg border border-app-border bg-app-bg px-3 text-sm text-app-text";
 
-const subscribeToIdentity = (listener: () => void) => subscribeSupabaseAuthChanges(() => listener());
+const subscribeToIdentity = (listener: () => void) => subscribeAuthChanges(() => listener());
 function readIdentity() {
   const token = getAccessTokenSync();
   if (!token) return "anonymous";

@@ -1,8 +1,14 @@
 # Local-first storage migration
 
-Deployed on peteamdpc as `20261103-local-execution-45` on November 3, 2026.
-Local PostgreSQL is the execution authority; Supabase is fenced against stale
-execution writers. See the [verified deployment evidence](audits/2026-11-02/local-first-storage.md).
+The November 13 maintenance deployed local-only application and helper paths on
+peteamdpc. PostgreSQL at loopback port 5433/database `topsignal` remains the sole
+execution authority. The mirror was drained and retired, with producer triggers
+disabled, both dedicated logins set NOLOGIN, and authority/cloud fences retained.
+See [dated maintenance evidence](audits/2026-11-13/storage-maintenance.md) and
+[the retirement/recovery procedure](supabase-retirement.md). The earlier
+[live audit](audits/2026-11-13/peteamdpc-health.md) is the pre-maintenance baseline.
+Final load, full-cache restore and disconnected/reboot acceptance remain tracked
+in the maintenance record; running processes alone do not establish completion.
 
 ## Storage boundaries
 
@@ -15,17 +21,20 @@ execution writers. See the [verified deployment evidence](audits/2026-11-02/loca
   archives and forward-result ledgers retain their existing filesystem layout.
 - Execution state uses one PostgreSQL authority. Authentication remains separate
   and ownership, risk, order-idempotency and worker-lease checks still apply.
-- Supabase remains the authentication provider, journal object-storage provider
-  and asynchronous compact-record mirror. It is never an automatic execution
-  fallback. A cloud outage can still prevent new sign-in/token refresh or access
-  to remotely stored journal images.
-
-On peteamdpc the preserved independent recorder currently loads its configuration
-and provider credentials from the cloud read-only at process startup, then closes
-the database connection. That is a separate remaining cloud dependency: an
-already running recorder and a recorder restart during a cloud outage have
-different recovery requirements. Do not claim recorder outage/restart independence
-from main-application tests.
+- Hosted sign-in uses local `trusted_device` authentication and protected SQLite
+  state at `C:/ProgramData/TopSignal/runtime/local-auth/auth.sqlite3`. The active
+  frontend/backend have no cloud OAuth, refresh or JWKS dependency. Local sessions
+  remain owner-scoped, loopback/tunnel-bound, expiring and revocable.
+- Journal UI/API/background work is removed. Its 31 records, nine image references
+  and three image objects are preserved in verified encrypted local and off-device
+  archives. Historical database tables and cloud audit/user data remain retained.
+- The independent recorder uses `storage-remediation-v2`, its minimal protected
+  `.env.recorder`, and local `topsignal_depth_recorder` read-only role. It reads
+  configuration 32 and its owner's credential under RLS without initializing the
+  application database. Both live-routing flags remain false.
+- Discord uses a minimal local-only environment. The daily execution backup
+  resolves the active immutable application task rather than a pinned old release.
+  Retired mirror configuration/credentials remain protected recovery material.
 
 Research routing fails closed if the configured store is missing or incomplete.
 Cross-store SQL joins and textual research queries are rejected. Explicit model
@@ -125,6 +134,15 @@ replicated. New mirrored tables require an explicit registration/migration.
 
 ## Recovery and rollback
 
+At the November 13 inspection, the development-PC off-device archive task was
+**disabled**. The last full-cache off-device verification/restore receipt is
+November 4. The November 12 execution snapshot is verified on the host and awaits
+off-device transport. A November 13 focused restore protects progress/study
+stores and an execution export, not the full raw cache or a full PostgreSQL
+restore. Check the [scoped backup inventory](audits/2026-11-13/peteamdpc-health.md)
+before making recovery promises. Heavy catch-up requires a separately authorized
+operating window.
+
 Retain previous releases and backups. After local execution begins, a code
 rollback must still use the current local PostgreSQL authority and current D:
 store. Repointing at the cloud copy is a separate, fenced reverse migration,
@@ -148,11 +166,13 @@ existing off-device archive pull transports these with research and source data.
 Publication is not off-device verification: check that pull's receipt and
 periodically perform a full isolated PostgreSQL restore too.
 
-The cache backup CLI uses Windows background resource scheduling to reduce
-disk/memory contention with the recorder and local SQLite. CPU priority alone
-does not control that contention. Monitor live response times during the first
-full backup after adding a large store; retain existing verified snapshots if a
-manual verification run must be stopped.
+The cache backup CLI uses BelowNormal Windows CPU priority with normal I/O
+and memory priority. Background resource mode starved ordinary file copies and
+SQLite reads on the recording HDD during the November 13 catch-up. Explicit byte
+pacing and recorder-health admission bound disk work; the closed-market profile
+uses 8 MiB/s. Monitor recording loss, response times and actual disk load, including
+unrelated processes. Retain existing verified snapshots and incomplete staging
+when an attempt fails; a focused backup never substitutes for full-cache recovery.
 
 `run_market_archive_backup.py` accepts `remote_timeout_seconds` in its private
 configuration, bounded from 120 to 7,200 seconds. Increase this deliberately for
@@ -172,7 +192,8 @@ events, oldest event, queue bytes, last acknowledgement and sanitized retry
 errors. Stopping sync must not stop trading or the recorder. Provisioning
 functions require a transaction; authority activation is a separate step.
 
-Schema changes require coordinated migrations on both databases. Incompatible
+While the mirror is active, mirrored schema changes require coordinated
+migrations on both databases. Incompatible
 schemas or uniqueness conflicts, including conflicts with logically deleted
 cloud rows, retain the queue and fail synchronization. Resolve them deliberately
 without deleting user data or skipping events.

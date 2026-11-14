@@ -66,10 +66,6 @@ export const router = createBrowserRouter([
         errorElement: <RouteErrorPage />,
       },
       {
-        path: "journal",
-        loader: ({ request }) => redirect(`/dashboard${new URL(request.url).search}`),
-      },
-      {
         path: "bot",
         element: <BotPage />,
         errorElement: <RouteErrorPage />,

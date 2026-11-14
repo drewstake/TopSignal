@@ -116,7 +116,10 @@ def backup(*, url, pg_bin, destination, key, credential_key=None, progress=None,
         snapshot = conn.execute('SELECT pg_export_snapshot()').fetchone()[0]
         manifest = {'schema': 1, 'created_at': datetime.now(timezone.utc).isoformat(),
                     'database_bytes': conn.execute('SELECT pg_database_size(current_database())').fetchone()[0],
-                    'tables': fingerprints(conn, progress=progress), 'authority_excluded': True}
+                    'tables': fingerprints(conn, progress=progress), 'authority_excluded': True,
+                    'policy_roles': sorted({role for (roles,) in conn.execute(
+                        "SELECT roles FROM pg_policies WHERE schemaname IN ('public','topsignal_local','topsignal_research','topsignal_mirror')")
+                        for role in roles if role != 'public'})}
         arguments = ['--format=custom', '--no-owner', '--no-acl', '--schema=public',
                      '--schema=topsignal_local', '--schema=topsignal_research', '--schema=topsignal_mirror',
                      '--exclude-table=public.databento_*', '--exclude-table-data=topsignal_local.authority',
@@ -219,6 +222,13 @@ def restore(*, url, pg_bin, directory, key, database):
         raise ValueError('Restore is restricted to local PostgreSQL')
     manifest, dump = decrypt_backup(directory, key)
     with psycopg.connect(**{**parameters, 'dbname': 'postgres'}, autocommit=True) as admin:
+        # pg_restore --no-acl still restores RLS policy role references. Preserve
+        # those restrictions on a fresh recovery server without creating logins
+        # or copying credentials/memberships. Existing roles are never modified.
+        for role in manifest.get('policy_roles', []):
+            if not admin.execute('SELECT 1 FROM pg_roles WHERE rolname=%s',(role,)).fetchone():
+                admin.execute(sql.SQL('CREATE ROLE {} NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE '
+                                     'NOREPLICATION NOBYPASSRLS').format(sql.Identifier(role)))
         # No IF NOT EXISTS: an existing database is never overwritten.
         admin.execute(sql.SQL('CREATE DATABASE {} TEMPLATE template0').format(sql.Identifier(database)))
         # Match the application/Supabase UTC contract for future connections,
@@ -239,7 +249,9 @@ def restore(*, url, pg_bin, directory, key, database):
         if conn.execute("SELECT to_regclass('topsignal_local.authority')").fetchone()[0]:
             if conn.execute('SELECT count(*) FROM topsignal_local.authority').fetchone()[0]:
                 raise ValueError('Restored execution authority must be absent')
-    return dict(verified=True, database=database, tables=len(manifest['tables']),
+    return dict(verified=True, verified_at=datetime.now(timezone.utc).isoformat(),
+                backup_created_at=manifest['created_at'],
+                authority_absent=True, database=database, tables=len(manifest['tables']),
                 rows=sum(item['rows'] for item in manifest['tables'].values()),
                 credential_rows_verified=credentials, dump_sha256=manifest['dump_sha256'])
 
@@ -254,11 +266,11 @@ def main():
     parser.add_argument('--key-file', type=Path, required=True)
     parser.add_argument('--database')
     args = parser.parse_args()
-    environment = dotenv_values(args.env_file)
+    environment = dotenv_values(args.env_file, interpolate=False)
     kwargs = dict(url=environment['DATABASE_URL'], pg_bin=args.pg_bin, key=load_key(args.key_file))
     if args.operation == 'backup':
         runtime_file = args.runtime_env_file or args.env_file
-        runtime_values = dotenv_values(runtime_file)
+        runtime_values = dotenv_values(runtime_file, interpolate=False)
         result = backup(**kwargs, destination=args.directory, credential_key=runtime_values.get('CREDENTIALS_ENCRYPTION_KEY'),
                         runtime_environment=runtime_file.read_bytes(), local_auth_path=runtime_values.get('TOPSIGNAL_LOCAL_AUTH_DB'),
                         progress=lambda table: print(json.dumps({'checking_table': table}), flush=True))

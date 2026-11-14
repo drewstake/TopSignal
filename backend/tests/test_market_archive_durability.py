@@ -134,7 +134,10 @@ def test_collection_with_stopped_disabled_bot_and_restart(session_factory, tmp_p
     calls = []
     def request(owner, account, scope, contract, factory, allowed):
         calls.append((owner, account, scope, contract))
-        collector.collect(owner, account, scope, contract, provider, allowed=allowed, root=tmp_path)
+        # The provider fixture returns real session minutes. Keep this restart
+        # test in an open session rather than depending on the wall-clock weekend.
+        collector.collect(owner, account, scope, contract, provider, allowed=allowed, root=tmp_path,
+                          now=datetime(2026, 10, 28, 15, tzinfo=timezone.utc))
     monkeypatch.setattr(collector, 'request_collection', request)
     streams = []
     def create(**kwargs):

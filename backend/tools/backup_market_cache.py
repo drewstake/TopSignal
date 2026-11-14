@@ -11,7 +11,7 @@ fully verified backup. A reused file is NOT re-read on this host; this is a
 backup, not a scrub of the source disk.
 """
 import argparse
-from contextlib import closing, contextmanager
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -23,8 +23,20 @@ import tempfile
 import time
 from datetime import datetime, timezone
 
-_BACKGROUND_RESOURCES = False
+_IO_GUARD = None
 SQLITE_SUFFIXES = {'.sqlite3', '.sqlite', '.db'}
+
+
+def io_checkpoint(size=0):
+    if _IO_GUARD is not None:
+        _IO_GUARD.check(size)
+
+
+def paced_copy(source, target):
+    with source.open('rb') as src, target.open('wb') as dst:
+        while block := src.read(1024**2):
+            io_checkpoint(len(block))
+            dst.write(block)
 
 
 def _set_windows_priority(value):
@@ -38,23 +50,6 @@ def _set_windows_priority(value):
         raise RuntimeError('Unable to set backup scheduling priority')
 
 
-@contextmanager
-def _sqlite_priority():
-    """Keep bulk work subordinate; avoid starving bounded SQLite operations."""
-    global _BACKGROUND_RESOURCES
-    if not _BACKGROUND_RESOURCES:
-        yield
-        return
-    _set_windows_priority(0x00200000)  # End background resource mode.
-    _BACKGROUND_RESOURCES = False
-    try:
-        _set_windows_priority(0x00004000)  # CPU stays below normal.
-        yield
-    finally:
-        _set_windows_priority(0x00100000)
-        _BACKGROUND_RESOURCES = True
-
-
 def filesystem_path(path):
     """Use Windows extended paths without changing machine-wide registry policy."""
     path = Path(path).resolve()
@@ -66,7 +61,13 @@ def filesystem_path(path):
 
 def checksum(path):
     with filesystem_path(path).open('rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').hexdigest()
+        if _IO_GUARD is None:
+            return hashlib.file_digest(stream, 'sha256').hexdigest()
+        digest = hashlib.sha256()
+        while block := stream.read(1024**2):
+            io_checkpoint(len(block))
+            digest.update(block)
+        return digest.hexdigest()
 
 
 def readonly_sqlite_uri(path):
@@ -113,7 +114,7 @@ def verify_sqlite(path, expected_sha256, *, scratch=None):
         scratch = system_temp
 
     def integrity(candidate):
-        with _sqlite_priority(), closing(sqlite3.connect(readonly_sqlite_uri(candidate), uri=True)) as db:
+        with closing(sqlite3.connect(readonly_sqlite_uri(candidate), uri=True)) as db:
             db.execute('PRAGMA cache_size=-131072')
             if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
                 raise ValueError('SQLite integrity failure: '+path.name)
@@ -129,8 +130,8 @@ def verify_sqlite(path, expected_sha256, *, scratch=None):
         assert owned.is_relative_to(scratch) and owned != scratch
         candidate = owned/'snapshot.sqlite3'
         # This is a closed backup file, never a live database. Copy and hash
-        # at background priority; only the SSD integrity scan raises I/O priority.
-        shutil.copyfile(path, candidate)
+        # with the same pacing as other backup reads.
+        paced_copy(path, candidate)
         if checksum(candidate) != expected_sha256:
             raise ValueError('SQLite integrity scratch checksum mismatch')
         integrity(candidate)
@@ -167,11 +168,6 @@ def source_state(path):
 
 
 def backup_sqlite(source, destination, *, progress=None, timeout_seconds=900):
-    with _sqlite_priority():
-        return _backup_sqlite(source, destination, progress=progress, timeout_seconds=timeout_seconds)
-
-
-def _backup_sqlite(source, destination, *, progress=None, timeout_seconds=900):
     """Bound a WAL snapshot so continuous writers cannot restart every step.
 
     WAL readers leave writers free to commit. For rollback-journal databases,
@@ -181,8 +177,10 @@ def _backup_sqlite(source, destination, *, progress=None, timeout_seconds=900):
     if source.in_transaction:
         raise ValueError('Backup requires an idle source connection')
     pinned = source.execute('PRAGMA journal_mode').fetchone()[0].lower() == 'wal'
+    page_size = source.execute('PRAGMA page_size').fetchone()[0]
     started = time.monotonic()
     def step(status, remaining, total):
+        io_checkpoint(256*page_size if status in (sqlite3.SQLITE_OK, sqlite3.SQLITE_DONE) else 0)
         if time.monotonic() - started >= timeout_seconds:
             raise TimeoutError('SQLite snapshot backup deadline exceeded')
         if progress is not None:
@@ -221,28 +219,26 @@ def snapshot_sqlite(path, target, *, scratch=None):
     # busy Windows HDD can starve even when the destination is an SSD. Warm
     # the bounded current file prefix using sequential reads first. These
     # bytes are never used as the backup: the online API supplies consistency.
-    # The warm-up itself must not run in background resource mode: with live
-    # recorders on the same disk a multi-gigabyte WAL then takes hours to read.
-    with _sqlite_priority():
-        for member in (path, wal):
-            try:
-                remaining = member.stat().st_size
-                with member.open('rb') as stream:
-                    while remaining:
-                        block = stream.read(min(8 * 1024 * 1024, remaining))
-                        if not block:
-                            break
-                        remaining -= len(block)
-            except FileNotFoundError:
-                if member == path:
-                    raise
+    for member in (path, wal):
+        try:
+            remaining = member.stat().st_size
+            with member.open('rb') as stream:
+                while remaining:
+                    block = stream.read(min(8 * 1024 * 1024, remaining))
+                    if not block:
+                        break
+                    remaining -= len(block)
+                    io_checkpoint(len(block))
+        except FileNotFoundError:
+            if member == path:
+                raise
     with tempfile.TemporaryDirectory(prefix='topsignal-sqlite-', dir=scratch) as directory:
         owned = filesystem_path(directory)
         assert owned.is_relative_to(scratch) and owned != scratch
         snapshot = owned/'snapshot.sqlite3'
         with closing(sqlite3.connect(readonly_sqlite_uri(path), uri=True)) as src, closing(sqlite3.connect(snapshot)) as dst:
             backup_sqlite(src, dst, timeout_seconds=snapshot_deadline(estimate))
-        shutil.copyfile(snapshot, target)
+        paced_copy(snapshot, target)
         digest = checksum(target)
         if checksum(snapshot) != digest:
             raise ValueError('SQLite snapshot transport checksum mismatch')
@@ -273,19 +269,23 @@ def backup(source, output, *, previous=None, deep_verify=True):
     # Snapshot this list once. Active partials and segments sealed later belong
     # to a subsequent backup; copying an open gzip file would create bad evidence.
     depth_root = source/'depth-recordings-v1'
+    resolved_source = source.resolve()
+    resolved_depth_root = depth_root.resolve()
     depth_files = set()
     for marker in depth_root.rglob('*.segment.json') if depth_root.exists() else []:
+        io_checkpoint()
         value = json.loads(marker.read_text())
         name = value.get('file', '')
         member = (marker.parent/name).resolve()
+        resolved_marker = marker.resolve()
         if (value.get('schema') != 'mnq-depth-segment-v1' or Path(name).name != name
-                or not name.endswith('.ndjson.gz') or not member.is_relative_to(depth_root.resolve())
+                or not name.endswith('.ndjson.gz') or not member.is_relative_to(resolved_depth_root)
                 or member.stat().st_size != value['bytes']):
             raise ValueError('Invalid committed depth segment')
         # A sealed segment never changes. If the earlier snapshot holds the same
         # manifest and the same segment hash, both are already off-device.
-        marker_name = marker.resolve().relative_to(source.resolve()).as_posix()
-        member_name = member.relative_to(source.resolve()).as_posix()
+        marker_name = resolved_marker.relative_to(resolved_source).as_posix()
+        member_name = member.relative_to(resolved_source).as_posix()
         marker_bytes = marker.read_bytes()
         known_marker, known_member = earlier.get(marker_name), earlier.get(member_name)
         if (known_marker and known_member and known_member['sha256'] == value['sha256']
@@ -294,17 +294,18 @@ def backup(source, output, *, previous=None, deep_verify=True):
             for known_name, known in ((marker_name, known_marker), (member_name, known_member)):
                 files[known_name] = dict(sha256=known['sha256'], bytes=known['bytes'], sqlite=False, reused=True)
             reused += 2
-            depth_files.update((marker.resolve(), member))
+            depth_files.update((resolved_marker, member))
             continue
         # A new segment is checked against its manifest hash as it is copied
         # below, reading it from the recording disk once instead of three times.
         sealed[member] = value['sha256']
-        depth_files.update((marker.resolve(), member))
+        depth_files.update((resolved_marker, member))
     # A critical event moves spool -> archive -> transport acknowledgement.
     # Snapshot all spools first: archive-first can miss a pre-existing event if
     # its archive commit and spool acknowledgement happen between the copies.
     # Other files are individually consistent, not one global point in time.
     for path in sorted(source.rglob('*'), key=lambda p: (p.name not in {'critical-spool.sqlite3', 'optional-quotes.sqlite3'}, str(p))):
+        io_checkpoint()
         if path.is_symlink() or (hasattr(path, 'is_junction') and path.is_junction()):
             raise ValueError('Reparse/symlink source requires explicit handling')
         if not path.is_file():
@@ -315,7 +316,7 @@ def backup(source, output, *, previous=None, deep_verify=True):
             continue
         if path.is_relative_to(depth_root) and path.resolve() not in depth_files:
             continue  # Preserve all originals on host; do not copy unfinished segments.
-        if path.is_relative_to(source/'depth-heatmap-v1'):
+        if any(path.is_relative_to(source/name) for name in ('depth-heatmap-v1', 'depth-history-cache-v1')):
             # Derived display cache, rebuilt from the backed-up raw segments.
             # Its live SQLite files would otherwise be re-copied in every backup.
             continue
@@ -343,9 +344,15 @@ def backup(source, output, *, previous=None, deep_verify=True):
         target = output/relative
         target.parent.mkdir(parents=True, exist_ok=True)
         if is_sqlite:
-            digest = snapshot_sqlite(path, target)
+            try:
+                digest = snapshot_sqlite(path, target)
+            except sqlite3.Error as exc:
+                # Preserve fixed SQLite codes and the cache-relative member;
+                # arbitrary exception text can contain private runtime data.
+                exc.backup_member = relative.as_posix()
+                raise
         else:
-            shutil.copyfile(path, target)
+            paced_copy(path, target)
             digest = checksum(target)
             expected = sealed.get(path.resolve())
             if expected is not None:
@@ -411,10 +418,25 @@ def pack(root, output):
         if not path.is_file() or path.stat().st_size != expected['bytes']:
             raise ValueError('Snapshot member missing or resized: '+name)
         members.append(name)
-    with tarfile.open(output, 'x') as archive:
-        for name in members:
-            archive.add(root/name, arcname=name, recursive=False)
-    return dict(sha256=checksum(output), bytes=output.stat().st_size, members=len(members)-1,
+    try:
+        from .backup_io import HashingWriter, PacedReader
+    except ImportError:
+        from backup_io import HashingWriter, PacedReader
+    # Hash headers, members and padding as they are written. The receiver checks
+    # the resulting file before extraction and verifies every reconstructed
+    # member. Re-reading this entire tar here only repeats HDD work.
+    with output.open('xb') as transport:
+        writer = HashingWriter(transport)
+        # tarfile defaults to 16 KiB reads. With coarse Windows timer ticks,
+        # pacing each such read reduces an 8 MiB/s cap to about 1 MiB/s.
+        # Match ordinary copies' bounded 1 MiB chunks; byte/health guards remain.
+        with tarfile.open(fileobj=writer, mode='w', copybufsize=1024**2) as archive:
+            for name in members:
+                with (root/name).open('rb') as stream:
+                    archive.addfile(archive.gettarinfo(root/name, arcname=name), PacedReader(stream,io_checkpoint))
+    if output.stat().st_size != writer.bytes_written:
+        raise ValueError('Archive size changed after packing')
+    return dict(sha256=writer.digest.hexdigest(), bytes=writer.bytes_written, members=len(members)-1,
                 reused=len(manifest['files'])-(len(members)-1))
 
 
@@ -427,14 +449,21 @@ def main():
     parser.add_argument('--previous', type=Path, help='Earlier complete snapshot whose unchanged members are reused')
     parser.add_argument('--receiver-verifies', action='store_true',
                         help='Skip the second full read of staging; the receiver must verify every member')
+    parser.add_argument('--max-mib-per-second', type=float, default=0)
+    parser.add_argument('--recorder-status', type=Path)
     args = parser.parse_args()
+    try:
+        from .backup_io import BackupIO
+    except ImportError:
+        from backup_io import BackupIO
+    global _IO_GUARD
+    _IO_GUARD = BackupIO(args.max_mib_per_second,args.recorder_status)
+    io_checkpoint()
     if os.name == 'nt':
-        # Bulk scans/copies yield I/O to live recording. Bounded SQLite steps
-        # temporarily retain normal I/O/cache priority and below-normal CPU;
-        # background resource mode starved their small page reads on the HDD.
-        global _BACKGROUND_RESOURCES
-        _set_windows_priority(0x00100000)
-        _BACKGROUND_RESOURCES = True
+        # Background resource mode starves both small reads and ordinary file
+        # copies on the recording HDD. Keep CPU below normal; the explicit byte
+        # rate and recorder-health guard bound disk work without starving it.
+        _set_windows_priority(0x00004000)
     if args.pack and args.output:
         print(json.dumps(pack(args.pack,args.output)))
         return
@@ -449,7 +478,10 @@ def main():
             try:
                 receipt = filesystem_path(args.output).with_name(Path(args.output).name+'.failure.json')
                 receipt.write_text(json.dumps(dict(at=datetime.now(timezone.utc).isoformat(), type=type(exc).__name__,
-                    message=str(exc)[:300] if isinstance(exc, (ValueError, TimeoutError)) else None)))
+                    message=str(exc)[:300] if isinstance(exc, (ValueError, TimeoutError)) else None,
+                    member=getattr(exc, 'backup_member', None),
+                    sqlite_errorcode=getattr(exc, 'sqlite_errorcode', None),
+                    sqlite_errorname=getattr(exc, 'sqlite_errorname', None))))
             except OSError:
                 pass
             raise

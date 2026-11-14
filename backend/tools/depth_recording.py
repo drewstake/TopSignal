@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat as stat_module
 import time
 from uuid import uuid4
 import zlib
@@ -26,9 +27,27 @@ def atomic_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name('.'+uuid4().hex+'.tmp')
-    with temporary.open('xb') as f:
-        f.write(canonical(value)); f.flush(); os.fsync(f.fileno())
-    os.replace(temporary, path)
+    try:
+        with temporary.open('xb') as f:
+            f.write(canonical(value)); f.flush(); os.fsync(f.fileno())
+        # Windows readers may briefly hold the destination without delete
+        # sharing. Retry only permission failures, with at most 100ms of waits.
+        # Critical segment receipts still fail closed when replacement fails.
+        for delay in (0.01, 0.03, 0.06, None):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if delay is None:
+                    raise
+                time.sleep(delay)
+    finally:
+        # This call's unpublished temporary only; retained incident files and
+        # all raw segments are untouched.
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def checksum(path):
@@ -47,13 +66,26 @@ def inventory(root, *, max_bytes, reserve_bytes, max_age_days=30, now=None):
     now = time.time() if now is None else now
     used = incomplete = sealed = 0
     oldest = now
-    for p in root.rglob('*'):
-        if p.is_symlink() or (hasattr(p, 'is_junction') and p.is_junction()):
-            raise StorageLimit('recording_reparse_point')
-        if p.is_file():
-            stat = p.stat(); used += stat.st_size; oldest = min(oldest, stat.st_mtime)
-            incomplete += p.name.endswith('.partial')
-            sealed += p.name.endswith('.segment.json')
+    # Windows directory enumeration already returns size, mtime and reparse
+    # attributes. Path.is_file/is_symlink/stat would reopen every file several
+    # times, turning a metadata inventory into minutes of random HDD reads.
+    # Entries live only for this scan: growth since scan start is separately
+    # charged by CapacityMonitor, and errors still prevent a successful scan.
+    pending = [root]
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                if (stat_module.S_ISLNK(info.st_mode)
+                        or getattr(info, 'st_file_attributes', 0) & stat_module.FILE_ATTRIBUTE_REPARSE_POINT):
+                    raise StorageLimit('recording_reparse_point')
+                if stat_module.S_ISDIR(info.st_mode):
+                    pending.append(entry.path)
+                elif stat_module.S_ISREG(info.st_mode):
+                    used += info.st_size
+                    oldest = min(oldest, info.st_mtime)
+                    incomplete += entry.name.endswith('.partial')
+                    sealed += entry.name.endswith('.segment.json')
     free = shutil.disk_usage(root).free
     reason = ('recording_budget_reached' if used+32*1024**2 > max_bytes else
               'disk_free_reserve' if free < reserve_bytes+32*1024**2 else

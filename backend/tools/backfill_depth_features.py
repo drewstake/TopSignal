@@ -43,9 +43,12 @@ def backfill(cache, owner, start, end, *, cancelled=lambda: False):
         safe_path(path, cache)
         if path.is_file():
             derived_bytes += path.stat().st_size
-    if (limits['blocked_reason'] or derived_bytes+24*1024**2 > DERIVED_BUDGET
-            or limits['bytes']+derived_bytes+32*1024**2 > RECORDING_BUDGET):
-        raise ValueError('Existing recording/derived storage limit or review boundary reached')
+    if limits['blocked_reason']:
+        raise ValueError('Recording storage blocked: ' + limits['blocked_reason'])
+    if derived_bytes+24*1024**2 > DERIVED_BUDGET:
+        raise ValueError(f'Derived feature budget reached: {derived_bytes} bytes + 25165824 reserved > {DERIVED_BUDGET}')
+    if limits['bytes']+derived_bytes+32*1024**2 > RECORDING_BUDGET:
+        raise ValueError('Combined recording and feature budget reached')
     result = read_research(raw, dict(owner_hash=owner, start=start, end=end, scope='all', replay=False, all_scopes=True), cancelled=cancelled)
     # Keep every compact scope without duplicating raw events. Each requested
     # backfill is bounded; the streaming companion uses the live v2 recorder

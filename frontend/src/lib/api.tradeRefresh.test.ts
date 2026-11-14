@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("./supabase", () => ({ getAccessToken: vi.fn(async () => null as string | null) }));
+vi.mock("./auth", () => ({ getAccessToken: vi.fn(async () => null as string | null) }));
 import { accountsApi } from "./api";
-import { getAccessToken } from "./supabase";
+import { getAccessToken } from "./auth";
 
 const range = { start: "2026-08-31T22:00:00Z", end: "2026-09-04T21:05:00Z" };
 const result = { fetched_count: 0, inserted_count: 0 };
