@@ -269,20 +269,23 @@ def backup(source, output, *, previous=None, deep_verify=True):
     # Snapshot this list once. Active partials and segments sealed later belong
     # to a subsequent backup; copying an open gzip file would create bad evidence.
     depth_root = source/'depth-recordings-v1'
+    resolved_source = source.resolve()
+    resolved_depth_root = depth_root.resolve()
     depth_files = set()
     for marker in depth_root.rglob('*.segment.json') if depth_root.exists() else []:
         io_checkpoint()
         value = json.loads(marker.read_text())
         name = value.get('file', '')
         member = (marker.parent/name).resolve()
+        resolved_marker = marker.resolve()
         if (value.get('schema') != 'mnq-depth-segment-v1' or Path(name).name != name
-                or not name.endswith('.ndjson.gz') or not member.is_relative_to(depth_root.resolve())
+                or not name.endswith('.ndjson.gz') or not member.is_relative_to(resolved_depth_root)
                 or member.stat().st_size != value['bytes']):
             raise ValueError('Invalid committed depth segment')
         # A sealed segment never changes. If the earlier snapshot holds the same
         # manifest and the same segment hash, both are already off-device.
-        marker_name = marker.resolve().relative_to(source.resolve()).as_posix()
-        member_name = member.relative_to(source.resolve()).as_posix()
+        marker_name = resolved_marker.relative_to(resolved_source).as_posix()
+        member_name = member.relative_to(resolved_source).as_posix()
         marker_bytes = marker.read_bytes()
         known_marker, known_member = earlier.get(marker_name), earlier.get(member_name)
         if (known_marker and known_member and known_member['sha256'] == value['sha256']
@@ -291,12 +294,12 @@ def backup(source, output, *, previous=None, deep_verify=True):
             for known_name, known in ((marker_name, known_marker), (member_name, known_member)):
                 files[known_name] = dict(sha256=known['sha256'], bytes=known['bytes'], sqlite=False, reused=True)
             reused += 2
-            depth_files.update((marker.resolve(), member))
+            depth_files.update((resolved_marker, member))
             continue
         # A new segment is checked against its manifest hash as it is copied
         # below, reading it from the recording disk once instead of three times.
         sealed[member] = value['sha256']
-        depth_files.update((marker.resolve(), member))
+        depth_files.update((resolved_marker, member))
     # A critical event moves spool -> archive -> transport acknowledgement.
     # Snapshot all spools first: archive-first can miss a pre-existing event if
     # its archive commit and spool acknowledgement happen between the copies.

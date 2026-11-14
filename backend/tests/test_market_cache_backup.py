@@ -228,6 +228,27 @@ def seal_segment(source, payload):
     return next(recorder.path.glob('*.ndjson.gz'))
 
 
+def test_snapshot_does_not_reopen_storage_roots_for_each_segment(tmp_path, monkeypatch):
+    tool, _ = incremental_tools(monkeypatch)
+    original = Path.resolve
+    counts = []
+    for count in (1, 4):
+        source = tmp_path/f'source-{count}'
+        for index in range(count):seal_segment(source, {'connection': index})
+        root_reads = []
+        def observed(path, *args, **kwargs):
+            if path.name in (source.name, 'depth-recordings-v1'):
+                root_reads.append(path)
+            return original(path, *args, **kwargs)
+        with monkeypatch.context() as context:
+            context.setattr(Path, 'resolve', observed)
+            tool.backup(source, tmp_path/f'snapshot-{count}', deep_verify=False)
+        counts.append(len(root_reads))
+    # Windows resolution opens filesystem metadata; more segments must not
+    # multiply I/O for invariant roots. Each member remains resolved/checked.
+    assert counts[0] == counts[1]
+
+
 def cache(tmp_path):
     source = tmp_path/'source'
     segment = seal_segment(source, {'connection': 1})
