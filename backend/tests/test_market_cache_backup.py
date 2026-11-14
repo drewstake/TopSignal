@@ -381,6 +381,21 @@ def test_failed_snapshot_leaves_its_reason_beside_the_staging_directory(tmp_path
     assert receipt['type'] == 'FileExistsError' and receipt['message'] is None
 
 
+def test_sqlite_failure_receipt_names_member_and_fixed_error_code(tmp_path):
+    import subprocess, sys
+    source = tmp_path/'source'; source.mkdir()
+    (source/'damaged.sqlite3').write_bytes(b'not a sqlite database' * 100)
+    output = tmp_path/'staging'/'attempt'
+    completed = subprocess.run([sys.executable, '-B', str(Path(__file__).parents[1]/'tools/backup_market_cache.py'),
+                                '--source', str(source), '--output', str(output)], capture_output=True, text=True, timeout=30)
+    assert completed.returncode != 0
+    receipt = json.loads((tmp_path/'staging'/'attempt.failure.json').read_text())
+    assert receipt['member'] == 'damaged.sqlite3'
+    assert receipt['sqlite_errorcode'] == sqlite3.SQLITE_NOTADB
+    assert receipt['sqlite_errorname'] == 'SQLITE_NOTADB'
+    assert receipt['message'] is None
+
+
 def test_capacity_counts_hard_linked_members_once(tmp_path, monkeypatch):
     import os
     _, runner = incremental_tools(monkeypatch)

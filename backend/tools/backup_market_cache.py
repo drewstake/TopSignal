@@ -341,7 +341,13 @@ def backup(source, output, *, previous=None, deep_verify=True):
         target = output/relative
         target.parent.mkdir(parents=True, exist_ok=True)
         if is_sqlite:
-            digest = snapshot_sqlite(path, target)
+            try:
+                digest = snapshot_sqlite(path, target)
+            except sqlite3.Error as exc:
+                # Preserve fixed SQLite codes and the cache-relative member;
+                # arbitrary exception text can contain private runtime data.
+                exc.backup_member = relative.as_posix()
+                raise
         else:
             paced_copy(path, target)
             digest = checksum(target)
@@ -466,7 +472,10 @@ def main():
             try:
                 receipt = filesystem_path(args.output).with_name(Path(args.output).name+'.failure.json')
                 receipt.write_text(json.dumps(dict(at=datetime.now(timezone.utc).isoformat(), type=type(exc).__name__,
-                    message=str(exc)[:300] if isinstance(exc, (ValueError, TimeoutError)) else None)))
+                    message=str(exc)[:300] if isinstance(exc, (ValueError, TimeoutError)) else None,
+                    member=getattr(exc, 'backup_member', None),
+                    sqlite_errorcode=getattr(exc, 'sqlite_errorcode', None),
+                    sqlite_errorname=getattr(exc, 'sqlite_errorname', None))))
             except OSError:
                 pass
             raise
