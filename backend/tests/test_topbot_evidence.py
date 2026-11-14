@@ -37,6 +37,9 @@ def test_default_queue_absorbs_market_open_burst(tmp_path, monkeypatch):
     finally:
         release.set()
         cap.close()
+    # close() requests a drain and only waits two seconds for the caller. The
+    # background writer may still be syncing on a contended Windows CI disk.
+    cap.thread.join(timeout=10)
     assert not cap.thread.is_alive()
     assert len(list(recorded_batches(cap.path))) == 2501
 
@@ -72,6 +75,7 @@ def test_backlogged_burst_drains_without_excessive_durable_commits(tmp_path, mon
     finally:
         release.set()
         cap.close()
+    cap.thread.join(timeout=10)
     assert not cap.thread.is_alive()
     rows = list(recorded_batches(cap.path))
     assert len(rows) == 4001 and cap.durable_index == 4000
