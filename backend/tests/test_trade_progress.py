@@ -326,6 +326,77 @@ def test_destination_gate_checks_identity_and_actual_free_space(local,monkeypatc
     with pytest.raises(ValueError): store.verify_destination()
 
 
+@pytest.mark.parametrize('suffix', ['-wal', '-shm'])
+def test_sidecar_disappearance_does_not_reset_recorder_or_lose_queued_observations(local, monkeypatch, suffix):
+    from pathlib import Path
+    from types import SimpleNamespace
+    from app.services import trade_progress_recorder as runtime
+
+    report = store.disk_report()
+    store.verify_and_register(expected_host=report['host'], expected_root=str(local), expected_drive=local.anchor)
+    engine = ready()
+    engine.position(pos(), T)
+    monkeypatch.setattr(store, 'now', lambda: T+1)
+    worker = runtime.AccountRecorder('owner', 1, {'MNQ': 2}, lambda: None)
+    worker.runtime.runner.stream_states = {'market': 'connected', 'user': 'connected'}
+    worker.submit('quote', quote(103, T+1))
+
+    # SQLite may remove an optional sidecar after a successful metadata lookup.
+    # Reproduce the exists()/stat() race deterministically without altering a
+    # real WAL or weakening the destination verification used by the worker.
+    original_stat = Path.stat
+    sidecar = Path(str(store.location())+suffix)
+    calls = 0
+    def vanishing_stat(path, *args, **kwargs):
+        nonlocal calls
+        if path == sidecar:
+            calls += 1
+            if calls % 2 == 0:
+                raise FileNotFoundError(2, 'Sidecar removed by SQLite', str(path))
+            return SimpleNamespace(st_size=32)
+        return original_stat(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'stat', vanishing_stat)
+    monkeypatch.setattr(runtime, 'ProgressEngine', lambda *_args: engine)
+    class OneIteration:
+        stopped = False
+        def is_set(self): return self.stopped
+        def wait(self, _timeout): self.stopped = True
+    worker.stop_event = OneIteration()
+    worker.run()
+
+    assert calls >= 2  # periodic verification and graceful final flush
+    assert worker.queue.empty()
+    assert worker.metrics['discarded_after_write_failure'] == 0
+    assert worker.metrics['commit_failures'] == 0
+    with store.connect() as db:
+        samples = [json.loads(r[0]) for r in db.execute('SELECT payload FROM trade_progress_samples')]
+        assert any(s.get('mark') == 103 for s in samples)
+        assert not any(s.get('issue') == 'storage_failure' for s in samples)
+
+
+def test_missing_main_database_still_blocks_destination_verification(local):
+    report = store.disk_report()
+    store.verify_and_register(expected_host=report['host'], expected_root=str(local), expected_drive=local.anchor)
+    store.location().unlink()
+    with pytest.raises(ValueError, match='verification command'):
+        store.verify_destination()
+
+
+@pytest.mark.parametrize('suffix', ['', '-wal', '-shm'])
+@pytest.mark.parametrize('error', [PermissionError, OSError])
+def test_disk_report_does_not_hide_storage_errors(local, monkeypatch, suffix, error):
+    from pathlib import Path
+    original_stat = Path.stat
+    target = Path(str(store.location())+suffix)
+    def failed_stat(path, *args, **kwargs):
+        if path == target:
+            raise error('Storage unavailable')
+        return original_stat(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'stat', failed_stat)
+    with pytest.raises(error, match='Storage unavailable'):
+        store.disk_report()
+
+
 def test_no_cloud_route_and_sqlite_backup_includes_live_wal(local,tmp_path):
     from app.local_sync import eligible
     from app.services.historical_trade_excursions import recorder_lock

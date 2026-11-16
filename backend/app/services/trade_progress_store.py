@@ -116,8 +116,16 @@ def disk_report():
         existing = existing.parent
     usage = shutil.disk_usage(existing)
     path = location()
-    sizes = {suffix or "database": Path(str(path)+suffix).stat().st_size
-             if Path(str(path)+suffix).exists() else 0 for suffix in ("", "-wal", "-shm")}
+    sizes = {}
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            sizes[suffix or "database"] = Path(str(path)+suffix).stat().st_size
+        except FileNotFoundError:
+            # SQLite can remove WAL/SHM files between metadata reads. Their
+            # absence is normal, not a failed recording transaction. The main
+            # database is still required by verify_destination below; other
+            # storage errors must propagate and stop recording.
+            sizes[suffix or "database"] = 0
     return dict(root=str(root), host=platform.node().lower(), drive=root.anchor,
                 device=existing.stat().st_dev, total_bytes=usage.total, free_bytes=usage.free,
                 minimum_free_bytes=FLOOR, files=sizes)
