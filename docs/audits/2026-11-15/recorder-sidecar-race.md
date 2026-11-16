@@ -29,6 +29,11 @@ strategy, risk, retention or database-schema behavior changes.
 All nine added regression cases pass, including persisted queued observations
 through disappearing WAL/SHM files, a missing main database, and permission/I/O
 errors. The 65 focused progress, route and history-sync checks pass on Windows.
+The first CI run also exposed a timing-dependent existing depth-policy fixture:
+its `time.time()` timestamp could appear future-dated to the monitor's separate
+`datetime` clock on Windows. The fixture now uses one fixed wall clock and
+explicitly verifies cache reuse. No depth-recorder runtime code changes. All 80
+focused progress, route, history-sync and depth-policy checks pass.
 Full release validation and deployment acceptance are recorded separately when
 completed. Historical gaps remain historical gaps; this fix cannot recreate
 observations that were never persisted.

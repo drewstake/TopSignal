@@ -36,12 +36,17 @@ def test_restart_applies_new_policy_to_cached_inventory_without_waiving_guards(t
     root = tmp_path / 'recordings'
     root.mkdir()
     cache = tmp_path / 'capacity-cache.json'
-    cache.write_text(json.dumps(dict(at=time.time(), root=str(root), value=dict(
+    wall = 1_800_000_000.
+    monkeypatch.setattr(record_market_depth, '_wall', lambda: wall)
+    cache.write_text(json.dumps(dict(at=wall-1, root=str(root), value=dict(
         bytes=9*GIB, budget_bytes=20*GIB, reserve_bytes=10*GIB, review_after_days=30,
-        oldest_mtime=time.time()-90*86400, blocked_reason='retention_review_due'))))
+        oldest_mtime=wall-90*86400, blocked_reason='retention_review_due'))))
     free, clock = [100*GIB], [1000.]
     monkeypatch.setattr(record_market_depth.shutil, 'disk_usage', lambda _: SimpleNamespace(free=free[0]))
     monitor = record_market_depth.CapacityMonitor(root, CONFIG, cache=cache, clock=lambda: clock[0])
+    # Use one wall clock: differing time.time()/datetime precision on Windows
+    # can otherwise make this fixture look future-dated and reject its cache.
+    assert monitor.value['bytes'] == 9*GIB
     # The next directory walk can be slow; the cached values must use the new
     # policy immediately while continuing to charge all new writes.
     monitor.pending = Future()
