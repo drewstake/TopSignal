@@ -12,6 +12,11 @@ cloud runtime paths. Preserve live configuration through the
 release workflow. Health checks do not authorize activation, enrollment,
 schedule changes or trading changes.
 
+Session order flow has a separate optional [automatic recovery helper](session-order-flow-recovery.md),
+installed November 16. It warms the existing API after startup without requiring
+a browser, bot rearm, application restart or recorder restart. Check its own
+status and task separately from core runtime health.
+
 For routine updates to an existing deployment, use the checked-in
 [release command](releasing.md). This guide remains the setup, storage-change
 and migration-specific procedure; its safety requirements still apply.
