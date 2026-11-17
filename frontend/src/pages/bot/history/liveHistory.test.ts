@@ -71,6 +71,12 @@ it("keeps the full session's early measurements while the live edge advances", (
   expect(refreshed.points[0].time).toBe(early.time);
   expect(refreshed.points.at(-1)?.time).toBe(point.time);
   expect(refreshed.start).toBe(history.start);
+  const left = { ...point, time: point.time - 3, index: 10, continuity: { mid_price: 0 }, sample_interval_ms: 10000 };
+  const right = { ...left, time: point.time, index: 20 };
+  const older = { ...history, points: [left] };
+  const newer = { ...tail, start: right.timestamp, points: [right] };
+  expect(continuousSegments(mergeSessionArchive(older, newer, now).points)).toHaveLength(2);
+  expect(continuousSegments(mergeSessionArchive({ ...older, points: [left, right] }, newer, now).points)).toHaveLength(1);
   expect(mergeSessionArchive(history, { ...tail, points: [] }, now + 86400000).points).toEqual([]);
 });
 

@@ -19,6 +19,12 @@ chart to zoom; click a moment or use the focused chart's arrow keys to inspect a
 sample. **Inspect preceding 5 minutes** loads five minutes before and one minute
 after that sample. CSV export contains only the visible window.
 
+On the Bot page, long sessions load from newest to oldest. The chart shows the
+start of the loaded range while it retrieves earlier recordings. Overlapping
+requests preserve continuity at the joins. Once the session is loaded, routine
+refreshes fetch the recent window. The live chart uses the heatmap's server
+clock to check observation age when the viewing PC's clock differs from the host.
+
 The selected-moment card compares mid-price after 5, 15, and 60 seconds using the
 first subsequent observation at or after that horizon, with at most one second
 of tolerance. Comparisons stop at flagged observations, contract/run/generation

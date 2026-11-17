@@ -145,8 +145,8 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    args = _build_parser().parse_args()
+def main(argv=None, handler_type=TopSignalFrontendHandler) -> int:
+    args = _build_parser().parse_args(argv)
     if args.host != "127.0.0.1":
         raise SystemExit("The production frontend host must be exactly 127.0.0.1")
     for label, value in (("port", args.port), ("api-port", args.api_port)):
@@ -191,7 +191,7 @@ def main() -> int:
     )
 
     def handler_factory(*handler_args, **handler_kwargs):  # type: ignore[no-untyped-def]
-        return TopSignalFrontendHandler(
+        return handler_type(
             *handler_args,
             directory=str(directory),
             **handler_kwargs,

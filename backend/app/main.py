@@ -3343,6 +3343,32 @@ def get_topbot_statistics(account_id: int, db: Session = Depends(get_db)):
     return augment_statistics(db, user_id, account_id, statistics(db, user_id=user_id, account_id=account_id))
 
 
+@app.get("/api/accounts/{account_id}/topbot/edge")
+def get_topbot_edge(account_id: int, response: Response, db: Session = Depends(get_db)):
+    from .services.imbalance_study import directory
+    from .services.databento_cache import default_cache_root
+    import json
+    owner = get_authenticated_user_id()
+    try:
+        _require_owned_projectx_account(db, user_id=owner, account_id=account_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="account_not_found") from exc
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        with (directory(default_cache_root(), owner, account_id) / "report.json").open("rb") as stream:
+            raw = stream.read(8 * 1024**2 + 1)
+        if len(raw) > 8 * 1024**2:
+            raise ValueError("oversized report")
+        report = json.loads(raw)
+        if report["account_id"] != account_id:
+            raise ValueError("invalid report scope")
+        return report
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="study_not_enrolled") from exc
+    except (OSError, KeyError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="study_unavailable") from exc
+
+
 @app.get("/api/accounts/{account_id}/topbot/comparison")
 def get_topbot_comparison(account_id: int, response: Response,
                          version: str | None = Query(default=None, max_length=100),

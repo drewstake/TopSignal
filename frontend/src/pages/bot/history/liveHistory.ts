@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { OrderBookStore } from "../orderBook";
+import type { ServerClock } from "../heatmapClock";
 import { downsampleHistory, metrics, sessionWindow, type BookHistory, type DepthScope, type HistoryPoint } from "./history";
 
 export function sampleLiquidity(store: OrderBookStore, scope: DepthScope, now = Date.now()): HistoryPoint | null {
@@ -22,12 +23,12 @@ export function sampleLiquidity(store: OrderBookStore, scope: DepthScope, now = 
 }
 
 // Only browser memory: at most 15 minutes / 900 samples. No new broker subscription or storage writes.
-export function useLiveHistory(store: OrderBookStore | undefined, scope: DepthScope, enabled: boolean) {
+export function useLiveHistory(store: OrderBookStore | undefined, scope: DepthScope, enabled: boolean, clock?: ServerClock) {
   const [state, setState] = useState<{ store?: OrderBookStore; scope: DepthScope; points: HistoryPoint[]; fresh: boolean }>({ scope, points: [], fresh: false });
   useEffect(() => {
     if (!store || !enabled) return;
     const sample = () => {
-      const now = Date.now();
+      const now = clock?.now() ?? Date.now();
       const point = sampleLiquidity(store, scope, now);
       setState(previous => {
         const points = previous.store === store && previous.scope === scope ? previous.points : [];
@@ -43,7 +44,7 @@ export function useLiveHistory(store: OrderBookStore | undefined, scope: DepthSc
     sample();
     const timer = window.setInterval(sample, 1000);
     return () => window.clearInterval(timer);
-  }, [store, scope, enabled]);
+  }, [store, scope, enabled, clock]);
   return state.store === store && state.scope === scope ? state : { points: [], fresh: false };
 }
 
@@ -92,12 +93,17 @@ export function mergeSessionArchive(previous: BookHistory, recent: BookHistory, 
   const cutoff = Math.max(bounds.start, Date.parse(recent.start) / 1000);
   // A query starts without the preceding invalid receipt. Match real overlap to
   // carry its continuity token across polls, never infer it from elapsed time.
-  const prior = new Map(previous.points.map(p => [`${p.capture_id}:${p.index}`,p]));
+  const prior = new Map(previous.points.filter(p => p.time >= cutoff).map(p => [`${p.capture_id}:${p.index}`,p]));
   const tokens = new Map<string,number>();
   for (const p of recent.points) {
     const old = prior.get(`${p.capture_id}:${p.index}`);
-    for (const field of metrics) if (p.continuity?.[field] === 0 && old?.continuity?.[field] !== undefined)
-      tokens.set(`${p.capture_id}:${p.generation}:${field}`,old.continuity[field]!);
+    for (const field of metrics) if (p.continuity?.[field] === 0) {
+      const key = `${p.capture_id}:${p.generation}:${field}`;
+      if (old?.continuity?.[field] !== undefined) tokens.set(key, old.continuity[field]!);
+      // Without a shared receipt this run starts a separate line. Negative
+      // tokens are local to the chart and cannot collide with recorder indices.
+      else if (!tokens.has(key)) tokens.set(key, -1 - p.index);
+    }
   }
   const aligned = recent.points.map(p => !p.continuity ? p : { ...p, continuity: Object.fromEntries(metrics.map(field => [field,
     p.continuity?.[field] === 0 ? tokens.get(`${p.capture_id}:${p.generation}:${field}`) ?? 0 : p.continuity?.[field]])) });
