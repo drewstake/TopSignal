@@ -1,6 +1,12 @@
 # TopSignal
 
-TopSignal is a personal trading workspace for reviewing ProjectX accounts, imported Topstep trades, expenses and payouts. Its React dashboard talks to a FastAPI backend that also runs TopBot, the MNQ practice bot. Historical backtesting and forward research are available alongside account review.
+TopSignal brings ProjectX accounts and Topstep trade exports into one futures trading workspace. Review trading performance, track costs and payouts, follow TopBot’s Micro E-mini Nasdaq-100 (MNQ) practice trades, or test a saved model on historical prices.
+
+[Run locally](#local-quick-start) · [Find the code](#where-to-find-things) · [Explore the features](#feature-tour)
+
+![Earlier TopSignal dashboard with performance, risk, and long-versus-short metrics](docs/screenshots/metrics.png)
+
+*The screenshots throughout this README show earlier versions of the workspace.*
 
 ## Local quick start
 
@@ -16,38 +22,106 @@ npm run dev:offline
 
 On macOS or Linux, create the environment with `python3` and use `backend/.venv/bin/python` for the pip command. The test requirements include the runtime packages. Each npm install uses its own lockfile.
 
-Open **http://127.0.0.1:5174** after the launcher reports that the backend is ready. The workspace starts empty. Use Demo mode to explore sample data or create a Live CSV account and preview a trade export. Ctrl+C stops both servers. This profile runs Vite, FastAPI and a checkout-local SQLite database at `backend/storage/offline/topsignal.sqlite3`. It needs no environment files, PostgreSQL service, broker credentials, market-data download or connection to peteamdpc. [Offline development](docs/offline-development.md)
+Open **http://127.0.0.1:5174** once the launcher reports that the backend is ready. It starts Vite and FastAPI and, on first use, creates an empty SQLite database at `backend/storage/offline/topsignal.sqlite3`. A fresh checkout works offline without environment files, PostgreSQL, broker credentials, market data or access to peteamdpc.
+
+Try **Demo mode** for sample data, or create a **Live Account (CSV)** and preview a trade export. Press Ctrl+C in the launcher terminal to stop both servers. [Offline development guide](docs/offline-development.md)
+
+<a id="frontend-routes"></a>
 
 ## Where to find things
 
-| I’m working on… | Start here |
+| Feature or area | Code entry points |
 | --- | --- |
-| A screen or navigation item | [Router](frontend/src/app/routes.tsx) → [app shell](frontend/src/app/AppShell.tsx) → [page components](frontend/src/pages). The [frontend guide](frontend/README.md) maps the shared client and UI code. |
-| An API request | [Browser API client](frontend/src/lib/api.ts) → [FastAPI handlers and router registration](backend/app/main.py) → [services](backend/app/services). Market data has its own [router](backend/app/market_data_routes.py). |
-| Account analytics or trade import | [Dashboard](frontend/src/pages/dashboard/DashboardPage.tsx), [trade ingestion](backend/app/services/projectx_trades.py), [metrics](backend/app/services/projectx_metrics.py), [file imports](backend/app/services/trade_imports.py). [Walkthrough and screenshots](docs/account-workspace.md) |
-| Bot configuration and lifecycle | [API schemas](backend/app/bot_schemas.py), [persisted models](backend/app/models.py), [bot service](backend/app/services/bot_service.py) and [leased worker](backend/app/bot_worker.py). |
-| Strategy selection | [Strategy registry](backend/app/services/bot_strategy_registry.py) declares identifiers, evaluator dispatch, timeframes, history and replay support. Some entries serve legacy configurations and research fixtures. |
-| TopBot practice behavior | [Account preset](backend/app/services/topbot.py), [contrarian depth signal](backend/app/services/topbot_strategy.py), [position management](backend/app/services/topbot_runner.py) and [strategy panel](frontend/src/pages/bot/TopBotStrategyPanel.tsx). |
-| Historical backtests | [Backtesting UI](frontend/src/pages/backtesting), [historical jobs](backend/app/services/topbot_backtest_jobs.py), [saved-model replay](backend/app/services/topbot_backtest.py) and [bot-configuration backtests](backend/app/services/bot_backtesting.py). |
-| Market depth or trade recording | [Standalone depth recorder](backend/tools/record_market_depth.py), [depth segments](backend/tools/depth_recording.py), [API-managed account recorder](backend/app/services/trade_progress_recorder.py) and [trade-progress store](backend/app/services/trade_progress_store.py). |
-| Database schema or migrations | [Data model](db/data-model.md), [fresh schema](db/schema.sql), [incremental SQL](db/migrations), [checksummed runner](backend/tools/migrate_db.py) and [setup procedure](db/README.md). |
-| Host operations | [Windows task installers and release scripts](scripts), [operator tools](backend/tools), [Windows operations](docs/windows-24x7-operations.md) and [release procedure](docs/releasing.md). |
-| Storage or recovery | [Storage policy](docs/supabase-storage-policy.md), [local storage and restore](docs/local-first-storage.md), [Journal and mirror recovery](docs/supabase-retirement.md) and [dated maintenance receipt](docs/audits/2026-11-13/storage-maintenance.md). |
+| Navigation and API requests | [Frontend guide](frontend/README.md) · [Router](frontend/src/app/routes.tsx) · [App shell and account picker](frontend/src/app/AppShell.tsx) · [Browser API client](frontend/src/lib/api.ts) · [FastAPI handlers and routers](backend/app/main.py) |
+| Accounts (`/accounts`) | [Accounts page](frontend/src/pages/accounts/AccountsPage.tsx) · [ProjectX account discovery](backend/app/services/projectx_accounts.py) |
+| Dashboard (`/` and `/dashboard`) | [Dashboard page](frontend/src/pages/dashboard/DashboardPage.tsx) · [Account metrics](backend/app/services/projectx_metrics.py) · [Risk forecast](backend/app/services/account_risk_forecast.py) |
+| Trades (`/trades`) and Dashboard import | [Dashboard import panel](frontend/src/pages/dashboard/components/TradeImportPanel.tsx) · [File validation and import](backend/app/services/trade_imports.py) · [ProjectX trade ingestion](backend/app/services/projectx_trades.py) · [Trades page](frontend/src/pages/trades/TradesPage.tsx) |
+| Expenses (`/expenses`) | [Expenses and payouts](frontend/src/pages/expenses/ExpensesPage.tsx) · [Inferred combine fees](backend/app/services/combine_expenses.py) |
+| Appearance (`/appearance`) | [Theme and zoom controls](frontend/src/pages/themes/ThemePage.tsx) · [Palette definitions](frontend/src/lib/theme.ts) |
+| TopBot (`/bot`) and Logs (`/bot?view=logs`) | [Bot page](frontend/src/pages/bot/BotPage.tsx) · [Practice controls](frontend/src/pages/bot/TopBotStrategyPanel.tsx) · [Account preset](backend/app/services/topbot.py) · [Depth signal](backend/app/services/topbot_strategy.py) · [Position management](backend/app/services/topbot_runner.py) |
+| Bot configuration and execution | [Strategy registry and replay support](backend/app/services/bot_strategy_registry.py) · [API schemas](backend/app/bot_schemas.py) · [Bot service](backend/app/services/bot_service.py) · [Worker and lease handling](backend/app/bot_worker.py) |
+| Session order flow, imbalance study and recording | [Session volume](backend/app/services/session_order_flow.py) · [Imbalance study](backend/app/services/imbalance_study.py) · [Standalone depth recorder](backend/tools/record_market_depth.py) · [Account trade-progress recorder](backend/app/services/trade_progress_recorder.py) |
+| Forward results (`/bot-results/:botId`) | [Bot results page](frontend/src/pages/bot/BotForwardResultsPage.tsx) · [Forward observations and simulated accounts](backend/app/services/forward_results.py) |
+| Backtesting (`/backtesting`) | [Backtesting page](frontend/src/pages/backtesting/BacktestingPage.tsx) · [Market-data API](backend/app/market_data_routes.py) · [Historical jobs](backend/app/services/topbot_backtest_jobs.py) · [Saved-model replay](backend/app/services/topbot_backtest.py) · [Configuration replay and saved results](backend/app/services/bot_backtesting.py) |
+| Database and host | [Data model](db/data-model.md) · [Schema](db/schema.sql) · [Migrations](db/migrations) · [Migration runner](backend/tools/migrate_db.py) · [Release and task scripts](scripts) · [Operator tools](backend/tools) |
 
-## Frontend routes
+Three shortcuts preserve query parameters. `/data` opens Dashboard, `/themes` opens Appearance and `/logs` opens the Bot Logs view.
 
-| Address | Screen |
-| --- | --- |
-| `/`, `/dashboard` | [Dashboard](frontend/src/pages/dashboard/DashboardPage.tsx) — P&L, risk forecast, trading-day calendar, trade imports and analytics-only Copy Trade Mode |
-| `/accounts` | [Accounts](frontend/src/pages/accounts/AccountsPage.tsx) — account selection, discovery, visibility and display names |
-| `/trades` | [Trades](frontend/src/pages/trades/TradesPage.tsx) — executions, filters and recorded trade progress |
-| `/expenses` | [Expenses](frontend/src/pages/expenses/ExpensesPage.tsx) — costs, refunds and payouts |
-| `/bot` | [Bot](frontend/src/pages/bot/BotPage.tsx) — practice controls, order book, liquidity history, strategy activity and Logs (`?view=logs`) |
-| `/bot-results/:botId` | [Bot results](frontend/src/pages/bot/BotForwardResultsPage.tsx) — owner-scoped forward research and simulated performance outside the main navigation |
-| `/backtesting` | [Backtesting](frontend/src/pages/backtesting/BacktestingPage.tsx) — historical MNQ chart and TopBot model replay |
-| `/appearance` | [Appearance](frontend/src/pages/themes/ThemePage.tsx) — browser zoom and theme preferences |
+## Feature tour
 
-The router redirects `/logs` to `/bot?view=logs`, `/themes` to `/appearance` and `/data` to `/dashboard`, carrying the query parameters across. The standalone Simulation page was retired. Its former `/simulation` address takes the catch-all redirect to `/`. Journal was removed and archived.
+For account states, dashboard controls and examples of how the app syncs trades, see the [account workspace walkthrough](docs/account-workspace.md).
+
+### Choose the account to review
+
+In **Accounts**, refresh ProjectX discovery, compare balances and last trade times, and include hidden or missing accounts when looking for older activity. Set a main account, give an account a local display name, or switch the active account used across the workspace. For manually imported trades, create a separate Live CSV account from the Dashboard with a name and opening balance. [Account management](docs/account-workspace.md#accounts)
+
+![Earlier Accounts table showing balances, last trade times, account states and the main account](docs/screenshots/accounts.png)
+
+### Read account performance
+
+On the **Dashboard**, choose a date range to compare net profit and loss (P&L), win rate, drawdown, and long versus short performance. **Copy Trade Mode** combines leader and follower results for analytics only. Open **Account Risk Forecast** to see how often simulated paths reach a loss limit under the rules and starting balance you enter. [Risk forecast settings and method](docs/account-risk-forecast.md)
+
+### Review a trading day
+
+Select a day on the Dashboard’s P&L calendar to filter the recent trade feed to that futures session.
+
+![Monthly P&L calendar with daily trading results and weekly totals](docs/screenshots/pnl-calendar.png)
+
+Follow the daily balance curve to see how those gains and losses accumulated across the selected range.
+
+![Daily account balance line showing the change across trading days](docs/screenshots/daily-account-bal.png)
+
+The **Recent Trade Events** table shows the entries, exits, direction, size and P&L behind a day’s result.
+
+![Dashboard trade feed listing entry and exit times, direction, prices and P&L](docs/screenshots/recent-trade-events.png)
+
+### Import trades and inspect executions
+
+On the Dashboard, preview a Topstep CSV or XLSX export for a Live CSV account, check gross P&L, fees, commissions and duplicates, then confirm to add the new trades. In **Trades**, filter by date and symbol, sync a ProjectX account’s selected window, or open a trade to review its recorded path where coverage is available. [Topstep import rules](docs/topstep-live-trade-imports.md) · [Trade-review workflow](docs/trade-review-workflow.md)
+
+![Earlier Trades screen with date and symbol filters, net P&L, win rate and trade count](docs/screenshots/trades.png)
+
+### Track expenses and payouts
+
+Use **Expenses** to log evaluation fees, resets, data costs and refunds, and to record payouts separately. Compare payouts minus spend across time periods, or use the combine spend tracker to reconcile inferred evaluation purchases with logged expenses. [Expenses and payouts walkthrough](docs/account-workspace.md#expenses-and-payouts)
+
+![Earlier Expenses screen with period spending, the combine spend tracker and the expense ledger](docs/screenshots/expenses.png)
+
+### Set the workspace theme and zoom
+
+In **Appearance**, preview a palette and adjust the scale of the whole workspace. Preferences persist in this browser and apply across screens. [Appearance settings](docs/account-workspace.md#appearance)
+
+![Palette swatches for Midnight, Daylight, Market and Ember in the earlier Themes screen](docs/screenshots/themes.png)
+
+### Run and monitor TopBot
+
+In **Bot**, follow the MNQ chart, order book, liquidity heatmap and strategy decisions for the selected account. By default, TopBot’s `dom_contrarian_v1` preset looks for a 10% imbalance in resting bids and asks sustained for 30 seconds, then trades against the heavier side if risk checks pass. On an eligible practice account, you can start the bot, select fixed or trailing exits, or choose **Stop new entries** to leave protection active on an open position. [Practice strategy](docs/topbot-contrarian.md) · [Exit settings](docs/topbot-fixed-session-exits.md)
+
+![Earlier Bot screen with the signal chart and SMA Cross configuration panel](docs/screenshots/bot.png)
+
+The **Logs** view shows TopBot diagnostics, host restarts and market-feed interruptions. Filter events by severity or search for a message when investigating a gap in activity. [Bot diagnostics](docs/bot-diagnostics.md) · [Production logs](docs/ssh-production-logs.md)
+
+### Read session order flow
+
+The **Session order flow** panel in Bot counts contracts from recorded market trades labeled buy or sell by ProjectX. Compare their difference (delta) with the observed price move over 5, 15 or 60 minutes, and check the coverage indicator before interpreting a partial session. [Session order-flow method](docs/session-order-flow.md) · [Recovery runbook](docs/session-order-flow-recovery.md)
+
+### Study what happens after an imbalance
+
+The **Imbalance signal study** in Bot records when an imbalance first meets the strategy’s threshold and duration, even if no order fills. Compare subsequent price moves at 30 seconds, 2 minutes and 5 minutes with matched below-threshold observations, then inspect skipped signals and linked practice fills. The panel reports the worker’s signals and the independent market observations separately. [Imbalance study](docs/topbot-imbalance-study.md) · [Worker evidence](docs/topbot-worker-evidence.md) · [Exit study](docs/topbot-exit-study.md)
+
+### Review independent recordings
+
+The host’s standalone depth recorder captures MNQ order-book updates, quotes and market trades so you can inspect past liquidity in Bot. A separate API-managed recorder samples open positions on enrolled ProjectX accounts about once a second, including manual trades. Both collect independently of bot arming, account selection, the browser and the viewing PC, so you can return to Bot or Trades to inspect recorded activity and its coverage gaps. [Recorded liquidity in Bot](docs/order-book-history.md) · [Depth recording](docs/topbot-depth-recording.md) · [Trade-progress recording](docs/trade-progress-recording.md)
+
+### Review forward simulations
+
+Open **Bot results** at `/bot-results/:botId` for a bot you own to see how its recorded dry-run decisions played out as new candles arrived. The report shows simulated positions, closed trades, net P&L and rejection reasons, alongside forecast outcomes. [Paper simulation timing and eligibility](docs/topbot-paper-v2.md)
+
+### Backtest a saved model on historical prices
+
+In **Backtesting**, browse locally installed Databento MNQ candles and replay the registered TopBot mathematical model over a historical period after its training cutoff. Set the starting balance, fees and slippage, then inspect simulated trades, equity and drawdown. Export the result as JSON to keep it after the temporary job expires. [History installation](docs/databento-history-transfer.md) · [Replay implementation and benchmarks](docs/databento-backtest-benchmarks.md)
+
+The retired **Simulation** screen let you place trades with simulated funds in a browser-generated market. Its former `/simulation` address now returns to `/`.
 
 ## Development profiles
 
@@ -55,10 +129,10 @@ The router redirects `/logs` to `/bot?view=logs`, `/themes` to `/appearance` and
 | --- | --- |
 | `npm run dev:offline` | Disconnected SQLite workspace on 5174. Broker access, worker and both live-order flags are disabled by the launcher. |
 | `npm run dev:local` | The same SQLite workspace and port with ProjectX access and a dry-run worker. Provider reads need valid credentials. Both live-order flags stay off. |
-| `npm run dev:cloud` | Historical command name for the configured account workspace on `http://localhost:5173`. It applies pending migrations to its configured PostgreSQL database before startup. Use a separate development database. |
+| `npm run dev:cloud` | Historical command name for the configured account workspace on `http://localhost:5173`. It applies pending migrations to its configured PostgreSQL database before startup. Point it at a dedicated local development database. |
 | `npm run dev` | Starts the connected SQLite profile and the configured PostgreSQL profile. Each frontend waits for its own API, on available loopback ports starting at 8000. |
 
-Use one 5174 profile at a time. Restart the launcher after editing `backend/.env` or `frontend/.env.local`. The `dev:live` and `dev:local:live` variants explicitly change the connected workspace’s order-routing gates. [Launcher definitions](package.json) · [Profile settings](scripts/offline-env.cjs)
+Use one 5174 profile at a time. Restart the launcher after editing `backend/.env` or `frontend/.env.local`. `npm run dev:live` and `npm run dev:local:live` enable the two order-routing flags for the connected SQLite workspace. [Launcher definitions](package.json) · [Profile settings](scripts/offline-env.cjs)
 
 **PostgreSQL development.** For schema work, the [Compose service](docker-compose.yml) runs PostgreSQL 16 on loopback port 5432. In a fresh development checkout with an empty local Compose volume, use these development-only settings in `backend/.env`.
 
@@ -75,19 +149,15 @@ TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION=false
 
 Start the database with `docker compose up -d db`. Follow the [fresh database procedure](db/README.md#fresh-database) to apply `schema.sql`, baseline the empty schema and check the ledger. Then run `npm run dev:cloud`. The launcher supplies `VITE_API_BASE_URL`. Anonymous access is restricted to a fully local development runtime. To develop authenticated flows, use a separately provisioned development owner and local auth store. The [environment reference](.env.example) includes **host** database, cache and auth paths. Keep private keys and host settings out of development profiles. [Local sign-in and provisioning](docs/local-sign-in.md)
 
-## Trading, replay and recording
-
-- **TopBot** uses the `dom_contrarian_v1` practice preset. By default a 10% imbalance sustained for 30 seconds across up to 100 observed levels per side qualifies a contrarian entry. The default 25-point stop trails after a 25-point favorable move. An account can select fixed exits. The worker enforces account, risk and execution gates. **Stop new entries** leaves protection and position management active. [Strategy](docs/topbot-contrarian.md) · [Fixed exits](docs/topbot-fixed-session-exits.md)
-- **Backtesting** reads installed Databento history from Parquet and memory-mapped arrays. The Backtesting page runs the registered mathematical model on eligible dates after its training cutoff. Candle replay and forward DOM signals use different inputs. The configuration replay API can persist bounded results in `bot_backtests`. Source ZIPs, input candles and recordings stay on disk. See the transfer guide before building history with `backend/tools/build_databento_cache.py`. [History transfer](docs/databento-history-transfer.md) · [Replay benchmarks](docs/databento-backtest-benchmarks.md)
-- **Forward research** uses recorded decisions, fills, simulated accounts and independently observed depth. The imbalance study tracks qualifications and matched outcomes even when no order fills. TopBot is the implemented practice bot. A second trading bot is future work. [Worker evidence](docs/topbot-worker-evidence.md) · [Imbalance study](docs/topbot-imbalance-study.md) · [Exit study](docs/topbot-exit-study.md)
-
 ## Hosted operation and recovery
 
-**Local PostgreSQL on peteamdpc is the sole execution authority.** It holds application accounts, trades, encrypted provider credentials, bot state and saved results. Authentication uses a protected local SQLite owner/session store. The API and bot worker, independent depth recorder, Discord reader and execution backup helper run on the host. The API and depth-recorder tasks use scheduler priority 4. The viewing PC reaches the [practice dashboard](http://127.0.0.1:4173/bot?account=29593203) through the private connection. [Hosted access](docs/hosted-dashboard-connection.md) · [Production logs](docs/ssh-production-logs.md)
+On **peteamdpc**, a Windows task serves the built frontend and supervises the FastAPI backend and bot worker. The independent depth recorder, Discord reader and execution backup helper also run on the host. The API and depth recorder run at scheduler priority 4, above optional derivation and backup work. Open the [practice dashboard](http://127.0.0.1:4173/bot?account=29593203) through the private viewing-PC connection. [Hosted access](docs/hosted-dashboard-connection.md) · [Windows operations](docs/windows-24x7-operations.md) · [Release procedure](docs/releasing.md)
 
-Bulk market data, research, worker evidence and trade-progress recordings live under `TOPSIGNAL_DATABENTO_CACHE_DIR`. The default development path is `backend/storage/databento`. Passive collection runs independently of bot arming, account selection, the browser and the viewing PC. Coverage gaps stay visible. [Depth recording](docs/topbot-depth-recording.md) · [Trade progress](docs/trade-progress-recording.md) · [Session order-flow recovery](docs/session-order-flow-recovery.md)
+**Local PostgreSQL on peteamdpc is the sole execution authority.** It owns accounts, trades, encrypted provider credentials, bot state and saved results. The runtime verifies the database’s authority ID and write protections so only that instance can grant the worker lease and authorize execution. Trusted-device sign-in uses a separate protected local SQLite store. [Authority checks](backend/app/execution_storage.py) · [Local storage and restore](docs/local-first-storage.md)
 
-The November 13 maintenance recorded six owned accounts enrolled under an eight-account cap with explicit opt-outs. It also retired the compact cloud mirror and archived Journal. Execution fences remain enabled. Preserve historical migrations, cloud audit data, encrypted archives and original Databento sources. Full-cache restore and reboot acceptance have separate evidence from a focused PostgreSQL/auth backup. Consult the dated receipt before recovery, including its release-87 rollback restriction. [Maintenance checkpoint](docs/audits/2026-11-13/storage-maintenance.md) · [Retirement procedure](docs/supabase-retirement.md)
+Original Databento archives, Parquet candles, memory-mapped replay arrays, raw depth, worker evidence and trade-progress recordings live under `TOPSIGNAL_DATABENTO_CACHE_DIR`. The host uses `D:/TopSignal/data/databento` and development defaults to `backend/storage/databento`. Keep original sources with the cache and verify its off-device backup separately from the PostgreSQL and auth backups. [Cache builder](backend/tools/build_databento_cache.py) · [Storage policy](docs/supabase-storage-policy.md)
+
+The November 13 maintenance retired the Supabase mirror and archived Journal. Cloud records and encrypted archives remain recovery material. Consult the receipt for outstanding full-cache restore and reboot checks, and the recovery procedure for the release 87 rollback restriction. [Maintenance receipt](docs/audits/2026-11-13/storage-maintenance.md) · [Retirement and recovery](docs/supabase-retirement.md)
 
 ## Checks
 
@@ -105,5 +175,3 @@ node scripts/audit-frontend.cjs
 ```
 
 For the four-worker backend run, pass `-q -n 4 --dist=loadfile` to the Python runner. The PowerShell `PATH` line selects the test interpreter for the script regressions. On macOS or Linux, activate `backend/.venv` in your shell instead. The database CI job creates disposable PostgreSQL 16 databases for fresh schema, upgrades, privilege checks, populated adoption, concurrency and worker fencing. Its SQL deliberately changes test data and roles. Run it only against an isolated cluster. [CI commands](.github/workflows/ci.yml)
-
-For product details, see the [account workspace walkthrough](docs/account-workspace.md), [Topstep import rules](docs/topstep-live-trade-imports.md), [risk forecast method](docs/account-risk-forecast.md) and [trade-review workflow](docs/trade-review-workflow.md).
