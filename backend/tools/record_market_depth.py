@@ -12,6 +12,18 @@ import shutil
 
 SUBSCRIPTION_TIMEOUT_SECONDS = 15
 TRANSPORT_TIMEOUT_SECONDS = 45
+MAX_RECORDING_BYTES = 250 * 1024**3
+
+
+def validate_bounds(config, *, seconds=0):
+    """An explicit null disables age review; size and free-space limits remain."""
+    review_days = config['review_after_days']
+    if not (type(config['max_bytes']) is int and 32*1024**2 <= config['max_bytes'] <= MAX_RECORDING_BYTES
+            and type(config['reserve_bytes']) is int and config['reserve_bytes'] >= 5*1024**3
+            and (review_days is None or type(review_days) is int and 1 <= review_days <= 30)
+            and type(config['segment_seconds']) is int and 1 <= config['segment_seconds'] <= 300
+            and type(seconds) is int and seconds >= 0):
+        raise ValueError('Invalid bounds')
 
 if __package__:
     from .depth_recording import SegmentRecorder, StorageLimit, atomic_json, inventory, utc, verify_segments
@@ -149,11 +161,16 @@ class CapacityMonitor:
         growth = max(0, written - self.baseline) + self.allowance
         value['uncompressed_growth_allowance'] = growth
         value['free_bytes'] = shutil.disk_usage(self.root).free
+        # A restart may reuse an inventory made under the previous policy.
+        # Report and enforce the current protected config immediately.
+        value.update(budget_bytes=self.config['max_bytes'], reserve_bytes=self.config['reserve_bytes'],
+                     review_after_days=self.config['review_after_days'])
         oldest = value.get('oldest_mtime')
         value['blocked_reason'] = (
             'recording_budget_reached' if value['bytes'] + growth + 32*1024**2 > self.config['max_bytes'] else
             'disk_free_reserve' if value['free_bytes'] < self.config['reserve_bytes'] + 32*1024**2 else
-            'retention_review_due' if oldest is not None and _wall() - oldest > self.config['review_after_days']*86400 else
+            'retention_review_due' if self.config['review_after_days'] is not None and oldest is not None
+                and _wall() - oldest > self.config['review_after_days']*86400 else
             'capacity_check_stale' if now - self.completed > self.stale_after else None)
         return value
 
@@ -353,9 +370,7 @@ def main():
     if args.verify:print(json.dumps(verify_segments(args.verify)));return
     if not args.config:parser.error('--config required')
     config=json.loads(args.config.read_text(encoding='utf-8-sig'))
-    if not (32*1024**2<=config['max_bytes']<=50*1024**3 and config['reserve_bytes']>=5*1024**3
-            and 1<=config['review_after_days']<=30 and 1<=config['segment_seconds']<=300 and args.seconds>=0):
-        raise ValueError('Invalid bounds')
+    validate_bounds(config, seconds=args.seconds)
     runtime=Path(config['runtime_root']);runtime.mkdir(parents=True,exist_ok=True)
     with ProcessLock(runtime/'recorder.lock'):
         if (runtime/'STOP').exists():return

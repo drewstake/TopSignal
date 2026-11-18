@@ -6,6 +6,11 @@ gates and existing execution safeguards still apply. The application fixes are
 deployed; the current scope and deferred recovery/restart checks are recorded
 below. This receipt does not declare all original acceptance work complete.
 
+At 23:28 New York, a subsequent owner-authorized
+[depth storage policy change](depth-storage-policy.md) deployed helper v3 with a
+250 GiB raw-plus-totals budget, no age cutoff, and the unchanged 10 GiB free-space
+reserve. The earlier limits and helper paths below are historical receipts.
+
 ## Commit, push and deployment review — November 13, 23:03 New York
 
 The owner subsequently requested finishing commit/push/deployment review without

@@ -5,6 +5,8 @@ import { requestJson } from "../../../lib/api";
 import { boundedBotRequest } from "../botPageRequests";
 import { usePageVisibility } from "../usePageVisibility";
 import type { OrderBookStore } from "../orderBook";
+import type { ServerClock } from "../heatmapClock";
+import { readSessionRanges, readerDeadline, type SessionProgress, type WindowQuery } from "./sessionArchive";
 import { mergeLiveHistory, mergeSessionArchive, useLiveHistory } from "./liveHistory";
 import { HistoryChart } from "./HistoryChart";
 import { csvHistory, localInput, metricUsable, priceChangeAfter, sessionWindow, usable, type BookHistory, type DepthScope, type HistoryPoint } from "./history";
@@ -13,14 +15,14 @@ const inputClass = "h-10 min-w-0 rounded-lg border border-app-border bg-app-bg p
 const format = (value: number | null, digits=2) => value === null ? "—" : value.toLocaleString("en-US", { maximumFractionDigits: digits });
 const time = (value: string) => new Date(value).toLocaleString(undefined, { timeZoneName: "short" });
 const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-type WindowQuery = { start?: string; end?: string; scope: DepthScope; window?: "latest" | "session" };
-
-export function HistoryView({ accountId, compact = false, liveStore }: { accountId: number; compact?: boolean; liveStore?: OrderBookStore }) {
+export function HistoryView({ accountId, compact = false, liveStore, clock }: { accountId: number; compact?: boolean; liveStore?: OrderBookStore; clock?: ServerClock }) {
   const [query, setQuery] = useState<WindowQuery>({ scope: "all", window: "session" });
   const [refresh, setRefresh] = useState(0);
   const [viewVersion, setViewVersion] = useState(0);
   const [recorded, setData] = useState<BookHistory | null>(null);
   const recordedRef = useRef<BookHistory | null>(null);
+  const partial = useRef<SessionProgress | null>(null);
+  const [earlierPending, setEarlierPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
   const [from, setFrom] = useState("");
@@ -35,30 +37,52 @@ export function HistoryView({ accountId, compact = false, liveStore }: { account
     return () => window.clearInterval(timer);
   }, [visible]);
   const autoRefresh = following && !query.start;
-  const live = useLiveHistory(liveStore, query.scope, autoRefresh && visible);
+  const live = useLiveHistory(liveStore, query.scope, autoRefresh && visible, clock);
   const data = useMemo(() => query.start ? recorded : mergeLiveHistory(recorded, live.points, query.scope, query.window), [recorded, live.points, query]);
   const inFlight = useRef<AbortController | null>(null);
   const pauseUpdates = () => { setFollowing(false); inFlight.current?.abort(); };
+  useEffect(() => {
+    if (!visible && earlierPending) inFlight.current?.abort();
+  }, [visible, earlierPending]);
 
   useEffect(() => {
     let active = true;
     const controller = new AbortController();
     inFlight.current = controller;
     const previous = recordedRef.current;
-    const incremental = query.window === "session" && previous?.scope === query.scope && Date.parse(previous.start) / 1000 === sessionWindow(Date.now()).start;
-    void boundedBotRequest(requestJson<BookHistory>(`/api/accounts/${accountId}/order-book-history`, {
-      query: incremental ? { scope: query.scope } : query, signal: controller.signal,
-    }), controller, "The recording host took too long to respond. Retry or choose a shorter range; saved observations are preserved.", 30000)
-      .then(result => {
-        if (!active || controller.signal.aborted) return;
-        setError(null);
-        const next = incremental ? mergeSessionArchive(previous!, result) : result;
-        recordedRef.current = next;
-        setData(next); setFrom(localInput(next.start)); setUntil(localInput(next.end)); setScope(next.scope);
-      }).catch(failure => { if (active && !(failure instanceof DOMException && failure.name === "AbortError")) setError(failure instanceof Error ? failure.message : "Could not load recordings."); })
+    const nowMs = clock?.now() ?? Date.now();
+    const bounds = sessionWindow(nowMs);
+    const read = (range: WindowQuery) => boundedBotRequest(requestJson<BookHistory>(`/api/accounts/${accountId}/order-book-history`, {
+      query: range, signal: controller.signal,
+    }), controller, "The recording host took too long to respond. Retry or choose a shorter range.", 30000);
+    const show = (next: BookHistory) => {
+      if (!active || controller.signal.aborted) return;
+      setError(null);
+      recordedRef.current = next;
+      setData(next); setFrom(localInput(next.start)); setUntil(localInput(next.end)); setScope(next.scope);
+    };
+    const fetchWindow = async () => {
+      if (query.window !== "session") { show(await read(query)); return; }
+      if (previous?.scope === query.scope && Date.parse(previous.start) / 1000 === bounds.start
+          && Date.parse(previous.end) / 1000 >= bounds.end - 900) {
+        show(mergeSessionArchive(previous, await read({ scope: query.scope }), nowMs));
+        return;
+      }
+      if (!partial.current && bounds.end - bounds.start <= 4 * 3600) {
+        try { show(await read(query)); return; }
+        catch (failure) { if (!readerDeadline(failure)) throw failure; }
+      }
+      setEarlierPending(true);
+      await readSessionRanges(bounds, query.scope, partial.current, read, progress => {
+        partial.current = progress;
+        show(progress.history);
+      }, controller.signal);
+      if (active && !controller.signal.aborted) { partial.current = null; setEarlierPending(false); }
+    };
+    void fetchWindow().catch(failure => { if (active && !(failure instanceof DOMException && failure.name === "AbortError")) setError(failure instanceof Error ? failure.message : "Could not load recordings."); })
       .finally(() => { if (active) setBusy(false); });
     return () => { active = false; controller.abort(); };
-  }, [accountId, query, refresh]);
+  }, [accountId, query, refresh, clock]);
 
   useEffect(() => {
     if (!autoRefresh || !visible || busy) return;
@@ -73,6 +97,7 @@ export function HistoryView({ accountId, compact = false, liveStore }: { account
   const load = (nextQuery: WindowQuery) => {
     setViewVersion(value => value + 1);
     recordedRef.current = null;
+    partial.current = null; setEarlierPending(false);
     setBusy(true); setError(null); setData(null);
     setQuery(nextQuery);
     setRefresh(value => value + 1);
@@ -107,8 +132,8 @@ export function HistoryView({ accountId, compact = false, liveStore }: { account
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant={query.window === "session" ? "secondary" : "ghost"} disabled={busy} onClick={() => { setFollowing(true); load({ scope, window: "session" }); }}>Full session</Button>
-          <Button size="sm" variant={!query.start && query.window !== "session" ? "secondary" : "ghost"} disabled={busy} onClick={() => { setFollowing(true); load({ scope }); }}>Latest 15m</Button>
-          {[5,30,60].map(minutes => <Button key={minutes} size="sm" variant="ghost" disabled={busy || !data?.latest}
+          <Button size="sm" variant={!query.start && query.window !== "session" ? "secondary" : "ghost"} disabled={busy && !earlierPending} onClick={() => { setFollowing(true); load({ scope }); }}>Latest 15m</Button>
+          {[5,30,60].map(minutes => <Button key={minutes} size="sm" variant="ghost" disabled={(busy && !earlierPending) || !data?.latest}
             onClick={() => { const end = new Date(new Date(data!.latest!).getTime()+1); applyRange(new Date(+end-minutes*60000), end); }}>Latest {minutes === 60 ? "1h" : `${minutes}m`}</Button>)}
           <Button size="sm" variant="ghost" disabled={busy || !data} onClick={() => {
             const end = new Date(data!.start); applyRange(new Date(+end-(+new Date(data!.end)-+end)), end);
@@ -118,15 +143,18 @@ export function HistoryView({ accountId, compact = false, liveStore }: { account
         <span className="text-xs text-app-muted">Times in {timezone} · Session: 6 PM–5 PM Eastern · Up to 24 hours per view</span>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-app-muted">
-        <span>{autoRefresh ? visible ? liveStore ? live.fresh ? "Live ProjectX depth · Updates every 1s" : "Waiting for fresh live depth · Showing available history" : query.window === "session" ? "Full session · Recordings refresh every 30s" : "Updates every 1s · Latest 15 minutes" : "Updates paused while this tab is hidden" : "Updates paused for inspection"}{query.window === "session" && liveStore ? " · Full session" : ""}</span>
+        <span>{autoRefresh ? visible ? liveStore ? live.fresh ? "Live ProjectX depth · Updates every 1s" : data?.points.length ? "Waiting for fresh live depth · Showing available history" : "Waiting for fresh live depth" : query.window === "session" ? "Full session · Recordings refresh every 30s" : "Updates every 1s · Latest 15 minutes" : "Updates paused while this tab is hidden" : "Updates paused for inspection"}{query.window === "session" && liveStore ? " · Full session" : ""}</span>
         <Button size="sm" variant="ghost" onClick={() => {
           if (autoRefresh) pauseUpdates();
           else { setFollowing(true); load({ scope, window: query.window ?? "session" }); }
         }}>{autoRefresh ? "Pause updates" : "Follow latest"}</Button>
       </div>
+      {earlierPending && <p role="status" className="text-xs text-app-muted">{recorded
+        ? `Session recordings loaded from ${time(recorded.start)}. ${busy && !error ? "Loading earlier recordings…" : "Earlier recordings pending."}`
+        : busy && !error ? "Loading the latest session recordings first…" : "Session recordings pending."}</p>}
       {data && <div className="flex flex-wrap justify-between gap-2 border-t border-app-border pt-3 text-xs text-app-muted">
         <span><span className="font-semibold text-app-text">Source: {data.source}</span> · Account access {accountId} · Shared market data for your user</span>
-        <span>{!data.sealed_only && <>Live through {time(data.latest!)} · </>}Recorded through {recorded?.latest ? time(recorded.latest) : "—"}</span>
+        <span>{!data.sealed_only && <>Live through {time(live.points.at(-1)?.timestamp ?? data.latest!)} · </>}Recorded through {recorded?.points.length ? time(recorded.points[recorded.points.length - 1].timestamp) : "—"}</span>
       </div>}
       {data && <p className="text-xs text-app-muted" role="status">{data.recording_health
         ? `Recorder: ${data.recording_health.stale || now-Date.parse(data.recording_health.at)>60000 ? "status stale" : data.recording_health.state} · Last durable measurement write ${data.recording_health.last_totals_write_at ? time(data.recording_health.last_totals_write_at) : "unknown"} · Pending measurements ${data.recording_health.pending_measurements ?? "unknown"} / events ${data.recording_health.pending_events} · Rejected envelopes ${data.recording_health.rejected_events} · Dropped measurements ${data.recording_health.dropped_measurements ?? "unknown (not measured by provider)"} · Reconnects ${data.recording_health.reconnects}`

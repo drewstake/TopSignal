@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { HistoryExplorer, HistoryView } from "./BotLiquidityHistory";
 import { requestJson } from "../../../lib/api";
 import type { BookHistory, HistoryPoint } from "./history";
 import { OrderBookStore } from "../orderBook";
 import { sessionWindow } from "./history";
+import { ServerClock } from "../heatmapClock";
 vi.mock("../../../lib/api",()=>({requestJson:vi.fn()}));
 const points:HistoryPoint[]=Array.from({length:70},(_,i)=>({time:1793379600+i,timestamp:new Date((1793379600+i)*1000).toISOString(),
   contract_id:"CON.F.US.MNQ.Z26",capture_id:"run",generation:1,index:i,bid_contracts:30,ask_contracts:10,
@@ -13,7 +14,47 @@ const points:HistoryPoint[]=Array.from({length:70},(_,i)=>({time:1793379600+i,ti
 const data:BookHistory={points,scope:"all",start:points[0].timestamp,end:points.at(-1)!.timestamp,earliest:points[0].timestamp,
   latest:points.at(-1)!.timestamp,available_days:["2026-10-30"],contracts:["CON.F.US.MNQ.Z26"],skipped_segments:0,
   sealed_only:true,interval_ms:250,source:"peteamdpc",generated_at:points.at(-1)!.timestamp};
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-02T02:00:00Z") }); });
 afterEach(()=>{cleanup();vi.useRealTimers();vi.restoreAllMocks();vi.clearAllMocks();});
+it("backfills a long session from the recent window and narrows a timed-out range", async () => {
+  vi.setSystemTime(new Date("2026-11-17T06:00:00Z"));
+  const bounds = sessionWindow(Date.now());
+  let failWide = true;
+  const ranges: number[][] = [];
+  vi.mocked(requestJson).mockImplementation(async (_path, options) => {
+    const { start, end } = options!.query as { start: string; end: string };
+    const from = Date.parse(start) / 1000, until = Date.parse(end) / 1000;
+    ranges.push([from, until]);
+    if (failWide && until - from > 3601) {
+      failWide = false;
+      throw new Error("History is still preparing. Retry shortly or choose a shorter range.");
+    }
+    const point = { ...points[0], timestamp: start, time: from, index: from };
+    return { ...data, points: [point], start, end, latest: end };
+  });
+  render(<HistoryView accountId={123} compact />);
+  await waitFor(() => expect(screen.queryByText(/Loading earlier recordings/)).toBeNull());
+  await screen.findByText(/observed samples shown/);
+  expect(ranges[0]).toEqual([bounds.end - 900, bounds.end]);
+  expect(ranges[2][0]).toBeGreaterThan(ranges[1][0]);
+  expect(ranges.at(-1)![0]).toBe(bounds.start);
+  expect(screen.getByText(new RegExp(`${ranges.length - 1} observed samples shown`))).toBeTruthy();
+});
+it("uses the recording host clock to distinguish fresh browser samples from stale ones", async () => {
+  vi.useFakeTimers();
+  const clock = new ServerClock();
+  const browser = Date.now(), host = browser - 4000;
+  clock.observe(host, browser, browser);
+  const contract = "CON.F.US.MNQ.Z26", store = new OrderBookStore(contract);
+  store.setConnectionState({ contract_id: contract, state: "connected" });
+  store.applySnapshot({ contract_id: contract, sequence: 1, timestamp: new Date(host).toISOString(),
+    bids: [{price: 100, size: 2}], asks: [{price: 101, size: 2}] });
+  vi.mocked(requestJson).mockReturnValue(new Promise(() => {}));
+  render(<HistoryView accountId={123} compact liveStore={store} clock={clock} />);
+  expect(screen.getByText(/Live ProjectX depth/)).toBeTruthy();
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+  expect(screen.getByText(/Waiting for fresh live depth/)).toBeTruthy();
+});
 it("retains zoom and selection when live props advance, with per-metric paths and hover evidence", () => {
   const withFlags={...data,points:points.map((p,i)=>i===2?{...p,mid_price:null,quality_flags:["ask_provider_time_unreliable"]}:p)};
   const view=render(<HistoryExplorer data={withFlags} onInspect={()=>{}} />);
@@ -36,7 +77,7 @@ it("loads the entire session once and refreshes only the recent archive without 
   const start = sessionWindow(Date.now()).start;
   const early = { ...points[1], time: start + 60, timestamp: new Date((start + 60) * 1000).toISOString() };
   const late = { ...early, time: Date.now() / 1000 - 60, timestamp: new Date(Date.now() - 60000).toISOString() };
-  vi.mocked(requestJson).mockResolvedValueOnce({ ...data, points: [early], start: new Date(start * 1000).toISOString(), latest: early.timestamp, interval_ms: 10000, window: "session" });
+  vi.mocked(requestJson).mockResolvedValueOnce({ ...data, points: [early], start: new Date(start * 1000).toISOString(), end: new Date().toISOString(), latest: early.timestamp, interval_ms: 10000, window: "session" });
   vi.mocked(requestJson).mockResolvedValue({ ...data, points: [late], start: new Date(Date.now() - 900000).toISOString(), latest: late.timestamp });
   render(<HistoryView accountId={123} compact />);
   await act(async () => {});

@@ -13,6 +13,10 @@ survived application deployments and a recoverable status-publication denial.
 See [maintenance evidence and remaining acceptance](audits/2026-11-13/storage-maintenance.md).
 The four verified overnight raw gaps remain explicit; no observations were invented.
 
+The later [November 13 storage-policy change](audits/2026-11-13/depth-storage-policy.md)
+raised the raw-plus-totals budget to 250 GiB and removed the age cutoff at the
+owner's request, preserving the 10 GiB free-space safeguard.
+
 The standalone research workspace was retired on November 10, 2026. Shared
 read-only depth helpers, derived-feature tools, and the recorder remain in use
 by Bot. Retiring the pages does not remove recorded segments or change host tasks.
@@ -30,10 +34,11 @@ observed Level 2 verification, preservation checks and backup evidence.
 
 | Purpose | Host path |
 | --- | --- |
-| Recorder bundle and config | `C:/ProgramData/TopSignal/tools/storage-remediation-v2/` |
+| Recorder bundle and config | `C:/ProgramData/TopSignal/tools/depth-recorder-storage-v3/` |
 | Status, process lock and optional STOP file | `C:/ProgramData/TopSignal/runtime/depth-recorder/` |
 | Raw compressed depth, trades and quotes | `D:/TopSignal/data/databento/depth-recordings-v1/` |
-| Pinned backend dependencies and environment | `C:/ProgramData/TopSignal/tools/storage-remediation-v2/backend/` |
+| Pinned Python dependencies | `C:/ProgramData/TopSignal/tools/storage-remediation-v2/backend/.venv/` |
+| Protected credential environment | `C:/ProgramData/TopSignal/tools/storage-remediation-v2/.env.recorder` |
 
 Storage follows [the Supabase storage policy](supabase-storage-policy.md). The
 recording root must match `TOPSIGNAL_DATABENTO_CACHE_DIR/depth-recordings-v1`.
@@ -66,12 +71,20 @@ is applied. Disconnects, reconnects, malformed envelopes and delivery rolls leav
 explicit markers. Contract selection is rechecked every five minutes; each record
 retains its actual delivery. This does not roll TopBot's trading configuration.
 
-The initial recording budget is **20 GiB**, with **10 GiB free disk space reserved**
-and **review required after 30 days** from the oldest retained recording file.
-A 32 MiB safety margin is checked before opening each segment; inventory is also
-refreshed at least every 30 seconds. Reaching a boundary stops recording and sets
-`state=storage_blocked`. It never deletes evidence or increases budgets itself.
-Review capacity and arrange authorized archival/retention before that point.
+The owner-authorized recording budget is **250 GiB**, with **10 GiB free disk
+space reserved** and **no age-based recording cutoff**. The protected recorder
+config sets `max_bytes: 268435456000`, `reserve_bytes: 10737418240`, and
+`review_after_days: null`. An integer review period retains the previous age
+guard for other configurations; only explicit JSON `null` disables it. No old
+recordings are deleted automatically.
+
+A 32 MiB safety margin is checked before opening each segment. Free space is
+checked continuously, with new uncompressed writes conservatively charged
+between background inventory scans (normally every 15 minutes). A restart
+immediately applies the current limits even when reusing an older inventory.
+Reaching the recording budget, free-space floor, or stale-inventory boundary
+stops recording and sets `state=storage_blocked`. These safeguards remain active;
+removing the age cutoff does not waive storage or integrity checks.
 
 Network reconnect delays are bounded at 60 seconds. Unacknowledged subscriptions
 time out after 15 seconds, and absent server frames after 45 seconds; server
@@ -116,8 +129,8 @@ sequence guarantees remain explicitly **unverified**; totals are observed-book
 measurements, not a certified full exchange book or a proven trading signal.
 
 Summary files use the existing compressed event envelope, `.segment.json` commit
-markers, verification, and backup inclusion. They share the existing 20 GiB
-recording budget, free-space reserve, and review boundary; raw capture is
+markers, verification, and backup inclusion. They share the 250 GiB
+recording budget and 10 GiB free-space reserve, without an age cutoff; raw capture is
 unchanged. The summary stream has its own receipt index and `capture_id`; each
 payload's `source_capture_id`/`source_index` identifies the latest raw input.
 Backups snapshot committed files independently, so a referenced raw segment may

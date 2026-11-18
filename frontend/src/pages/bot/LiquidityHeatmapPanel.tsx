@@ -17,6 +17,7 @@ import { HeatmapNavigator } from "./HeatmapNavigator";
 import "./LiquidityHeatmapPanel.css";
 
 interface Props {
+  clock?: ServerClock;
   store: OrderBookStore;
   contractId: string | null | undefined;
   symbol?: string | null;
@@ -28,12 +29,12 @@ interface Props {
   historyFetcher?: HistoryFetcher;
 }
 
-export function LiquidityHeatmapPanel({ store, contractId, symbol, tickSize, demoMode = false, accountId = null, historyFetcher }: Props) {
+export function LiquidityHeatmapPanel({ store, contractId, symbol, tickSize, demoMode = false, accountId = null, historyFetcher, clock }: Props) {
   const contract = normalizeOrderBookContractId(contractId);
   const metadata = useHeatmapTickSize(demoMode ? null : contract, tickSize);
   return <HeatmapDisplay key={`${contract}:${metadata.tickSize}:${demoMode}:${accountId}`} store={store} contractId={contract}
     symbol={symbol} tickSize={metadata.tickSize} demoMode={demoMode} accountId={accountId} historyFetcher={historyFetcher}
-    metadataError={metadata.error} retry={metadata.retry} />;
+    metadataError={metadata.error} retry={metadata.retry} clock={clock} />;
 }
 
 interface Settings {
@@ -125,10 +126,10 @@ function describe(result: InspectResult | null, bubble: BubbleHit | null, tickSi
 
 interface Pin { time: number; tick: number; bubble: BubbleHit | null }
 
-function HeatmapDisplay({ store, contractId, symbol, tickSize, demoMode = false, accountId, historyFetcher, metadataError, retry }: Props & {
+function HeatmapDisplay({ store, contractId, symbol, tickSize, demoMode = false, accountId, historyFetcher, metadataError, retry, clock: sharedClock }: Props & {
   metadataError: string | null; retry: () => void;
 }) {
-  const [clock] = useState(() => new ServerClock());
+  const [clock] = useState(() => sharedClock ?? new ServerClock());
   const [buffer] = useState(() => new LiquidityHeatmapBuffer(contractId, tickSize ?? null));
   const [tradeBuffer] = useState(() => new HeatmapTradeBuffer(contractId, tickSize));
   // Created and disposed in one effect, so a StrictMode/dev remount gets a working store.

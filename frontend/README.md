@@ -1,267 +1,28 @@
-# TopSignal Frontend
+# TopSignal frontend
 
-This frontend is the trader-facing UI for TopSignal. It is a React 19 + TypeScript + Vite application that talks to the FastAPI backend and renders the current routed product: dashboard, accounts, trades, expenses, payouts, journal, bot, and theme workflows.
+The account workspace uses React 19, TypeScript, React Router and Vite. Start the UI and its matching FastAPI server together with the [repository quick start](../README.md#local-quick-start). Each launcher waits for API readiness and supplies the backend address to Vite.
 
-## Stack
+## Finding a feature
 
-| Layer | Implementation |
+| Area | Entry points |
 | --- | --- |
-| UI | React 19 |
-| Language | TypeScript |
-| Routing | React Router 7 |
-| Build tool | Vite 7 |
-| Styling | Tailwind CSS + custom UI primitives |
-| Auth client | `@supabase/supabase-js` when Supabase env vars are present |
-| Tests | Vitest |
+| Pages and navigation | [Router](src/app/routes.tsx), [shell and account picker](src/app/AppShell.tsx) and [route-to-screen index](../README.md#frontend-routes) |
+| Sign-in and owner changes | [AccountAccess](src/app/AccountAccess.tsx) and [local session client](src/lib/localAuth.ts) |
+| Requests and cache invalidation | [API client](src/lib/api.ts) and [shared types](src/lib/types.ts) |
+| Dashboard metrics and imports | [Dashboard components](src/pages/dashboard/components), [dashboard metrics](src/pages/dashboard/metrics) and [shared metric helpers](src/utils/metrics) |
+| Practice controls and historical research | [Bot page](src/pages/bot/BotPage.tsx), [forward results](src/pages/bot/BotForwardResultsPage.tsx) and [Backtesting page](src/pages/backtesting/BacktestingPage.tsx) |
+| Reusable UI and styling | [UI primitives](src/components/ui), [metric components](src/components/metrics) and [styles](src/styles) |
 
-## Routes
+The API client attaches local session tokens, deduplicates in-flight requests and invalidates cached reads after mutations. Account selection, appearance preferences and the dashboard’s analytics-only Copy Trade Mode also use browser state. [Account walkthrough](../docs/account-workspace.md)
 
-The current router lives in `src/app/routes.tsx` and ships:
+## Run and check the frontend
 
-- `/`: `DashboardPage`
-- `/accounts`: `AccountsPage`
-- `/trades`: `TradesPage`
-- `/expenses`: `ExpensesPage`
-- `/journal`: `JournalPage`
-- `/bot`: `BotPage`
-- `/themes`: `ThemePage`
-
-The app shell in `src/app/AppShell.tsx` provides:
-
-- the global active-account picker
-- the global "Sync Latest Trades" action
-- top-level tab navigation
-- optional Supabase sign-out controls
-
-## Page Responsibilities
-
-### Dashboard
-
-`src/pages/dashboard/DashboardPage.tsx`
-
-Shows:
-
-- account-level summary metrics
-- point-payoff comparisons across supported bases
-- sustainability, activity, drawdown, and direction metrics
-- recent trade events
-- trading-day PnL calendar
-- daily account-balance curve
-- journal-day markers and day-to-journal navigation
-
-### Accounts
-
-`src/pages/accounts/AccountsPage.tsx`
-
-Supports:
-
-- active-account selection
-- main-account selection
-- hidden/missing account toggles
-- last-trade lookup
-- local display-name overrides
-- journal-history merge between accounts
-
-### Trades
-
-`src/pages/trades/TradesPage.tsx`
-
-Supports:
-
-- date-range filters
-- client-side symbol search
-- manual trade sync for the selected range
-- account summary cards
-- paginated execution feed
-
-### Expenses
-
-`src/pages/expenses/ExpensesPage.tsx`
-
-Supports:
-
-- expense list/filter/pagination
-- expense totals
-- expense creation and deletion
-- combine-spend tracker behavior
-- payout list, totals, creation, and deletion
-
-### Journal
-
-`src/pages/journal/JournalPage.tsx`
-
-Supports:
-
-- entry list and entry editor
-- debounced autosave
-- optimistic concurrency conflict handling
-- image uploads and deletion
-- archive toggle
-- trade-stat snapshot pulls
-- copy/export helpers for recent entries
-
-### Bot
-
-`src/pages/bot/BotPage.tsx`
-
-Supports:
-
-- bot strategy configuration
-- dry-run start and evaluation flows
-- signal charting
-- recent bot decision, order-attempt, risk-event, and run activity review
-
-### Themes
-
-`src/pages/themes/ThemePage.tsx`
-
-Supports:
-
-- workspace theme palette selection
-- active-palette preview across controls, surfaces, metrics, and status colors
-
-## Shared Frontend Architecture
-
-### API client
-
-`src/lib/api.ts` is the main frontend integration layer.
-
-It provides:
-
-- typed backend requests
-- auth-token injection
-- request performance logging
-- in-memory response caching
-- in-flight request deduplication
-- cache invalidation after mutations
-
-Current cache TTLs:
-
-- account lists: 10 minutes
-- account-scoped summaries/trades/PnL calendars: 10 minutes
-- journal day markers: 10 minutes
-
-### Types
-
-`src/lib/types.ts` contains the frontend types for:
-
-- accounts
-- trade events
-- summaries
-- journal entries
-- expenses
-- payouts
-- auth and credential status
-
-### Utilities
-
-Key helpers live in:
-
-- `src/lib/`: API integration, account selection, Supabase wiring, trade sync events, combine tracker, trading-day helpers
-- `src/utils/`: formatting and metric helper functions
-- `src/utils/metrics/`: derived metric helpers used by the dashboard
-
-### UI primitives
-
-Reusable UI building blocks live under:
-
-- `src/components/ui/`
-
-Metric-specific visual components live under:
-
-- `src/components/metrics/`
-
-## Development
-
-### Install
-
-From the repo root:
+From the repository root, install with `npm --prefix frontend ci`. For a frontend-only session with an already running development API, set `VITE_API_BASE_URL` in `frontend/.env.local` to that API’s loopback URL and run `npm --prefix frontend run dev`. Vite exposes `VITE_*` values to the browser. Broker credentials and encryption keys belong on the backend.
 
 ```powershell
-npm --prefix frontend install
-```
-
-Or if you already run root install:
-
-```powershell
-npm install
-```
-
-### Environment
-
-Create `frontend/.env.local`.
-
-Minimum anonymous local setup:
-
-```dotenv
-VITE_API_BASE_URL=http://localhost:8000
-```
-
-Optional Supabase-enabled setup:
-
-```dotenv
-VITE_API_BASE_URL=http://localhost:8000
-VITE_SUPABASE_URL=https://<project-ref>.supabase.co
-VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
-```
-
-Optional frontend perf logging:
-
-```dotenv
-VITE_PERF_LOGS=true
-```
-
-### Run
-
-Frontend only:
-
-```powershell
-npm --prefix frontend run dev
-```
-
-From the repo root, the combined dev command is:
-
-```powershell
-npm run dev
-```
-
-The combined dev command injects the selected backend URL into Vite. If port
-`8000` is busy, the backend uses the next open port and the frontend is pointed
-at that port for the current process.
-
-### Build And Test
-
-```powershell
+npm --prefix frontend test
+npm --prefix frontend run lint -- --max-warnings=0
 npm --prefix frontend run build
-npm --prefix frontend run lint
-npm --prefix frontend run test
 ```
 
-## File Map
-
-```text
-frontend/
-|-- src/
-|   |-- app/             # router + app shell
-|   |-- components/      # shared UI + metric components
-|   |-- lib/             # API client, auth, caches, selection state
-|   |-- pages/           # routed screens
-|   |-- styles/          # global CSS
-|   `-- utils/           # formatting + metric helpers
-|-- package.json
-|-- tailwind.config.js
-`-- vite.config.ts
-```
-
-## Current Notes
-
-- The frontend assumes the backend is the source of truth for accounts, summaries, trades, journal data, expenses, and payouts
-- Some product logic is intentionally client-side, especially the combine tracker
-- Supabase auth is optional and only activates when the relevant frontend env vars are present
-
-## Related Files
-
-- `src/app/AppShell.tsx`
-- `src/app/routes.tsx`
-- `src/lib/api.ts`
-- `src/lib/types.ts`
+The build runs TypeScript before producing `frontend/dist`. The host serves prebuilt assets through the Windows supervisor. [Package scripts](package.json) · [Hosted dashboard connection](../docs/hosted-dashboard-connection.md)

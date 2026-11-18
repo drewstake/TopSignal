@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { botsApi } from "../../lib/api";
 import type { Readiness } from "./TopBotResearchStatus";
 import { ago, span, stateLabel } from "./researchStatusFormat";
+import { InclusionPanel } from "./TopBotEdgePanel";
+import type { Inclusion } from "./imbalanceReport";
 
 type Metrics = { count: number; sessions: number; wins: number; losses: number; average_win: number | null;
   average_loss: number | null; expectancy: number | null; profit_factor: number | null; interval_95: [number, number] | null };
@@ -82,7 +84,7 @@ function Denominators({ r }: { r: Readiness }) {
   </div>;
 }
 
-export function TopBotComparison({ accountId }: { accountId: number }) {
+export function TopBotComparison({ accountId, inclusion }: { accountId: number; inclusion?: Inclusion[] }) {
   const [data, setData] = useState<Comparison | null>(null);
   const [error, setError] = useState(false);
   const [version, setVersion] = useState("");
@@ -147,6 +149,7 @@ export function TopBotComparison({ accountId }: { accountId: number }) {
         {data.research_health?.account_deferred != null ? ` · this account: ${data.research_health.account_deferred} deferred, ${data.research_health.account_overdue ?? 0} overdue` : ""}
         {data.research_health?.oldest_overdue ? ` · oldest overdue entry ${data.research_health.oldest_overdue.entry_id} (${span(data.research_health.oldest_overdue.overdue_seconds)})` : ""}
         {data.research_health?.last_error_type ? ` · last reader problem: ${data.research_health.last_error_type.replaceAll("_", " ")}` : ""}.</p>
+      {phase === "exploratory" && <InclusionPanel rows={inclusion} version={version} mode={strategy} start={start} end={end} />}
       {data.tp_baseline && phase === "exploratory" && <BaselineComparison data={data.tp_baseline} />}
       <p className="topbot-footnote">Nine variants on 100 entries are 100 market observations. One hundred is exploratory; validate a prespecified candidate on later unseen data. No automatic promotion to live trading.</p>
       {data.selection ? <p>Prespecified candidate {data.selection.ratio}:1 · registered {new Date(data.selection.registered_at).toLocaleString()}. Validation uses later entries after registration and the first 100 observations.</p>

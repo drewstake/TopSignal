@@ -16,8 +16,11 @@ import { TopBotActivity, TopBotEvaluation, TopBotThinking } from "./TopBotEvalua
 import { TopBotPosition } from "./TopBotPosition";
 import { TopBotStrategyPanel } from "./TopBotStrategyPanel";
 import { TopBotTradeRecorder } from "./TopBotTradeRecorder";
+import { SignalPanel, TopBotEdgePanel } from "./TopBotEdgePanel";
+import { useImbalanceReport } from "./imbalanceReport";
 import { TopBotLiveImbalance } from "./TopBotLiveImbalance";
 import { HistoryView } from "./history/BotLiquidityHistory";
+import { ServerClock } from "./heatmapClock";
 import { useTopBotMonitor } from "./useTopBotMonitor";
 import { usePageVisibility } from "./usePageVisibility";
 import { timeLabel } from "./topBotPresentation";
@@ -59,7 +62,10 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
   accountId: number | null; pending: boolean; unavailable: boolean; demoMode: boolean;
 }) {
   const [refreshToken, setRefreshToken] = useState(0);
+  const [depthClock] = useState(() => new ServerClock());
   const monitor = useTopBotMonitor(accountId, pending, unavailable, demoMode, refreshToken);
+  const reportAccount = demoMode || pending || unavailable ? null : accountId;
+  const edge = useImbalanceReport(reportAccount);
   const [resolvedMarket, setResolvedMarket] = useState<BotChartMarket | null>(null);
   const [snapshot, setSnapshot] = useState<BotMarketSnapshot | null>(null);
   const [now, setNow] = useState(Date.now);
@@ -92,6 +98,7 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
         <span>{monitor.status.label}</span><small>{monitor.updatedAt ? `Bot checked ${timeLabel(monitor.updatedAt)}` : "Waiting for bot status"} · polls every 15s</small>
       </div>
     </header>
+    {reportAccount != null && <TopBotEdgePanel state={edge} now={now} />}
     {!demoMode && !pending && !unavailable && accountId != null && <TopBotTradeRecorder accountId={accountId} />}
     <SessionOrderFlowPanel accountId={accountId} contractId={market?.contract_id ?? null} scope={monitor.scope}
       enabled={!demoMode && !pending && !unavailable} />
@@ -105,13 +112,13 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
       </section>
       <aside className="topbot-book-shell"><Depth key={`${monitor.scope}:${depthContract}`} contractId={depthContract} symbol={market?.symbol} demoMode={demoMode} sharedStore={depthStore} /></aside>
     </div>
-    <LiquidityHeatmapPanel key={`${accountId}:${monitor.scope}:${depthContract}`} store={depthStore} contractId={depthContract}
+    <LiquidityHeatmapPanel key={`${accountId}:${monitor.scope}:${depthContract}`} store={depthStore} contractId={depthContract} clock={depthClock}
       symbol={market?.symbol} tickSize={resolvedMarket?.contract_id === depthContract ? resolvedMarket?.tick_size : null} demoMode={demoMode}
       accountId={demoMode || pending || unavailable ? null : accountId} />
       <TopBotThinking activity={strategyActivity} status={monitor.status} snapshot={matchingSnapshot} now={now} error={monitor.error} strategyUnconfigured={strategyUnconfigured}
         liquidityHistory={!demoMode && !pending && !unavailable && accountId != null && (
           <div className="mt-4 space-y-4" aria-label="Recorded liquidity history">
-            <HistoryView key={`${accountId}:${monitor.scope}:${depthContract}`} accountId={accountId} compact liveStore={depthStore} />
+            <HistoryView key={`${accountId}:${monitor.scope}`} accountId={accountId} compact liveStore={depthStore} clock={depthClock} />
           </div>
         )}
         liveImbalance={monitor.bot?.strategy_params?.revision === "dom_contrarian_v1" && <TopBotLiveImbalance
@@ -120,9 +127,10 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
           requiredSeconds={Number(monitor.bot.strategy_params.persistence_seconds) || 30}
           monitor={monitor}
           enabled={!demoMode && !pending && !unavailable && accountId != null} />} />
+    {edge.data && <SignalPanel data={edge.data} now={now} />}
     <TopBotActivity activity={monitor.activity} />
     <TopBotEvaluation activity={strategyActivity} now={now} failed={Boolean(monitor.error)} strategyUnconfigured={strategyUnconfigured} />
-    <TopBotStrategyPanel key={`${accountId}:${demoMode}`} accountId={accountId} bot={monitor.bot} activity={monitor.activity}
+    <TopBotStrategyPanel key={`${accountId}:${demoMode}`} accountId={accountId} bot={monitor.bot} activity={monitor.activity} inclusion={edge.data?.coverage}
       demoMode={demoMode || pending || unavailable} onChanged={() => setRefreshToken(value => value + 1)} />
     <footer className="topbot-footer"><span>TOPBOT / OBSERVATION WORKSPACE</span><span>Live market streams · recorded bot decisions · times in New York</span></footer>
   </div>;

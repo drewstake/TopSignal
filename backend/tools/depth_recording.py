@@ -89,7 +89,7 @@ def inventory(root, *, max_bytes, reserve_bytes, max_age_days=30, now=None):
     free = shutil.disk_usage(root).free
     reason = ('recording_budget_reached' if used+32*1024**2 > max_bytes else
               'disk_free_reserve' if free < reserve_bytes+32*1024**2 else
-              'retention_review_due' if now-oldest > max_age_days*86400 else None)
+              'retention_review_due' if max_age_days is not None and now-oldest > max_age_days*86400 else None)
     return dict(bytes=used, free_bytes=free, budget_bytes=max_bytes, reserve_bytes=reserve_bytes,
                 oldest_mtime=oldest if used else None,
                 incomplete_segments=incomplete, sealed_segments=sealed, blocked_reason=reason,

@@ -5,11 +5,11 @@ bulk data changes. Databento history belongs in the local replay cache, even
 when legacy table definitions exist. Use [the storage report](diagnostics/storage_usage.sql)
 to check capacity; do not refill historical candle tables through migrations.
 
-This folder contains:
+See the [data model](data-model.md) for table responsibilities and trade ingestion. For an isolated development database, configure the [development profile](../README.md#development-profiles) before running the commands below from the repository root.
 
-- `schema.sql`: full schema for a fresh PostgreSQL database
-- `migrations/`: incremental SQL updates for older databases
-- `backend/tools/migrate_db.py`: ordered, checksummed migration runner
+The [schema](schema.sql) describes a fresh PostgreSQL database. The
+[migrations](migrations) upgrade older databases through the
+[checksummed runner](../backend/tools/migrate_db.py).
 
 The runner records applied filenames and SHA-256 checksums in
 `topsignal_schema_migrations`, serializes upgrades with a PostgreSQL advisory
@@ -35,7 +35,7 @@ The container from `docker-compose.yml` is:
 Apply the full schema:
 
 ```powershell
-Get-Content .\db\schema.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
+Get-Content .\db\schema.sql | docker exec -i topsignal_db psql -v ON_ERROR_STOP=1 -U topsignal -d topsignal
 ```
 
 Then validate the current schema, initialize its migration ledger without
@@ -81,129 +81,10 @@ contains fractional, non-finite, non-positive, or greater-than-10,000 contract
 quantities. Review and correct those rows before retrying; the migration will
 not preserve an unvalidated live-order safety state.
 
-The list below documents the historical order. The runner discovers this order
-from filenames, records checksums, stops on the first error, and will not rerun
-an applied migration.
-
-Current migration list:
-
-```text
-20260220_add_projectx_trade_events.sql
-20260220_add_rule_break_fields.sql
-20260221_add_journal_entries.sql
-20260221_add_projectx_trade_day_syncs.sql
-20260222_journal_entry_images_and_versioning.sql
-20260226_add_expenses.sql
-20260301_add_account_state_fields.sql
-20260302_add_instrument_metadata_and_position_lifecycles.sql
-20260302_add_multitenant_auth_and_provider_credentials.sql
-20260302_add_projectx_trade_events_perf_indexes.sql
-20260307_add_payouts.sql
-20260309_add_account_display_name.sql
-20260426_add_projectx_trade_events_lifecycle_index.sql
-20260426_add_trading_bot_tables.sql
-20260427_relax_legacy_bot_schema.sql
-20260428_drop_legacy_bot_config_unique_constraint.sql
-20260506_add_support_resistance_bot_strategy.sql
-20260506_add_liquidity_sweep_retest_bot_strategy.sql
-20260506_add_orb_fibonacci_pullback_bot_strategy.sql
-20260507_add_projectx_trade_day_sync_windows.sql
-20260507_add_unique_main_account_index.sql
-20260507_add_user_scoped_infra_indexes.sql
-20260507_add_bollinger_mean_reversion_bot_strategy.sql
-20260507_add_fvg_sweep_mss_bot_strategy.sql
-20260507_add_relative_strength_vs_spy_bot_strategy.sql
-20260508_add_atr_adjusted_relative_strength_bot_strategy.sql
-20260508_add_ema_trend_pullback_bot_strategy.sql
-20260508_add_vwap_gap_retrace_bot_strategy.sql
-20260509_add_supertrend_pivot_bot_strategy.sql
-20260510_add_ema_scalping_bot_strategy.sql
-20260510_add_pullback_trap_reversal_bot_strategy.sql
-20260511_add_opening_rvol_breakout_bot_strategy.sql
-20260522_add_expense_source_id.sql
-20260630_add_topbot_adaptive_strategy.sql
-20260709_add_bot_execution_safety.sql
-20260709_add_bot_backtests.sql
-20260709_add_topbot_adaptive_strategy.sql
-20260710_add_bot_submission_unknown_status.sql
-20260710_add_cached_account_balance.sql
-20260710_enforce_bot_quantity_safety.sql
-20260710_preserve_bot_order_attempt_audit.sql
-20260711_add_databento_historical_market_data.sql
-20260711_seed_nq_es_instrument_metadata.sql
-20260723_add_topstep_trade_imports.sql
-20260724_add_account_trade_data_source.sql
-20260724_restore_express_trade_data_source.sql
-20260725_harden_topstep_trade_imports.sql
-20260725_live_account_archiving.sql
-20260729_add_expense_suppressions.sql
-20260830_harden_supabase_data_api.sql
-```
-
-`20260711_add_databento_historical_market_data.sql` remains in the checksummed
-ledger for installations that already applied it, but the migration runner
-records it as a retired no-op when it is still pending.
-
-Legacy manual PowerShell application loop (recovery/debugging only; prefer the
-migration runner above):
-
-```powershell
-$migrations = @(
-  "20260220_add_projectx_trade_events.sql",
-  "20260220_add_rule_break_fields.sql",
-  "20260221_add_journal_entries.sql",
-  "20260221_add_projectx_trade_day_syncs.sql",
-  "20260222_journal_entry_images_and_versioning.sql",
-  "20260226_add_expenses.sql",
-  "20260301_add_account_state_fields.sql",
-  "20260302_add_instrument_metadata_and_position_lifecycles.sql",
-  "20260302_add_multitenant_auth_and_provider_credentials.sql",
-  "20260302_add_projectx_trade_events_perf_indexes.sql",
-  "20260307_add_payouts.sql",
-  "20260309_add_account_display_name.sql",
-  "20260426_add_projectx_trade_events_lifecycle_index.sql",
-  "20260426_add_trading_bot_tables.sql",
-  "20260427_relax_legacy_bot_schema.sql",
-  "20260428_drop_legacy_bot_config_unique_constraint.sql",
-  "20260506_add_support_resistance_bot_strategy.sql",
-  "20260506_add_liquidity_sweep_retest_bot_strategy.sql",
-  "20260506_add_orb_fibonacci_pullback_bot_strategy.sql",
-  "20260507_add_projectx_trade_day_sync_windows.sql",
-  "20260507_add_unique_main_account_index.sql",
-  "20260507_add_user_scoped_infra_indexes.sql",
-  "20260507_add_bollinger_mean_reversion_bot_strategy.sql",
-  "20260507_add_fvg_sweep_mss_bot_strategy.sql",
-  "20260507_add_relative_strength_vs_spy_bot_strategy.sql",
-  "20260508_add_atr_adjusted_relative_strength_bot_strategy.sql",
-  "20260508_add_ema_trend_pullback_bot_strategy.sql",
-  "20260508_add_vwap_gap_retrace_bot_strategy.sql",
-  "20260509_add_supertrend_pivot_bot_strategy.sql",
-  "20260510_add_ema_scalping_bot_strategy.sql",
-  "20260510_add_pullback_trap_reversal_bot_strategy.sql",
-  "20260511_add_opening_rvol_breakout_bot_strategy.sql",
-  "20260522_add_expense_source_id.sql",
-  "20260630_add_topbot_adaptive_strategy.sql",
-  "20260709_add_bot_execution_safety.sql",
-  "20260709_add_bot_backtests.sql",
-  "20260709_add_topbot_adaptive_strategy.sql",
-  "20260710_add_bot_submission_unknown_status.sql",
-  "20260710_add_cached_account_balance.sql",
-  "20260710_enforce_bot_quantity_safety.sql",
-  "20260710_preserve_bot_order_attempt_audit.sql",
-  "20260711_seed_nq_es_instrument_metadata.sql",
-  "20260723_add_topstep_trade_imports.sql",
-  "20260724_add_account_trade_data_source.sql",
-  "20260724_restore_express_trade_data_source.sql",
-  "20260725_harden_topstep_trade_imports.sql",
-  "20260725_live_account_archiving.sql",
-  "20260729_add_expense_suppressions.sql",
-  "20260830_harden_supabase_data_api.sql"
-)
-
-foreach ($name in $migrations) {
-  Get-Content ".\db\migrations\$name" | docker exec -i topsignal_db psql -U topsignal -d topsignal
-}
-```
+The [migration directory](migrations) lists the ordered SQL files. The
+[runner](../backend/tools/migrate_db.py) discovers them by filename and verifies
+checksums against the ledger. It records the retired Databento market-table
+migration as a no-op on databases where it is still pending.
 
 ## Compatibility Patches On Startup
 
@@ -230,18 +111,17 @@ npm run db:migrate
 npm run db:check
 ```
 
-## Supabase Data API Security
+## Historical Supabase Data API protections
 
-TopSignal's browser client uses Supabase for authentication only. Application
-tables are read and written through FastAPI, so the Supabase Data API should be
-disabled for the project in **Dashboard > Integrations > Data API**.
+The browser authenticates locally and reads application data through FastAPI.
+The historical Supabase project retains cloud audit records and execution fences.
+See the [retirement and recovery procedure](../docs/supabase-retirement.md).
 
 `20260830_harden_supabase_data_api.sql` provides defense in depth for projects
 that keep the Data API enabled: it revokes `anon` and `authenticated` access to
 existing tables, sequences, and functions in `public`, and removes the legacy
 automatic default grants for future objects. It also removes equivalent
-`PUBLIC` grants, which browser roles inherit. It does not alter the `auth` or
-`storage` schemas, so Supabase Auth and journal-image Storage remain available.
+`PUBLIC` grants, which browser roles inherit. It preserves the historical `auth` and `storage` schemas.
 PostgreSQL's built-in `PUBLIC` execute default for new functions is global, so
 the migration also removes that default for functions created later by the
 migration/object-owner roles. Existing functions outside `public` are unchanged;
@@ -296,5 +176,5 @@ limit 20;
 
 - This repo does not include `db/seed.sql`
 - Databento is the historical market-data source for backtests; canonical raw bars, rolls, and mmap timeframes are local cache artifacts. Fresh schemas omit the retired relational market tables, while upgraded installations retain any existing `databento_*` tables untouched and production replay never queries them
-- ProjectX remains the account, execution, position, journaling, analytics, and order-routing source
+- ProjectX remains the account, execution, position, analytics, and order-routing source
 - The legacy `trades` table still exists for old `/metrics/*` routes
