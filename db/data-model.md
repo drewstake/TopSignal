@@ -1,6 +1,6 @@
 # TopSignal Database Guide
 
-This document describes the database as it exists in the current codebase, not the earlier single-table prototype.
+PostgreSQL on peteamdpc is the sole execution authority. This guide describes the application tables, including retained historical definitions. For the storage boundary and verified recovery scope, see [local-first storage](../docs/local-first-storage.md).
 
 ## Summary
 
@@ -12,15 +12,15 @@ It persists:
 - normalized ProjectX trade events and confirmed Topstep file imports
 - Topstep import-batch provenance (source filename, file hash, import time, and row counts)
 - daily trade-sync completeness state
-- journal entries and journal images
+- retained Journal rows and historical image metadata
 - expenses and payouts
 - optional per-user encrypted provider credentials
 - optional position lifecycle snapshots from the streaming runtime
 - user-scoped bot configurations, deterministic backtest snapshots, lifecycle runs, decisions, risk events, and order-attempt audit records
 - on upgraded installations only, any pre-existing global Databento relational tables; fresh schemas omit them, while existing tables remain untouched for compatibility
 
-ProjectX remains the source for API-connected accounts, executions, positions,
-journaling, and order routing. Topstep Live account executions can also enter
+ProjectX remains the source for API-connected accounts, executions, positions
+and order routing. Topstep Live account executions can also enter
 through the reviewed CSV/XLSX import flow. Databento is the sole historical
 market-data source for backtesting. Both API and imported trade analytics use
 `projectx_trade_events`, not the legacy `trades` table.
@@ -112,11 +112,11 @@ Important columns:
 Deduplication rules:
 
 - preferred unique key: `(user_id, account_id, source_trade_id)`
-- fallback unique key: `(user_id, account_id, order_id, trade_timestamp)`
+- fallback unique key for rows with no source trade ID: `(user_id, account_id, order_id, trade_timestamp)`
 
 Behavior notes:
 
-- voided or canceled provider rows are skipped at ingest time
+- voided executions retain their evidence and are excluded from performance
 - `pnl = null` rows are treated as open-leg or half-turn events and do not count as closed trades
 - provider rows use `fee_scope = per_side`; imported rows use `round_turn` and
   preserve the exact exported commission so costs are never inferred twice
@@ -276,7 +276,7 @@ Durable execution claims written before any external order submission. Important
 
 For an actionable BUY or SELL, the server derives a versioned key from `(user_id, bot_config_id, closed_candle_timestamp_utc, action, execution_mode)`. `uq_bot_order_attempts_idempotency_key` uniquely constrains `(user_id, bot_config_id, idempotency_key)` when the key is non-null. The insert is attempted inside a savepoint so a uniqueness race can be converted into a durable duplicate-skip decision without rolling back the surrounding evaluation audit.
 
-Attempt statuses are `pending`, `dry_run`, `submitted`, `blocked`, `rejected`, and `error`. A `pending` attempt is deliberately never auto-retried. It may represent a crash between the durable local claim and final local recording of the provider result, including the ambiguous case where ProjectX accepted the order. Operators must reconcile the deterministic provider custom tag plus the local correlation/idempotency identifiers before any manual recovery.
+Attempt statuses are `pending`, `dry_run`, `submitted`, `submission_unknown`, `blocked`, `rejected`, `error` and `cancelled`. A `pending` attempt is deliberately never auto-retried. It may represent a crash between the durable local claim and final local recording of the provider result, including the ambiguous case where ProjectX accepted the order. Operators must reconcile the deterministic provider custom tag plus the local correlation/idempotency identifiers before any manual recovery.
 
 ### `bot_risk_events`
 
@@ -286,11 +286,11 @@ User-scoped hard-gate audit events tied to a bot and optional run. These rows pr
 
 Evaluation responses expose `evaluated`, `held`, `risk_blocked`, `duplicate_skipped`, `dry_run_attempt`, `submitted`, or `error`, along with a request correlation ID and any actionable idempotency/original-attempt reference. The same identifiers connect API responses, structured application logs, decisions, and attempts.
 
-There is no continuous bot scheduler or automatic pending-attempt reconciliation worker. Start and evaluate each perform one request-driven evaluation. The optional ProjectX streaming runtime is separate and does not route or schedule TopBot orders.
+The [leased worker](../backend/app/bot_worker.py) evaluates eligible running configurations and coordinates account-scoped provider access. Review unresolved order attempts before resuming execution. [Bot diagnostics](../docs/bot-diagnostics.md)
 
 ### `journal_entries`
 
-One journal entry per account per trading date.
+Historical entries are retained after Journal retirement. The former feature stored one entry per account per trading date.
 
 Important columns:
 
@@ -327,10 +327,7 @@ Important columns:
 - `width`
 - `height`
 
-Binary image storage itself is either:
-
-- local disk
-- Supabase Storage
+The encrypted Journal archive contains the referenced image contents. Preserve the verified host and off-device copies. [Archive and recovery](../docs/supabase-retirement.md)
 
 ### `expenses`
 
@@ -457,20 +454,9 @@ volume roll schedules using only the preceding completed Globex session.
 
 Fingerprint-scoped NumPy arrays materialize each requested timeframe. Runtime
 loads use memory mapping plus binary-search slicing, so only user/configuration
-reads and the completed `bot_backtests` result write touch PostgreSQL/Supabase.
-The older `backend/tools/import_databento.py` remains available only for users
-who intentionally maintain the compatibility tables.
-
-### Journal
-
-Journal writes are versioned updates against `journal_entries`.
-
-Image uploads:
-
-1. store the binary in the configured storage backend
-2. store metadata in `journal_entry_images`
-
-Trade-stat pulls compute a snapshot and store it in `journal_entries.stats_json`.
+reads and bounded saved configuration replay results need the application database.
+The legacy relational importer is restricted to SQLite fixtures. Keep original
+archives and their off-device backups. [Storage policy](../docs/supabase-storage-policy.md)
 
 ### Expenses and payouts
 
@@ -482,15 +468,7 @@ The combine-spend helper is partly client-side and may create inferred expense r
 
 ## Fresh Install vs Existing Database
 
-For a fresh database:
-
-- apply `db/schema.sql`
-
-For an existing database:
-
-- apply the missing SQL files in `db/migrations/`
-
-The ordered migration list is documented in [db/README.md](db/README.md).
+Use the [setup and migration guide](README.md) for fresh baselining, incremental upgrades and backup-first adoption.
 
 ## Important Implementation Notes
 
@@ -507,12 +485,12 @@ The ordered migration list is documented in [db/README.md](db/README.md).
 - models: `backend/app/models.py`
 - DB setup and compatibility patches: `backend/app/db.py`
 - API routes: `backend/app/main.py`
-- backtest replay and snapshot rules: `backend/app/services/bot_backtesting.py`
+- configuration backtest replay and snapshot rules: `backend/app/services/bot_backtesting.py`
 - trade sync and summary logic: `backend/app/services/projectx_trades.py`
-- journal services: `backend/app/services/journal.py`
+- Journal recovery: [archive tool](../backend/tools/archive_journal.py)
 - credentials storage: `backend/app/services/projectx_credentials.py`
 
 ## Related Docs
 
-- [README.md](README.md)
-- [db/README.md](db/README.md)
+- [Developer guide](../README.md)
+- [Database setup](README.md)

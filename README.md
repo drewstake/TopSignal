@@ -1,982 +1,109 @@
 # TopSignal
 
-The hosted dashboard is [the practice workspace](http://127.0.0.1:4173/bot?account=29593203)
-through the private connection to peteamdpc. The [November 13 maintenance receipt](docs/audits/2026-11-13/storage-maintenance.md)
-records the activated local-only application, recorder and helpers. PostgreSQL,
-authentication, credentials, recordings and research use protected host storage.
-Journal is removed and archived. Mirror production/consumption is retired and
-dedicated mirror logins are disabled; historical cloud data remains preserved.
-The earlier [health audit](docs/audits/2026-11-13/peteamdpc-health.md) is a baseline.
-Check current acceptance and backup receipts before making recovery promises.
+TopSignal is a personal trading workspace for reviewing ProjectX accounts, imported Topstep trades, expenses and payouts. Its React dashboard talks to a FastAPI backend that also runs TopBot, the MNQ practice bot. Historical backtesting and forward research are available alongside account review.
 
-Six currently owned visible accounts are passively enrolled, with an eight-account
-policy cap and explicit opt-outs. Recording eligibility is separate from trading
-permission. The selector, URL and requests change together; unavailable or invalid
-account links show an explicit error. Market recording runs independently of the
-browser and bot arm state. Historical gaps remain explicit. See [storage and recovery](docs/local-first-storage.md),
-[recording](docs/trade-progress-recording.md) and
-[hosted access](docs/hosted-dashboard-connection.md).
+## Local quick start
 
-TopBot's practice strategy uses contrarian DOM entries, a 25-point initial MNQ
-stop, and a 25-point trailing stop activated at +25. See the
-[strategy and operating notes](docs/topbot-contrarian.md). Retired configurations
-remain inactive; starting a practice run explicitly installs the new preset.
-
-TopSignal opens to the account dashboard. The shared navigation includes Dashboard, Accounts, Trades, Expenses, Bot, Backtesting, and Appearance. Bot contains Overview and Logs views.
-
-Use the hosted URL above for the authoritative workspace. For development, first configure an isolated local database and local trusted-device authentication; an old private `.env` may still contain retired cloud settings and must not be treated as a working development profile. Then run `npm run dev` and open `http://localhost:5173`. The launcher also starts the ProjectX-connected offline workspace at `http://127.0.0.1:5174`, with local live orders disabled. Each frontend waits for its matching backend. The dashboard opens at `/` and `/dashboard`; TopBot diagnostics are under Bot / Logs.
-
-The dev launcher checks `/ready/dev`. When its local worker and both live-order
-flags are explicitly disabled, this checks database/schema readiness without
-requiring a second worker for runs hosted on another PC. It does not enable
-automation or change saved runs; `/ready` and bot-start checks remain strict.
-
-The account workspace uses local sign-in with owner isolation; cloud OAuth/JWKS and token refresh have been removed. It syncs ProjectX/TopstepX account data or imports reviewed trade exports, and provides account management, trade review, expense tracking, and trading-bot controls. `npm run dev:live`, `dev:cloud`, and `dev:local` remain explicit launch options for that workspace; `dev:cloud` is a retained command alias, not a Supabase sign-in path.
-
-The retained Bot workspace supports forward testing. The Data tab and
-Databento backtest panel have been removed; old `/data` links redirect to the
-dashboard with their account selection preserved. Existing market data still
-supports bot analysis and forward testing. On September 8, 2026, the local
-Databento caches and research directories were removed after a verified recovery
-archive was created under `backend/storage/backups/retired-databento-research-20260908T154039Z`.
-Saved database backtest records and historical replay tools remain for reference;
-running those tools again requires an explicit restore or new history import.
-
-Journal UI, routes, APIs, autosave, images and AI recap have been removed.
-Calendars continue to select trade days. Historical records/images remain in a
-verified encrypted archive on peteamdpc and off device; no cloud/source data was
-deleted. See the [archive receipt](docs/audits/2026-11-13/storage-remediation.md).
-
-This repository contains:
-
-- a React + TypeScript frontend in `frontend/`
-- a FastAPI backend in `backend/`
-- a PostgreSQL schema and raw SQL migrations in `db/`
-
-For an unattended personal-device deployment, follow the checked-in
-[Windows 24/7 operations guide](docs/windows-24x7-operations.md). It covers the
-dedicated non-administrator task identity, immutable release ACLs, prebuilt
-loopback control UI, single-worker supervisor, safe dry-run defaults,
-migrations, health checks, local logs, reboot recovery, power settings, and
-backup/restore drills.
-
-Before importing history or expanding database storage, read the
-[Supabase storage policy](docs/supabase-storage-policy.md). Databento backtest
-history stays in the local filesystem cache; cloud imports previously exhausted
-the database quota and blocked sign-in. The policy includes a read-only storage
-report, capacity thresholds, backup requirements, and recovery steps.
-
-## Why This Project Exists
-
-ProjectX exposes account and trade data, but the raw provider API is not a good day-to-day analytics workspace by itself. TopSignal exists to solve that gap.
-
-It is built for traders who want to:
-
-- keep a durable local history of their ProjectX trades with off-device recovery copies
-- analyze performance without re-querying the provider for every page load
-- understand risk, drawdown, expectancy, and pacing in plain numbers
-- track real cash costs such as evaluation fees, activations, resets, data fees, and actual payouts
-- forward-test rule-based bot decisions with recorded evaluations and a server-side audit trail
-
-## What The App Does
-
-At a high level, TopSignal:
-
-1. pulls account and execution data from ProjectX
-2. normalizes and stores it in PostgreSQL
-3. derives account, trade, day, and behavior metrics from stored data
-4. exposes those results through a FastAPI API
-5. renders them in a frontend focused on trading review workflows
-
-Core features in the current routed app:
-
-- Account discovery and account-state tracking
-- Main-account selection
-- Local account display-name overrides
-- Manual trade sync from ProjectX
-- Reviewed Topstep CSV/XLSX trade imports with duplicate prevention and source-file audit history
-- Account-level performance summaries
-- Account Risk Forecast scenarios from recorded trades or existing backtests, with editable loss limits and exposure comparisons ([method and limitations](docs/account-risk-forecast.md))
-- Analytics-only Copy Trade Mode for combined leader/follower dashboard views
-- Trading-day PnL calendar
-- Trade event feed with lifecycle-derived entry/exit fields
-- Expense CRUD, spend summaries, and payout-minus-spend net ranges
-- Payout tracking, payout totals, and spend-since-last-payout context
-- One-click TopBot MNQ dry/live run controls, signal charting, market analysis, trade-plan evaluation, and bot activity review
-- Workspace theme selection with live palette previews
-- Local authentication with owner isolation
-
-## Product Walkthrough
-
-The screenshots below are representative local captures from the routed app. Account balances, trade rows, fees, and dates will reflect whichever ProjectX account and database are connected in your environment.
-
-### Dashboard
-
-The dashboard is the main account analytics surface. It is account-scoped by default and can switch into an analytics-only Copy Trade Mode for combined leader/follower account review.
-
-It shows:
-
-- headline performance and edge metrics
-- drawdown and risk-control context
-- long-vs-short breakdowns
-- payoff and activity metrics
-- sustainability scoring
-- a trading-day PnL calendar
-- a Topstep trade-file preview/import panel with exact gross P&L, fees, commissions, and net P&L
-- a daily account-balance curve derived from the calendar
-- a recent trade-event feed
-- optional combined copied-account stats for leader/follower workflows
-
-Dashboard overview:
-
-![Dashboard performance, edge, risk, and sustainability panels](images/metrics.png)
-
-Calendar drill-down:
-
-![Trading-day PnL calendar](images/PnL_Calender.png)
-
-Balance curve derived from the selected trading range:
-
-![Daily account balance curve](images/daily_account_bal.png)
-
-Recent execution review feed:
-
-![Recent trade events table](images/recent_trade_events.png)
-
-Important dashboard behaviors:
-
-- The active account comes from the global account picker in the app shell.
-- The page can sync trades, change time range, and drill into a specific trading day.
-- Topstep CSV/XLSX exports can be reviewed and confirmed directly above the P&L calendar; duplicate source IDs are skipped.
-- Clicking a PnL-calendar day filters the trade feed to that trading day.
-- Calendar days select scoped trade history.
-- `Summary` opens a coach-style trading summary for the selected dashboard range, including verdict, sample quality, top levers, risks, improvements, and a short action plan.
-- `Copy Full Stats` copies a text payload for the selected dashboard range.
-- `Copy Trade Mode` can combine the selected leader account with up to four follower accounts for adjusted dashboard totals.
-- When Copy Trade Mode is active and calculable, headline metrics, daily PnL, balance context, and calendar data use combined leader/follower results. Otherwise the dashboard shows the selected account only.
-- Copy Trade Mode shows leader contribution, follower contribution, copied account count, follower-only PnL, warnings, and resettable likely-uncopy event tracking.
-- Copy Trade Mode settings and uncopy-event reset timestamps are stored in browser storage. This mode does not place orders or enable live trade copying.
-- The dashboard uses `summary-with-point-bases` so it can render one summary request plus point-payoff comparisons instead of fanning out multiple summary calls.
-
-### Accounts
-
-The Accounts page is the account-management surface for ProjectX-synced and
-Live CSV accounts.
-
-A user can:
-
-- view discovered accounts
-- see current balance, state, and last known trade timestamp
-- toggle hidden and missing accounts into view
-- mark one account as the main account
-- set the active account used across the rest of the app
-- override the provider account name with a local display name
-- use the dashboard's `Live Account (CSV)` control to switch to a separate
-  local Live account backed by manually imported Topstep trades
-- create Live accounts with a name and opening balance; TopSignal generates and
-  hides the internal routing key and derives current balance from imported net P&L
-- resolve the last trade timestamp from the provider when local data is stale or absent
-
-Accounts page:
-
-![Accounts management page](images/accounts.png)
-
-TopSignal tracks four account states:
-
-- `ACTIVE`: visible and tradable
-- `LOCKED_OUT`: account exists but cannot trade
-- `HIDDEN`: provider returned it as not visible
-- `MISSING`: previously seen, now absent from provider results after a buffer window
-
-Each account has a trade-data source assigned when it is created:
-
-- `projectx`: sync account metadata and trades through the ProjectX API
-- `csv_import`: keep analytics local and update trades through reviewed
-  Topstep CSV/XLSX imports
-
-The dashboard control switches between separate ProjectX and Live CSV account
-records; it never converts an Express/XFA account into a CSV account. Live CSV
-accounts disable ProjectX refreshes and Copy Trade Mode. They do not delete or
-change stored trades, journals, or ProjectX credentials for other accounts.
-
-Account selectors prioritize the main account inside account-type groups so Express, combine, other, and practice accounts are easier to scan during trading workflows.
-
-### Trades
-
-The Trades page is the execution-review surface.
-
-Trades page:
-
-![Trade review filters, summary cards, and execution feed](images/trades.png)
-
-A user can:
-
-- filter trades by date range
-- filter trades by symbol text
-- choose a row cap
-- refresh data from the local cache
-- explicitly sync the selected date window from ProjectX
-- inspect summary metrics for the filtered window
-- review trade events with inferred entry time, exit time, duration, entry price, exit price, and PnL
-
-If an account is currently `MISSING`, the page still shows locally stored data and does not claim live provider sync is available.
-
-### Expenses And Payouts
-
-The Expenses page tracks paid account costs, operating costs, and recorded payouts.
-
-Expenses and payouts page:
-
-![Expenses, combine spend tracker, and payout logging page](images/expenses.png)
-
-A user can:
-
-- create, list, filter, paginate, and delete expenses
-- group spend by date range and category
-- track evaluation fees, activation fees, reset fees, data fees, and other costs
-- optionally associate an expense with an account, plan size, and account type
-- record payouts separately from expenses
-- view payout totals, averages, and counts
-- see recorded spend, spend since the latest payout, and net after payouts
-- compare payout-minus-spend cards for 1 month, 3 months, 6 months, YTD, 1 year, anniversary years from the first cash-flow date, and all time
-
-The page also contains a combine spend helper that:
-
-- infers active combine accounts from account-name prefixes
-- keeps a client-side spend ledger in browser storage
-- can sync inferred evaluation purchases into the `expenses` table
-- reconciles generated rows with manually logged or imported combine expenses
-- prefers a manual combine expense over a generated row for the same account
-
-This combine tracker is implemented on the frontend and is not a standalone backend subsystem.
-
-### Retired Journal recovery
-
-Journal is no longer an active feature. The November 13 recovery archive contains
-31 entries and nine image references, with all referenced contents verified.
-Historical table definitions and immutable migrations remain for recovery.
-Hosted release 99 removes the old APIs; the served Journal routes return 404.
-
-### Bot
-
-The Bot page is the account-scoped strategy and execution workspace. ProjectX remains the
-account/execution/order-routing provider; historical backtests use Databento exclusively.
-
-Bot control page:
-
-![Bot signal chart, strategy configuration, and activity panels](images/bot.png)
-
-A user can:
-
-- press **Dry Run** or **Live Run** to start TopBot Mathematical on MNQ for the active account
-- stop future automation or use the account-wide emergency control
-- review the latest decision, candle timestamp, decision reason, risk blocks, and order-attempt status
-- inspect market bias, scenario weights, expected move, invalidation, nearby levels, volatility, volume, reasoning, and risk notes
-- review trade-plan grades when a strategy produces entry, stop, and target prices
-- inspect recent decisions, order attempts, risk events, and run history
-
-The page also includes a Signal Chart backed by ProjectX candles. It supports selectable chart timeframes, live/last price display, strategy overlays, VWAP, buy/sell signal markers, computed buy-side and sell-side liquidity levels, drawing tools, refresh, data-gap repair, and y-axis fit controls.
-
-The Analysis panel is generated from backend bot evaluation output when available. If backend analysis is missing but enough chart data is loaded, the UI can fall back to local chart-context analysis. The panel marks stale evaluations when newer bars have printed since the last run. Directional probabilities are heuristic scenario weights, not predictions or financial advice.
-
-When a strategy emits a complete trade idea, bot evaluation can attach a trade-plan readout with a 0-100 score, letter grade, `take`/`wait`/`avoid` decision, confidence, risk-reward context, trend alignment, stop/ATR context, positives, warnings, and suggested adjustments.
-
-Important bot behaviors:
-
-- The routed page lives at `/bot` and accepts the same active-account query parameter used by the app shell.
-- Run settings are code-owned in `backend/app/services/topbot.py` (`TOPBOT_SETTINGS`). Each start creates or refreshes a stopped account-scoped configuration, resolves the active MNQ delivery through the existing market-data path, and records the run server-side. Stop existing automation before changing modes.
-- TopBot's only strategy is TopBot Mathematical (`mnq_bayesian_payoff_v1`): a candle-based Bayesian expected-payoff model on closed 5-minute MNQ bars. It proposes BUY or SELL only when the uncertainty-penalized expected profit after costs exceeds $1 and it has enough independent evidence; otherwise it holds (NO TRADE). Stops are volatility-derived (4–25 points) with a 1.5R target and a 15-minute timed exit. Its adapter is `backend/app/services/topbot_mathematical.py`; sizing and account risk limits live in `topbot.py`. Defaults are one contract, a $250 daily loss entry gate and a 300-second cooldown. The earlier EMA/VWAP pullback strategy was removed on September 26, 2026; a saved configuration that still carries its settings holds every candle until it is stopped and restarted. See [the strategy, data requirements and execution boundaries](docs/topbot-mathematical-strategy.md) and [the probabilistic research workflow](docs/topbot-probabilistic-research.md).
-- Dry-run is the default. Live routing requires a live-mode configuration, an explicit confirmation, both server-side live gates, a healthy leased worker, and a fresh provider-hub classification proving the account is simulated.
-- **Stop Automation** is local-only: it prevents future evaluations but does not cancel working broker orders or close positions. The separately typed-confirmation emergency control cancels and flattens the entire account, then reports success only after ProjectX verifies no orders or positions remain.
-- Live/funded accounts are fail-closed. This supports Topstep's simulated account workflows; ProjectX API automation must not be used for a Live Funded Account.
-- Bot decisions, runs, order attempts, and risk events are persisted server-side for auditability.
-- Historical backtests read only the local fingerprinted Databento Parquet/mmap cache. They never fetch or fall back to ProjectX candles.
-- The interactive signal chart and live/dry-run evaluation retain their existing closed-bar cache and frontend cache for responsiveness.
-
-### Appearance
-
-The Appearance page contains app zoom and theme preferences. Zoom defaults to 80%, with settings from 60% to 150% in 5% steps. It applies immediately across the app, persists in this browser, and syncs between tabs.
-
-Appearance page:
-
-![Theme palette gallery and live preview](images/themes.png)
-
-A user can:
-
-- preview each built-in workspace palette
-- apply a theme across the routed app
-- compare status, metric, control, and surface colors before switching
-
-Themes are stored client-side and applied through CSS variables, so they affect the shell, dashboard, trade review, bot, and supporting controls without a backend migration.
-
-### Routed Pages
-
-The current router includes these product surfaces:
-
-- `/`: dashboard
-- `/accounts`: account management
-- `/trades`: execution review
-- `/expenses`: expenses and payouts
-- `/bot`: TopBot MNQ run controls and activity review
-- `/appearance`: app zoom and palette selection (`/themes` redirects here)
-
-There are no separate `overview/` or `analytics/` prototype route directories in the current tree.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    A["React frontend"] --> B["FastAPI backend"]
-    B --> C["ProjectX API"]
-    B --> D["PostgreSQL"]
-    B --> E["Protected local auth SQLite"]
-    B --> F["Host filesystem recordings + off-device recovery"]
-    G["ProjectX streaming runtime (optional)"] --> B
-    B --> H["Derived metrics + cached trade history"]
-    H --> A
-```
-
-### Frontend Stack
-
-| Layer | Implementation |
-| --- | --- |
-| Framework | React 19 |
-| Language | TypeScript |
-| Routing | React Router 7 |
-| Build tool | Vite 7 |
-| Styling | Tailwind CSS + custom UI primitives |
-| Auth client | Local session bootstrap and revocation |
-| Tests | Vitest |
-
-### Backend Stack
-
-| Layer | Implementation |
-| --- | --- |
-| API framework | FastAPI |
-| ORM | SQLAlchemy 2 |
-| Validation | Pydantic v2 |
-| DB driver | `psycopg` |
-| Auth verification | Local signed session + protected SQLite revocation/expiry |
-| Tests | Pytest |
-
-### Database
-
-TopSignal is PostgreSQL-first. The schema is defined in `db/schema.sql`, with incremental SQL migrations in `db/migrations/`.
-
-Important implementation detail:
-
-- The current app's main analytics dataset is `projectx_trade_events`, not the legacy `trades` table.
-- The legacy `/metrics/*` endpoints and `/trades` endpoint still read from `trades`.
-- The account dashboard, trade review, PnL calendar flows use `projectx_trade_events`.
-- Confirmed file imports use the same `projectx_trade_events` analytics path and are audited in `trade_import_batches`.
-- Bot configuration and audit history use `bot_configs`, `bot_runs`, `bot_decisions`, `bot_order_attempts`, and `bot_risk_events`.
-- Canonical Databento definitions, raw 1-minute bars, statistics, and no-lookahead roll decisions live in the versioned local Parquet/mmap cache. Fresh PostgreSQL schemas omit the older `databento_*` market tables. Upgraded installations may retain them for compatibility; they are never dropped automatically and production backtests do not read them.
-- `projectx_market_candles` remains a compatibility cache for the interactive/live bot workspace and is never a backtest source.
-- Expense rows include `source_id` so imported or generated rows can be deduplicated by source identity without colliding with a manual row that has the same date, amount, category, and account fields.
-
-### External Integrations
-
-| Integration | Purpose |
-| --- | --- |
-| ProjectX API | Account discovery, provider auth, executions, positions, trade sync, contract lookup, and optional order routing |
-| Databento DBN archives | Sole historical OHLCV and contract-definition source for backtesting |
-| ProjectX market/user hubs | Tenant-scoped streaming adapters; process-global user lifecycle persistence is disabled |
-
-## System Structure
-
-### Frontend
-
-- `frontend/src/app/`: app shell and router
-- `frontend/src/pages/`: routed product pages
-- `frontend/src/pages/bot/`: bot configuration page, signal chart, candle cache, and chart data helpers
-- `frontend/src/pages/themes/`: theme gallery and live appearance preview
-- `frontend/src/lib/api.ts`: shared API client, request helpers, caches, and in-flight dedupe
-- `frontend/src/lib/types.ts`: frontend API types
-- `frontend/src/utils/`: metric helpers and formatting
-
-### Backend
-
-- `backend/app/main.py`: FastAPI app and route definitions
-- `backend/app/models.py`: SQLAlchemy models
-- `backend/app/bot_schemas.py`: bot API request/response schemas
-- `backend/app/trade_plan_schemas.py`: trade-plan evaluation request/response schemas
-- `backend/app/db.py`: engine/session setup and startup schema compatibility patches
-- `backend/app/auth.py`: auth middleware helpers and JWT validation
-- `backend/app/services/`: ProjectX sync, analytics, payout, streaming, and bot helpers
-
-### Database
-
-- `db/schema.sql`: current schema for fresh database setup
-- `db/migrations/*.sql`: additive schema evolution
-
-## Data Flow
-
-### 1. Account Sync Flow
-
-When the frontend requests `GET /api/accounts`:
-
-1. the backend checks whether any account still uses the `projectx` trade-data source
-2. when provider sync is needed, it creates a `ProjectXClient` and calls ProjectX account search
-3. it normalizes provider account flags into TopSignal account states
-4. it upserts ProjectX-backed `accounts` rows without overwriting CSV-import accounts
-5. it marks older ProjectX accounts as `MISSING` if they disappear from provider results for longer than the configured buffer
-6. it joins locally stored last-trade timestamps from `projectx_trade_events`
-7. it returns a frontend-friendly account list; CSV-import accounts are never marked as having stale provider data
-
-This means the accounts endpoint is both a read endpoint and the main account-state reconciliation step.
-
-### 2. Trade Sync Flow
-
-#### Initial sync
-
-If an account has no local trade data and the app requests summary, trades, or calendar data, the backend can backfill history from:
-
-- `now - PROJECTX_INITIAL_LOOKBACK_DAYS`
-- up to the requested end time or current time
-
-#### Incremental sync
-
-If local history already exists and the request does not specify a custom start:
-
-- the backend checks the earliest and latest local timestamps
-- it may backfill older history if the local earliest timestamp is newer than the configured lookback floor
-- it always adds an incremental sync window from `latest_local - 5 minutes` to `now`
-- it refreshes a recent trailing window controlled by `PROJECTX_RECENT_REFRESH_DAYS` so late provider changes can fill in updated PnL, fees, or lifecycle fields
-
-That five-minute overlap makes ingestion more robust around provider timing drift and duplicate delivery.
-
-#### Chunking and deduplication
-
-The existing UI request path uses `PROJECTX_SYNC_CHUNK_DAYS` and
-`PROJECTX_DAY_SYNC_LIMIT`. The independent persisted policy described in
-[trade reviews](docs/trade-review-workflow.md) uses bounded timestamp windows,
-durable progress and reconciliation without opening account pages. Provider
-pagination and unlimited historical retention are not guaranteed. Ingested events are deduplicated by:
-
-- `(user_id, account_id, source_trade_id)` when the provider gives a stable execution ID
-- otherwise `(user_id, account_id, order_id, trade_timestamp)`
-
-Voided rows retain their evidence and are excluded from performance. Distinct
-provider IDs never merge merely because order/time match. Existing display heads
-can accept authoritative corrections; independent synchronization preserves
-local revisions and prior heads before applying them.
-
-#### Single-day cache behavior
-
-For single-day trade-range requests, TopSignal uses `projectx_trade_day_syncs` to decide whether to re-sync:
-
-- today: normal dashboard reads use the local cache; explicit sync refreshes from provider
-- yesterday: refresh only if missing, partial, stale, or explicitly requested
-- older days: use the local cache when the day was previously marked `complete`, unless explicitly refreshed
-
-Repeated or truncated provider pages keep the day marked `partial` rather than `complete`, which lets later sync attempts repair the day. This keeps normal navigation cheap while still handling late-arriving fills around today and yesterday.
-
-#### Topstep Live file import
-
-The dashboard accepts Topstep `.csv` and `.xlsx` trade exports in two phases.
-Use `Add Live Account` to create a local, read-only account from the account
-name and opening balance shown by Topstep. TopSignal adds imported all-time net
-P&L to that opening balance and generates a hidden internal routing key, so no
-account ID is requested or displayed for Live accounts. The `Live Account
-(CSV)` control then selects that separate account; it never repurposes the
-selected Express account. Selecting a Live account turns off Copy Trade Mode
-and prevents paused Express accounts
-from being auto-selected as copy followers.
-
-1. preview parses and validates the file, calculates new-row gross P&L,
-   non-commission fees, commissions, net P&L, wins/losses, and marks duplicate
-   rows for review
-2. confirm verifies the reviewed file hash and transactionally inserts only new
-   trades
-
-Each confirmed file records its original name, SHA-256, import timestamp, and
-row counts in `trade_import_batches`. Topstep `Id` is the primary account-scoped
-trade identity, with the existing order/exit-timestamp key as a compatibility
-fallback, so re-uploading the same file or an overlapping date range does not
-overwrite or duplicate existing provider/imported trades. Missing accounts
-remain selectable so their locally imported history stays available. Uploads
-are limited to 10 MB and 5,000 trades, and the review table displays 100 rows
-per page.
-
-### 3. Trade Analytics Flow
-
-Trade analytics are derived from normalized execution events.
-
-Key rules in code:
-
-- rows with `pnl = null` are treated as open-leg or half-turn events and do not count as closed trades
-- open-leg rows also do not reduce net PnL through fees in the summary logic
-- trading-day grouping uses a New York trading session boundary of `6:00 PM ET -> 5:59:59 PM ET next day`
-- entry and exit timing for provider trades is inferred from execution history; imported closed trades preserve the export's explicit entry/exit fields
-
-The backend computes summaries from `projectx_trade_events`, then the frontend computes several additional display-only metrics from the returned summary and trade feed.
-
-### 4. Historical Journal archive
-
-`backend/tools/archive_journal.py` exports, verifies and restores historical
-records and referenced images. The encrypted artifact is recovery data, not an
-application data flow. Permanent deletion requires separate authorization.
-
-### 5. Expense And Payout Flow
-
-Expenses are CRUD records in the `expenses` table. Totals are aggregated server-side by date range, category, and account.
-
-Payouts are stored separately in the `payouts` table and summarized through payout-specific endpoints.
-
-The Expenses page combines those two tables into cash-flow summaries:
-
-- recorded spend
-- spend since the latest recorded payout
-- net after payouts
-- payout-minus-spend ranges for fixed windows, anniversary years, and all time
-
-Successful ProjectX account discovery automatically adds missing evaluation-fee
-expenses for active or locked-out combine accounts. It uses the existing plan/DLL
-price presets and the account's first-seen date in Eastern time; these are inferred
-costs, not billing receipts. Existing account-linked evaluation fees and deleted-row
-suppressions are preserved. Repeat refreshes do not create additional fees, and
-cached or failed provider reads do not generate expenses. Payout entry remains manual.
-
-Topstep Labs uses the same discovery flow with separate one-time fees. The November
-2026 catalog includes Drops #001, #002, #006, #007, and #010–#013; older #008/#009
-remain available for historical entries. A provider account name must identify a
-known drop number or product (for example, `100KTC-STATIC` or `Lab Drop #012`).
-Actual Lab provider naming has not yet been verified against a purchased account.
-Unknown Lab names are skipped rather than priced as standard Combines. Funded and
-practice Lab accounts do not create purchase fees. Lab rows carry their drop ID and
-one-time tags, with no standard plan size or activation fee. The Expenses page also
-offers these presets for manual entry; link an individual purchase to its Account ID
-to prevent discovery from adding it again. Unlinked or bulk manual entries cannot be
-matched automatically to provider accounts.
-
-The optional combine reconciliation helper is separate from automatic discovery:
-
-- it lives in browser storage
-- it infers combine purchases from active account names
-- it can create missing evaluation-fee rows in the backend
-- it reconciles account-inferred purchases with expense-derived purchases
-- it uses `source_id` and tags to avoid duplicate imported or generated combine rows
-
-### 6. Bot Flow
-
-Bot configurations are user-owned records tied to a ProjectX account and contract.
-
-Typical bot workflow:
-
-1. the frontend loads selectable accounts and `GET /api/bots`
-2. the user searches ProjectX contracts and saves a named bot configuration
-3. the Signal Chart requests ProjectX candles for the bot contract and selected chart timeframe
-4. `POST /api/bots/{id}/evaluate` computes one selected-strategy decision, persists it, and returns market analysis plus optional trade-plan evaluation
-5. `POST /api/bots/{id}/start` creates a durable, explicitly armed run, evaluates once, and allows the single leased worker to adopt continuous runs after restart
-6. `POST /api/bots/{id}/stop` locally stops the latest running bot run without claiming to alter broker state
-7. `POST /api/bots/{id}/emergency-flatten` durably stops automation, cancels all account orders, closes all account positions, and verifies the account is flat
-8. `GET /api/bots/runtime/status` reports worker, lease, provider, classification, and unresolved-submission safety checks
-
-The runtime status also returns the backend's dry-run and live-run admission
-decisions. ProjectX connection checks are scoped to the signed-in user and run
-independently of candle evaluation. Status polling schedules a read-only account
-check when due (normally every 60 seconds); a successful check stays fresh for
-two probe intervals. Starting with unverified health waits at most eight seconds
-for a shared check and rejects the start if verification fails or times out.
-Rate-limit responses retain their retry delay. The page shows the verification
-state, last successful check, and next retry time without requiring a reload.
-9. `GET /api/bots/{id}/activity` returns recent runs, decisions, order attempts, and risk events for the activity tables
-10. `POST /api/bots/{id}/backtests` binary-slices a prebuilt Databento continuous-root mmap and runs an order-routing-free deterministic replay
-
-Risk checks can block execution for disabled bots, non-active accounts, disallowed contracts, stale data, daily trade limits, session windows, position limits, cooldowns, and daily loss constraints.
-
-Trade-plan evaluation is also exposed directly through `POST /api/trade-plan/evaluate`. It scores a proposed trade plan against market context and returns score, grade, `take`/`wait`/`avoid` decision, confidence, reasons, warnings, positives, suggested adjustments, feature values, and category scores.
-
-ProjectX market-data reads have two refresh modes:
-
-- `refresh=true` forces a provider read for the requested edge of the chart window
-- `repair=true` forces a full-window fetch so interior candle gaps can be filled
-
-If a provider fetch fails but cached candles cover the request, the backend can return cached candles as a fallback. The chart also uses `/api/projectx/market-price/stream` when the optional streaming runtime is enabled, while keeping REST candles as the canonical closed-bar source.
-
-### 7. Frontend Caching
-
-The frontend has small in-memory caches in `frontend/src/lib/api.ts`:
-
-- account lists: cached for 10 minutes
-- account-scoped summary, trades, and PnL-calendar reads: cached for 10 minutes
-- bot chart candles: cached in browser storage by market and timeframe
-- duplicate in-flight requests are deduplicated
-
-Mutation calls invalidate affected cache entries.
-
-## Local Development
-
-### Prerequisites
-
-- Node.js 20+
-- Python 3.11+
-- npm
-- PostgreSQL 16 locally; production execution uses peteamdpc PostgreSQL
-- Docker, if you want the included local Postgres container
-
-### Fastest Local Setup
-
-The simplest path is:
-
-1. start the local Postgres container
-2. create backend and frontend env files
-3. install backend and frontend dependencies
-4. apply the schema
-5. build the local Databento Parquet/mmap cache for backtesting
-6. run the root dev command
-
-For isolated development without the host connection, run `npm run dev:offline` and
-open `http://127.0.0.1:5174`. This uses a separate local SQLite workspace without
-Google sign-in. See [offline development](docs/offline-development.md) for storage,
-supported workflows, and switching back.
-
-#### 1. Start PostgreSQL
+Use a fresh checkout, Python 3.11 or 3.12, and Node.js 24 with npm. Run these commands from the repository root in PowerShell.
 
 ```powershell
-docker compose up -d db
+python -m venv backend/.venv
+.\backend\.venv\Scripts\python.exe -m pip install -r backend/requirements-test.txt
+npm ci
+npm --prefix frontend ci
+npm run dev:offline
 ```
 
-#### 2. Create env files
+On macOS or Linux, create the environment with `python3` and use `backend/.venv/bin/python` for the pip command. The test requirements include the runtime packages. Each npm install uses its own lockfile.
 
-Backend env file: `backend/.env`
+Open **http://127.0.0.1:5174** after the launcher reports that the backend is ready. The workspace starts empty. Use Demo mode to explore sample data or create a Live CSV account and preview a trade export. Ctrl+C stops both servers. This profile runs Vite, FastAPI and a checkout-local SQLite database at `backend/storage/offline/topsignal.sqlite3`. It needs no environment files, PostgreSQL service, broker credentials, market-data download or connection to peteamdpc. [Offline development](docs/offline-development.md)
 
-Frontend env file: `frontend/.env.local`
+## Where to find things
 
-Recommended minimum backend variables for local anonymous mode:
+| I’m working on… | Start here |
+| --- | --- |
+| A screen or navigation item | [Router](frontend/src/app/routes.tsx) → [app shell](frontend/src/app/AppShell.tsx) → [page components](frontend/src/pages). The [frontend guide](frontend/README.md) maps the shared client and UI code. |
+| An API request | [Browser API client](frontend/src/lib/api.ts) → [FastAPI handlers and router registration](backend/app/main.py) → [services](backend/app/services). Market data has its own [router](backend/app/market_data_routes.py). |
+| Account analytics or trade import | [Dashboard](frontend/src/pages/dashboard/DashboardPage.tsx), [trade ingestion](backend/app/services/projectx_trades.py), [metrics](backend/app/services/projectx_metrics.py), [file imports](backend/app/services/trade_imports.py). [Walkthrough and screenshots](docs/account-workspace.md) |
+| Bot configuration and lifecycle | [API schemas](backend/app/bot_schemas.py), [persisted models](backend/app/models.py), [bot service](backend/app/services/bot_service.py) and [leased worker](backend/app/bot_worker.py). |
+| Strategy selection | [Strategy registry](backend/app/services/bot_strategy_registry.py) declares identifiers, evaluator dispatch, timeframes, history and replay support. Some entries serve legacy configurations and research fixtures. |
+| TopBot practice behavior | [Account preset](backend/app/services/topbot.py), [contrarian depth signal](backend/app/services/topbot_strategy.py), [position management](backend/app/services/topbot_runner.py) and [strategy panel](frontend/src/pages/bot/TopBotStrategyPanel.tsx). |
+| Historical backtests | [Backtesting UI](frontend/src/pages/backtesting), [historical jobs](backend/app/services/topbot_backtest_jobs.py), [saved-model replay](backend/app/services/topbot_backtest.py) and [bot-configuration backtests](backend/app/services/bot_backtesting.py). |
+| Market depth or trade recording | [Standalone depth recorder](backend/tools/record_market_depth.py), [depth segments](backend/tools/depth_recording.py), [API-managed account recorder](backend/app/services/trade_progress_recorder.py) and [trade-progress store](backend/app/services/trade_progress_store.py). |
+| Database schema or migrations | [Data model](db/data-model.md), [fresh schema](db/schema.sql), [incremental SQL](db/migrations), [checksummed runner](backend/tools/migrate_db.py) and [setup procedure](db/README.md). |
+| Host operations | [Windows task installers and release scripts](scripts), [operator tools](backend/tools), [Windows operations](docs/windows-24x7-operations.md) and [release procedure](docs/releasing.md). |
+| Storage or recovery | [Storage policy](docs/supabase-storage-policy.md), [local storage and restore](docs/local-first-storage.md), [Journal and mirror recovery](docs/supabase-retirement.md) and [dated maintenance receipt](docs/audits/2026-11-13/storage-maintenance.md). |
+
+## Frontend routes
+
+| Address | Screen |
+| --- | --- |
+| `/`, `/dashboard` | [Dashboard](frontend/src/pages/dashboard/DashboardPage.tsx) — P&L, risk forecast, trading-day calendar, trade imports and analytics-only Copy Trade Mode |
+| `/accounts` | [Accounts](frontend/src/pages/accounts/AccountsPage.tsx) — account selection, discovery, visibility and display names |
+| `/trades` | [Trades](frontend/src/pages/trades/TradesPage.tsx) — executions, filters and recorded trade progress |
+| `/expenses` | [Expenses](frontend/src/pages/expenses/ExpensesPage.tsx) — costs, refunds and payouts |
+| `/bot` | [Bot](frontend/src/pages/bot/BotPage.tsx) — practice controls, order book, liquidity history, strategy activity and Logs (`?view=logs`) |
+| `/bot-results/:botId` | [Bot results](frontend/src/pages/bot/BotForwardResultsPage.tsx) — owner-scoped forward research and simulated performance outside the main navigation |
+| `/backtesting` | [Backtesting](frontend/src/pages/backtesting/BacktestingPage.tsx) — historical MNQ chart and TopBot model replay |
+| `/appearance` | [Appearance](frontend/src/pages/themes/ThemePage.tsx) — browser zoom and theme preferences |
+
+The router redirects `/logs` to `/bot?view=logs`, `/themes` to `/appearance` and `/data` to `/dashboard`, carrying the query parameters across. The standalone Simulation page was retired. Its former `/simulation` address takes the catch-all redirect to `/`. Journal was removed and archived.
+
+## Development profiles
+
+| Root command | Services and storage |
+| --- | --- |
+| `npm run dev:offline` | Disconnected SQLite workspace on 5174. Broker access, worker and both live-order flags are disabled by the launcher. |
+| `npm run dev:local` | The same SQLite workspace and port with ProjectX access and a dry-run worker. Provider reads need valid credentials. Both live-order flags stay off. |
+| `npm run dev:cloud` | Historical command name for the configured account workspace on `http://localhost:5173`. It applies pending migrations to its configured PostgreSQL database before startup. Use a separate development database. |
+| `npm run dev` | Starts the connected SQLite profile and the configured PostgreSQL profile. Each frontend waits for its own API, on available loopback ports starting at 8000. |
+
+Use one 5174 profile at a time. Restart the launcher after editing `backend/.env` or `frontend/.env.local`. The `dev:live` and `dev:local:live` variants explicitly change the connected workspace’s order-routing gates. [Launcher definitions](package.json) · [Profile settings](scripts/offline-env.cjs)
+
+**PostgreSQL development.** For schema work, the [Compose service](docker-compose.yml) runs PostgreSQL 16 on loopback port 5432. In a fresh development checkout with an empty local Compose volume, use these development-only settings in `backend/.env`.
 
 ```dotenv
 DATABASE_URL=postgresql+psycopg://topsignal:topsignal_password@127.0.0.1:5432/topsignal
-PROJECTX_API_BASE_URL=https://api.topstepx.com
-PROJECTX_USERNAME=your_topstepx_username
-PROJECTX_API_KEY=your_topstepx_api_key
-ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS=true
 AUTH_REQUIRED=false
+ALLOWED_ORIGINS=http://localhost:5173
+ALLOWED_ORIGIN_REGEX=
 TOPSIGNAL_DB_SCHEMA_INIT=skip
+TOPSIGNAL_BOT_WORKER_ENABLED=false
+TOPSIGNAL_LIVE_EXECUTION_ENABLED=false
+TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION=false
 ```
 
-Recommended minimum frontend variables:
+Start the database with `docker compose up -d db`. Follow the [fresh database procedure](db/README.md#fresh-database) to apply `schema.sql`, baseline the empty schema and check the ledger. Then run `npm run dev:cloud`. The launcher supplies `VITE_API_BASE_URL`. Anonymous access is restricted to a fully local development runtime. To develop authenticated flows, use a separately provisioned development owner and local auth store. The [environment reference](.env.example) includes **host** database, cache and auth paths. Keep private keys and host settings out of development profiles. [Local sign-in and provisioning](docs/local-sign-in.md)
 
-```dotenv
-VITE_API_BASE_URL=http://localhost:8000
-```
+## Trading, replay and recording
 
-Authenticated workspaces use protected local sign-in state from `.env.example`.
-For production, build with `VITE_LOCAL_AUTH_ENABLED=true`; configure the existing
-loopback/tunnel owner using the local-auth provisioning and recovery procedure.
+- **TopBot** uses the `dom_contrarian_v1` practice preset. By default a 10% imbalance sustained for 30 seconds across up to 100 observed levels per side qualifies a contrarian entry. The default 25-point stop trails after a 25-point favorable move. An account can select fixed exits. The worker enforces account, risk and execution gates. **Stop new entries** leaves protection and position management active. [Strategy](docs/topbot-contrarian.md) · [Fixed exits](docs/topbot-fixed-session-exits.md)
+- **Backtesting** reads installed Databento history from Parquet and memory-mapped arrays. The Backtesting page runs the registered mathematical model on eligible dates after its training cutoff. Candle replay and forward DOM signals use different inputs. The configuration replay API can persist bounded results in `bot_backtests`. Source ZIPs, input candles and recordings stay on disk. See the transfer guide before building history with `backend/tools/build_databento_cache.py`. [History transfer](docs/databento-history-transfer.md) · [Replay benchmarks](docs/databento-backtest-benchmarks.md)
+- **Forward research** uses recorded decisions, fills, simulated accounts and independently observed depth. The imbalance study tracks qualifications and matched outcomes even when no order fills. TopBot is the implemented practice bot. A second trading bot is future work. [Worker evidence](docs/topbot-worker-evidence.md) · [Imbalance study](docs/topbot-imbalance-study.md) · [Exit study](docs/topbot-exit-study.md)
 
-#### 3. Install dependencies
+## Hosted operation and recovery
 
-macOS / Linux (use Python 3.11 or newer):
+**Local PostgreSQL on peteamdpc is the sole execution authority.** It holds application accounts, trades, encrypted provider credentials, bot state and saved results. Authentication uses a protected local SQLite owner/session store. The API and bot worker, independent depth recorder, Discord reader and execution backup helper run on the host. The API and depth-recorder tasks use scheduler priority 4. The viewing PC reaches the [practice dashboard](http://127.0.0.1:4173/bot?account=29593203) through the private connection. [Hosted access](docs/hosted-dashboard-connection.md) · [Production logs](docs/ssh-production-logs.md)
 
-```bash
-python3 -m venv backend/.venv
-backend/.venv/bin/python -m pip install -r backend/requirements.txt
-npm ci
-npm --prefix frontend ci
-```
+Bulk market data, research, worker evidence and trade-progress recordings live under `TOPSIGNAL_DATABENTO_CACHE_DIR`. The default development path is `backend/storage/databento`. Passive collection runs independently of bot arming, account selection, the browser and the viewing PC. Coverage gaps stay visible. [Depth recording](docs/topbot-depth-recording.md) · [Trade progress](docs/trade-progress-recording.md) · [Session order-flow recovery](docs/session-order-flow-recovery.md)
 
-Windows PowerShell:
+The November 13 maintenance recorded six owned accounts enrolled under an eight-account cap with explicit opt-outs. It also retired the compact cloud mirror and archived Journal. Execution fences remain enabled. Preserve historical migrations, cloud audit data, encrypted archives and original Databento sources. Full-cache restore and reboot acceptance have separate evidence from a focused PostgreSQL/auth backup. Consult the dated receipt before recovery, including its release-87 rollback restriction. [Maintenance checkpoint](docs/audits/2026-11-13/storage-maintenance.md) · [Retirement procedure](docs/supabase-retirement.md)
+
+## Checks
+
+Run from the repository root after the quick-start installs. The backend runner disables dotenv, selects in-memory SQLite and allocates temporary test fixtures.
 
 ```powershell
-python -m venv backend\.venv
-backend\.venv\Scripts\python -m pip install -r backend\requirements.txt
-npm install
-npm --prefix frontend install
+.\backend\.venv\Scripts\python.exe backend/tools/run_offline_tests.py
+npm --prefix frontend test
+npm --prefix frontend run lint -- --max-warnings=0
+npm --prefix frontend run build
+$env:Path = (Resolve-Path backend/.venv/Scripts).Path + ";" + $env:Path
+npm run test:dev-scripts
+npm audit
+node scripts/audit-frontend.cjs
 ```
 
-If startup reports `Missing backend Python executable`, run the commands above
-for your operating system. The Python environment is local to each checkout and
-is not included in Git; updating npm does not install backend dependencies.
+For the four-worker backend run, pass `-q -n 4 --dist=loadfile` to the Python runner. The PowerShell `PATH` line selects the test interpreter for the script regressions. On macOS or Linux, activate `backend/.venv` in your shell instead. The database CI job creates disposable PostgreSQL 16 databases for fresh schema, upgrades, privilege checks, populated adoption, concurrency and worker fencing. Its SQL deliberately changes test data and roles. Run it only against an isolated cluster. [CI commands](.github/workflows/ci.yml)
 
-#### 4. Apply the database schema
-
-```powershell
-Get-Content .\db\schema.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
-npm run db:baseline
-npm run db:check
-```
-
-#### 5. Build the local Databento backtest cache
-
-Databento ZIPs are the canonical backtest market-data source. This command discovers the
-ten known MNQ, MES, NQ, and ES jobs in your Downloads folder, validates them, and builds
-partitioned Parquet plus memory-mapped arrays without connecting to PostgreSQL or Supabase:
-
-The Backtest replay engine serves the other supported strategies and offline research
-fixtures. TopBot Mathematical cannot be replayed over its own training history, so a
-TopBot backtest request is rejected; validate it chronologically with
-`backend/tools/research_probabilistic_topbot.py`. Starting balance, transaction fees,
-and slippage remain replay assumptions. MNQ defaults to $0.61 per contract per side
-($1.22 round trip), including commission, exchange and regulatory fees; slippage is
-separate.
-
-Replay results include long/short performance, average/median/90th-percentile holding
-time for winners and losers, entry-hour/weekday/year groups, exit reasons, duration
-groups, and a sortable paginated trade ledger. Direction filters apply to detailed
-analysis and CSV/JSON exports.
-
-```powershell
-backend\.venv\Scripts\python backend\tools\build_databento_cache.py --downloads
-```
-
-To build only selected materialized timeframes, repeat `--timeframe` or use commas. The
-1-minute base is always retained, and an unchanged rerun reuses the existing fingerprinted
-cache:
-
-```powershell
-backend\.venv\Scripts\python backend\tools\build_databento_cache.py `
-  --downloads `
-  --timeframe 1m,5m,15m `
-  --timeframe 1h,4h,1d
-```
-
-You can instead pass ZIP paths positionally and select a cache directory with
-`--cache-dir`. Use `--force` only to rebuild the matching immutable version and `--json`
-for automation output.
-
-Application requests never build or rewrite a missing timeframe. Re-run the build tool
-with the required `--timeframe` so cache publication and integrity validation remain an
-explicit offline step.
-
-After building, benchmark a cold mmap open against repeated warm replays. The direct
-benchmark defaults to the same lazy, binary-sliced mmap sequence used by production; it
-does not allocate one Python object per source bar. The tool checks semantic digests
-across every sample and reports input preparation, replay, and cache-stat phases:
-
-```powershell
-backend\.venv\Scripts\python backend\tools\benchmark_databento_cache.py `
-  --root MNQ --timeframe 5m --days 30
-
-backend\.venv\Scripts\python backend\tools\benchmark_databento_cache.py `
-  --root ES --timeframe 1m --days 7 `
-  --profile backend\storage\profiles\databento-warm.prof --json
-
-backend\.venv\Scripts\python backend\tools\benchmark_databento_cache.py `
-  --root MNQ --timeframe 5m --days 30 `
-  --input-mode eager --max-rows 500000 --json
-
-backend\.venv\Scripts\python backend\tools\benchmark_databento_cache.py `
-  --root MNQ --timeframe 5m --days 30 `
-  --cold-repeats 1 --warm-repeats 5 `
-  --sqlite-persistence --json
-```
-
-`--input-mode eager` is an explicit comparison mode that materializes Python candle
-objects; `--max-rows` applies only to that mode. `--sqlite-persistence` additionally
-times `create_bot_backtest` through an in-memory SQLite commit, verifies that its cold
-sample used the canonical lazy mmap source (and not materialization), verifies cold
-result-cache misses and warm hits, and requires identical input fingerprints and
-semantic snapshots for every persisted run.
-
-See `docs/databento-backtest-benchmarks.md` for the checked cold/warm results
-from the supplied archives and the exact benchmark methodology.
-
-#### 6. Run the app
-
-```powershell
-npm run dev
-```
-
-That starts the cloud account workspace at `http://localhost:5173` and the ProjectX-connected local workspace at `http://127.0.0.1:5174`. Continue offline opens the local workspace with saved SQLite data, account refreshes, and dry-run bots; local live orders are disabled. The launcher checks cloud database migrations and waits for each backend before starting its frontend with the matching API address. One terminal and one Ctrl+C manage both workspaces.
-
-For the retained account workspace, `npm run dev:live` explicitly starts:
-
-- the regular cloud/login app on `http://localhost:5173`
-- the connected local workspace on `http://127.0.0.1:5174`, with ProjectX, saved SQLite data, and live order routing enabled; TopBot still requires a Live Run start and confirmation
-- a separate loopback backend for each app, using available ports starting at `8000`
-
-Both `npm run dev` and `npm run dev:live` start the local backend first, then start the cloud profile once the local port is bound. The cloud profile avoids that backend port even during a local reload. Each profile has its own environment and backend/frontend supervisor. A cloud startup or migration failure leaves the local workspace running. Ctrl+C stops both profiles launched by the command. If local port `5174` is already occupied, the launcher reports the conflict before starting another local backend and continues with the cloud profile. Use the existing local workspace, or stop its `dev:local`/`dev:offline` terminal with Ctrl+C before relaunching it.
-
-Use `npm run dev:cloud` for only the regular app, `npm run dev:local` for only the connected local workspace, or `npm run dev:offline` for local work without ProjectX. Local and cloud data remain separate; this launcher does not copy or synchronize them.
-
-If cloud port `5173` is occupied, the launcher stops that profile before migrations or backend startup and points to the existing cloud app. The frontend also uses a strict port to prevent a startup race from moving it to an origin the backend rejects. Use `localhost:5173` for cloud and `127.0.0.1:5174` for local; the two hostnames can reach different servers on the same port.
-
-The connected local app shows saved accounts immediately and checks ProjectX once each time the app opens or the page reloads, including when no accounts have been saved yet. Switching tabs or accounts does not repeat that discovery check. The Accounts page's Refresh Express Accounts action remains available for changes during a session. A failed startup check leaves saved accounts usable and displays the refresh error; it does not start a retry loop.
-
-The Bot page's **Manual order test** panel sends individual MNQ market entries with attached stop-loss and take-profit brackets to the selected simulated account. Stop automation first, choose quantity and SL/TP distances in ticks, then press Buy or Sell and review the account-specific confirmation. The panel displays broker order IDs, open positions, working bracket prices, and the last ten test attempts. In TopstepX, select **Settings → Risk Settings → Auto OCO Brackets**; API brackets are rejected in Position Brackets mode ([ProjectX documentation](https://gateway.docs.projectx.com/docs/api-reference/order/order-place/)). Defaults are one contract, a 20-tick stop and a 40-tick target. Tests accept 1–10 contracts and cap planned stop risk at $250 before fees/slippage, with fresh provider eligibility and a flat account required for every new entry. Close positions & cancel orders uses the existing confirmed account-wide flatten action. An uncertain response is retained in the order audit: Recover same submission checks its original broker tag and never resends an ambiguous order. No bot run is started by this panel.
-
-To submit TopBot orders to ProjectX, stop the current dev launcher with Ctrl+C and run `npm run dev:live` (both workspaces) or `npm run dev:local:live` (local only). These commands enable both server and worker live-routing gates for the local workspace, including after backend reloads. Open `http://127.0.0.1:5174`, select your active account, and use TopBot's Live Run control and confirmation. Starting the launcher does not start a bot. Orders are sent to the broker even when the account is simulated; existing account eligibility and risk checks still apply. The cloud profile retains its own configuration. `dev:local` and `dev:offline` continue to disable local live routing, regardless of `.env` gate values.
-
-Each profile's supervisor prefixes backend/frontend logs, restarts processes that exit early during startup a limited number of times, and stops its sibling server if one side exits permanently. Before the cloud backend starts accepting requests, its wrapper transactionally applies pending database migrations using the same environment snapshot as the backend. Each supervisor waits for its backend `/ready` check before starting Vite, and passes that backend's matching `VITE_API_BASE_URL` to its frontend.
-
-`npm run dev:backend` loads `backend/.env`, applies pending transactional migrations, and only then starts Uvicorn. It defaults `TOPSIGNAL_DB_SCHEMA_INIT=skip` because the migration runner establishes the required schema before application startup. If the preferred backend port is busy, it uses the next open port. On Windows, the wrapper checks application Python files once per second and reloads only when a source file changes. Database/cache writes, test files, and anonymous Windows filesystem notifications do not restart the server or interrupt market streams. Set `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD=1` to force Uvicorn's native reload, scoped to `backend/app`.
-
-Development reload boundaries are intentional:
-
-- A browser reload only reloads the current frontend bundle. It cannot change the backend process environment.
-- Vite HMR reloads frontend source modules. Restart the Vite process after changing frontend `VITE_*` environment values.
-- Uvicorn reloads changed Python code in a child process, but that child inherits the environment snapshot captured when the Node dev wrapper started. It does not re-read changed values from `backend/.env`.
-- After changing `backend/.env`—especially `CREDENTIALS_ENCRYPTION_KEY`, ProjectX settings, auth settings, or database settings—stop and restart the relevant `npm run dev:live` / `dev:local` / `dev:cloud` supervisor (or the standalone `npm run dev:backend` wrapper). The dev wrapper prints this same instruction when it detects a `backend/.env` change. A successful direct provider login in a separate shell does not prove that the running app has the same environment or can decrypt the signed-in user's stored credential.
-
-### Environment Variables
-
-The repo-level `.env.example` is the source of truth for starter env profiles. Important variables include:
-
-#### Backend variables
-
-| Variable | Purpose |
-| --- | --- |
-| `DATABASE_URL` | SQLAlchemy database connection URL |
-| `MIGRATION_DATABASE_URL` | Optional direct/session-mode PostgreSQL URL used only by the migration runner; transaction pooler port `6543` is rejected |
-| `PROJECTX_API_BASE_URL` | Base URL for ProjectX API |
-| `PROJECTX_USERNAME` | Legacy env-based TopstepX username used for ProjectX API auth |
-| `PROJECTX_API_KEY` | Legacy env-based TopstepX API key generated from `Settings -> API` |
-| `AUTH_REQUIRED` | Requires API auth by default; `false` is accepted only in a fully local runtime |
-| `CREDENTIALS_ENCRYPTION_KEY` | Fernet key for encrypting stored provider credentials |
-| `ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS` | Explicitly allows one server-wide ProjectX identity only in a fully local, single-user runtime |
-| `ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY` | Explicitly allows the deterministic encryption key only with a local/SQLite database; never use it for real credentials |
-| `PROJECTX_INITIAL_LOOKBACK_DAYS` | First-sync history window |
-| `PROJECTX_RECENT_REFRESH_DAYS` | Recent trailing sync window used to catch late provider updates |
-| `PROJECTX_SYNC_CHUNK_DAYS` | Trade-sync chunk size |
-| `PROJECTX_DAY_SYNC_LIMIT` | Per-page trade-day fetch limit |
-| `PROJECTX_YESTERDAY_REFRESH_MINUTES` | Staleness threshold for yesterday refresh |
-| `PROJECTX_ACCOUNT_MISSING_BUFFER_SECONDS` | Delay before absent accounts become `MISSING` |
-| `PROJECTX_ACCOUNT_STALE_AFTER_SECONDS` | Age after which a cache-only account response is labeled stale; defaults to 900 seconds |
-| `PROJECTX_LAST_TRADE_LOOKBACK_DAYS` | Provider lookback for last-trade resolution |
-| `ALLOWED_ORIGINS` | Exact CORS allowlist |
-| `ALLOWED_ORIGIN_REGEX` | Regex-based CORS allowlist |
-| `ALLOW_QUERY_BEARER_TOKENS` | Allows `access_token` query param auth for special cases |
-| `TOPSIGNAL_DB_SCHEMA_INIT` | `full` runs startup schema compatibility patches; `skip` bypasses them for faster dev startup |
-| `BACKTEST_MAX_CONCURRENT_GLOBAL` | Global concurrent backtest limit; defaults to `2` |
-| `BACKTEST_MAX_CONCURRENT_PER_USER` | Validated per-user backtest setting; the newest Run supersedes and cooperatively cancels that user's active replay, so only one result can persist at a time |
-| `TOPSIGNAL_BACKTEST_MEMORY_BUDGET_BYTES` | Maximum estimated in-memory replay working set; defaults to 1.5 GiB |
-| `TOPSIGNAL_BACKTEST_EVALUATOR_WORK_BUDGET` | Maximum strategy-aware estimated replay work before a run is rejected; defaults to `1000000000` weighted bar visits |
-| `TOPSIGNAL_BACKTEST_MAX_SERIES_POINTS` | Maximum persisted equity/drawdown chart points before deterministic sampling; defaults to `50000` |
-| `TOPSIGNAL_DATABENTO_CACHE_DIR` | Persistent local directory for canonical Databento Parquet and memory-mapped replay artifacts; defaults to `backend/storage/databento` |
-| `TOPSIGNAL_BACKTEST_CACHE_MAX_ENTRIES` | Maximum number of prepared replay entries retained by the in-process LRU; defaults to `8` |
-| `TOPSIGNAL_BACKTEST_CACHE_MAX_BYTES` | Maximum estimated size of the in-process replay LRU; defaults to `536870912` bytes (512 MiB) |
-| `TOPSIGNAL_BACKTEST_PROXY_CACHE_ROWS` | Maximum recently accessed lazy candle proxies retained per opened mmap stream; defaults to `16384` rows |
-| `TOPSIGNAL_BACKTEST_RESULT_CACHE_MAX_ENTRIES` | Maximum exact deterministic replay results retained for repeated Run requests; defaults to `8` |
-| `TOPSIGNAL_BACKTEST_RESULT_CACHE_MAX_BYTES` | Conservative estimated memory ceiling for cached replay results; defaults to `268435456` bytes (256 MiB) |
-| `TOPSIGNAL_DEV_BACKEND_PORT` | Preferred backend port for local dev; defaults to `8000` and falls forward when busy |
-| `TOPSIGNAL_LIVE_EXECUTION_ENABLED` | Enables one server-side live-routing gate when set to a true value; defaults disabled, is never sufficient by itself, and is ignored in tests |
-| `TOPSIGNAL_BOT_WORKER_ENABLED` | Enables the database-leased recurring closed-candle evaluator; defaults disabled |
-| `TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION` | Independent worker live-routing gate; defaults disabled and is never sufficient by itself |
-| `TOPSIGNAL_BOT_WORKER_POLL_SECONDS` | Worker scheduler polling interval; defaults to `5` seconds |
-| `TOPSIGNAL_BOT_CANDLE_CLOSE_GRACE_SECONDS` | Delay after a computed candle boundary before evaluation; defaults to `2` seconds |
-| `TOPSIGNAL_BOT_MAX_SCHEDULE_JITTER_SECONDS` | Deterministic maximum worker evaluation jitter; defaults to `3` seconds |
-| `TOPSIGNAL_BOT_WORKER_LEASE_TTL_SECONDS` | Database worker lease duration; defaults to `45` seconds |
-| `TOPSIGNAL_BOT_WORKER_HEARTBEAT_SECONDS` | Worker lease-renewal interval; defaults to `10` seconds and must be less than half the TTL |
-| `TOPSIGNAL_BOT_PROVIDER_PROBE_SECONDS` | Provider health-probe interval for armed runs; defaults to `60` seconds |
-| `TOPSIGNAL_BOT_MAX_RETRY_BACKOFF_SECONDS` | Maximum retry delay after transient provider/runtime errors; defaults to `300` seconds |
-| `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD` | On Windows, set to `1` to use Uvicorn's native reload instead of wrapper-managed backend reload |
-| `PROJECTX_STREAMING_ENABLED` | Reserved streaming gate; defaults to `false`, and process-global startup is deliberately refused because it cannot prove tenant ownership |
-| `PROJECTX_MARKET_HUB_URL` | Market SignalR/websocket hub URL used only by an explicitly scoped runtime |
-| `PROJECTX_USER_HUB_URL` | User SignalR/websocket hub URL used only by a runtime bound to one authenticated user and owned account |
-| `PROJECTX_MARKET_HUB_SUBSCRIBE_MESSAGE` | Optional custom subscription payload |
-| `PROJECTX_USER_HUB_SUBSCRIBE_MESSAGE` | Optional custom subscription payload |
-
-ProjectX user-hub lifecycle persistence is never started from server-wide environment credentials. The process-global stream remains disabled. For each explicitly armed live run, the leased bot worker instead creates a demand-driven runtime with an authenticated `user_id`, owned account ID, and per-user client factory; its state is keyed by user, account, and contract and is stopped when that account no longer has an eligible run.
-
-#### Frontend variables
-
-| Variable | Purpose |
-| --- | --- |
-| `VITE_API_BASE_URL` | Backend base URL |
-| `VITE_PERF_LOGS` | Enable frontend API perf logging |
-| `VITE_DEMO_MODE` | Start the frontend in read-only demo mode with masked account and money fields |
-
-Frontend auth uses local session bootstrap, owner identity and sign-out.
-Production builds use `VITE_LOCAL_AUTH_ENABLED=true`; no Supabase SDK or Google
-OAuth configuration is required. Hosted trusted-device access stays bound to the
-private loopback tunnel and the existing owner. See `.env.example` and the
-[local recovery procedure](docs/supabase-retirement.md).
-
-### Common Commands
-
-| Command | Purpose |
-| --- | --- |
-| `npm run db:init` | Run backend schema compatibility initialization explicitly |
-| `npm run db:adopt-current` | After a verified backup, validate and adopt a populated pre-runner database into the migration ledger without replaying history |
-| `npm run db:baseline` | Validate a database created from current `schema.sql` and initialize its migration ledger |
-| `npm run db:migrate` | Apply pending PostgreSQL migrations transactionally |
-| `npm run db:check` | Check migration version/checksum state without changing the database |
-| `npm run dev` | Run both cloud and ProjectX-connected local workspaces; local live orders disabled |
-| `npm run dev:live` | Explicitly run both account workspaces with live order routing enabled locally |
-| `npm run dev:cloud` | Run only the regular cloud/login app |
-| `npm run dev:local` | Run only the local workspace with ProjectX and dry-run bots |
-| `npm run dev:local:live` | Run only the local workspace with ProjectX live order routing enabled |
-| `npm run dev:offline` | Run only the local workspace without broker connections |
-| `npm run dev:backend` | Run backend dev script |
-| `npm run dev:frontend` | Run frontend dev script |
-| `npm run prod` | From an ACL-hardened non-Git release, apply migrations and supervise the loopback API, bot worker, and prebuilt control UI on Windows |
-| `npm run prod:backend` | Backward-compatible alias of `npm run prod`; it also supervises the production control UI |
-| `npm --prefix frontend run build` | Production frontend build |
-| `npm --prefix frontend run lint` | Frontend lint |
-| `npm --prefix frontend run test` | Frontend tests |
-| `cd backend; .\.venv\Scripts\python -m pytest` | Backend tests |
-
-## Current Limitations
-
-- The main routed app is strong around dashboard, trades, expenses, payouts, themes, and bot dry-run workflows.
-- There is backend support for per-user ProjectX credentials, but there is no dedicated frontend credentials-management screen in the current routed UI.
-- The repository still carries the legacy `trades` table and `/metrics/*` routes beside the newer `projectx_trade_events` pipeline.
-- The accounts endpoint performs provider sync inline, which can make the first load noticeably slower on large account sets.
-- The optional streaming lifecycle runtime persists position data, while the bot worker starts account-scoped user-hub streams only for explicitly armed live runs.
-- Live order routing remains deliberately multi-gated and limited to freshly verified simulated accounts. Passing tests and a green readiness endpoint do not replace a multi-session Practice soak or operator supervision.
-- Schema evolution uses the checksummed migration runner; startup compatibility helpers remain as a temporary local-development safety net.
-- Backtest concurrency limits are process-local. Use a single API worker until a distributed queue or lease is added for multi-worker or multi-replica deployments.
-- Expense combine tracking is partly client-side, so it is not a fully server-authoritative accounting subsystem.
-
-## Documentation Map
-
-- [Repeatable trade reviews](docs/trade-review-workflow.md): bounded recovery, frozen reports, attribution, coverage and backup checks
-
-- `db.md`: database design, persistence model, and trade-ingestion notes
-- `db/README.md`: fresh schema and migration application instructions
-- `docs/perf-notes.md`: dashboard and accounts performance findings and fixes
-- `docs/windows-24x7-operations.md`: personal-Windows-laptop deployment, startup, readiness, recovery, and Practice-soak checklist
-- `frontend/README.md`: frontend architecture, routes, API client behavior, and local frontend development
-
-## Trade MAE / MFE recording
-
-The Trades page uses observed live excursions when available, with historical
-one-minute estimates marked `≈`. These values are in dollars before fees.
-Historical calculations use the exact delivery contract and FIFO entry legs;
-partial exits use only the closed quantity. Entry/exit candles may contain moves
-outside the trade, so candle estimates are not tick-exact. Missing coverage stays
-unavailable and retries after five minutes.
-
-From `backend`, backfill an explicitly authorized connected account and enable
-read-only recording with:
-
-```powershell
-.\.venv\Scripts\python.exe tools/backfill_trade_excursions.py --account ACCOUNT_ID --enable-tracking
-```
-
-The independent API recorder resumes enabled accounts on backend startup, verifies
-account ownership, subscribes to position changes and dynamically subscribes to
-their contract quotes. It does not arm bots or route orders. Keep the backend
-running and connected for live coverage; interrupted observations are discarded
-and historical estimates fill the gap after closed trades have synced. It checks
-the latest 1,000 saved closed trades every 30 seconds, with a seven-day maximum
-duration per trade. Refresh Trades to see newly calculated values. `--live` selects
-the provider's live history feed; the default uses its simulated history feed.
-
-Only compact results, position summaries, recording configuration and heartbeat
-state are stored locally under `TOPSIGNAL_DATABENTO_CACHE_DIR/trade-excursions`.
-The default root is `backend/storage/databento`. No historical candle series are
-written to Supabase. Preserve this directory with the backend filesystem backups;
-it is not included in Git or Supabase backups. `tracking_status(owner, account)`
-in `historical_trade_excursions.py` reports recorder health for operations.
-
-## Summary
-
-TopSignal is best understood as a local-first trading intelligence layer with separated providers:
-
-- ProjectX owns accounts, executions, positions, trade synchronization, and order routing
-- Databento is the sole historical market-data source for backtesting
-- PostgreSQL is the authoritative local application and expense store
-- FastAPI is the normalization and metrics layer
-- React is the trader-facing review workspace
-
-If you are onboarding to the codebase, start with the dashboard flow and trace it through:
-
-- `frontend/src/pages/dashboard/DashboardPage.tsx`
-- `frontend/src/lib/api.ts`
-- `backend/app/main.py`
-- `backend/app/services/projectx_trades.py`
-- `backend/app/services/projectx_metrics.py`
-
-That path shows most of the application's real architecture.
+For product details, see the [account workspace walkthrough](docs/account-workspace.md), [Topstep import rules](docs/topstep-live-trade-imports.md), [risk forecast method](docs/account-risk-forecast.md) and [trade-review workflow](docs/trade-review-workflow.md).

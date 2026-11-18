@@ -1,11 +1,9 @@
 # Local sign-in for the connected worker
 
-Local sign-in is an optional second authentication provider for the existing
-owner. It does not enable demo/offline mode, change account ownership, create a
-cloud user, disable API authentication, or alter worker routing or strategy.
-Google is offered only when Supabase authentication is configured. Account data
-and credentials still use the configured application database; this feature
-does not remove a Supabase quota restriction.
+The connected workspace signs in the existing account owner using a protected
+SQLite owner/session store. The API verifies the local signed session on
+authenticated requests. Account data and encrypted broker credentials stay in
+the application database. [Hosted access](hosted-dashboard-connection.md)
 
 ## Continue on this device
 
@@ -31,7 +29,7 @@ allowed loopback browser Origin, and a custom request header. It rejects browser
 supplied owner IDs. The issued JWT retains the same owner, expiry and server-side
 revocation checks as password login; API requests using it also enforce the local
 connection boundary. The worker records the sign-in without logging the token.
-Supabase-free deployments show only local sign-in. Signing out does not stop the worker.
+The worker continues running after sign-out.
 
 Password/setup endpoints are disabled in trusted-device mode. Existing password
 hashes and audit records are preserved. Setting the mode back to `password`
@@ -51,11 +49,11 @@ defaults to password mode; invalid mode values fail startup.
    No password, token, or setup code is printed.
 3. Set `TOPSIGNAL_LOCAL_AUTH_DB` to that absolute SQLite path in the worker's
    protected environment file, preserving `AUTH_REQUIRED=true`, database,
-   credential encryption and broker settings. Build the frontend with
-   `VITE_LOCAL_AUTH_ENABLED=true` to prefer local login without contacting Google
-   on a fresh tab. Deploy/restart normally.
-4. Through the authenticated SSH loopback tunnel, open the app, enter the setup
-   code, and choose a unique password of at least 14 characters. The code expires
+   credential encryption and broker settings. Production builds enable local
+   sign-in. For an authenticated Vite development
+   session, set `VITE_LOCAL_AUTH_ENABLED=true` in `frontend/.env.local`.
+4. In password mode, open the app through the authenticated SSH loopback tunnel.
+   Enter the setup code and choose a unique password of at least 14 characters. The code expires
    after 24 hours and is consumed atomically on successful setup.
 
 The login endpoints require a loopback connection and Host plus an allowed
@@ -69,10 +67,10 @@ Passwords use salted scrypt (N=2^17, r=8, p=1), following the
 Hashing concurrency is bounded. A persisted limit permits ten attempts per five
 minutes. The owner UUID and signing key are supplied only by the protected store.
 
-JWTs use a separate key, issuer and audience from Google/Supabase. Each session
+JWTs use a local signing key, issuer and audience. Each session
 must also exist in the local session registry. Sessions last 12 hours and survive
-page refreshes in the same browser tab. Logout revokes that session on the worker;
-expiry or logout never silently switches back to a cached Google identity.
+page refreshes in the same browser tab. Logout revokes that session on the worker.
+The API rejects expired or revoked sessions.
 Closing the tab clears its browser session storage; server expiry still applies.
 Signing out of the UI does not stop the independent worker.
 
@@ -86,8 +84,8 @@ frontend build.
 For forgotten passwords or expired initial setup, an administrator can provision
 a **new** protected store for the same account and switch the configured path in
 a controlled deployment. Preserve a verified backup of the old store and its
-audit events. Switching stores invalidates all old local sessions; Google and
-broker credentials remain unchanged. Never reset ownership from browser input.
+audit events. Switching stores invalidates all old local sessions. Owner
+identity comes from the protected store.
 
 ## Verification
 
