@@ -14,8 +14,13 @@ import pytest
 from tools import maintain_session_flow as helper
 
 
+def recent_observation():
+    # Stay inside the freshness window even when Windows clocks resolve different ticks.
+    return datetime.fromtimestamp(time.time() - 1, timezone.utc).isoformat()
+
+
 def status(path, **changes):
-    result = dict(at=helper.utc(), state='recording', storage=dict(
+    result = dict(at=recent_observation(), state='recording', storage=dict(
         free_bytes=100*1024**3, blocked_reason=None, scan_stalled=False), recording={})
     result.update(changes)
     path.write_text(json.dumps(result))
@@ -23,8 +28,9 @@ def status(path, **changes):
 
 
 def flow(contract='CON.F.US.MNQ.Z26', **changes):
+    observed_at = recent_observation()
     result = dict(schema='session-provider-flow-v1', contract_id=contract, data_live=False,
-        generated_at=helper.utc(), through=helper.utc(), coverage=dict(
+        generated_at=observed_at, through=observed_at, coverage=dict(
             status='observed', pending_segments=0, stale=False, reasons={}))
     result.update(changes)
     return result
