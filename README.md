@@ -4,7 +4,7 @@ TopSignal brings ProjectX accounts and Topstep trade exports into one futures tr
 
 [Run locally](#local-quick-start) · [Find the code](#where-to-find-things) · [Explore the features](#feature-tour)
 
-![TopSignal demo dashboard showing net P&L, win rate, profit factor, drawdown and the estimated balance path](docs/screenshots/metrics.png)
+![TopSignal demo dashboard showing net P&L, win rate, profit factor, drawdown and the estimated balance path](docs/screenshots/metrics-2026-11-18.png)
 
 *Captured November 18, 2026. The account screens use local demo data. The TopBot chart and order book show MNQ market data from peteamdpc.*
 
@@ -55,7 +55,7 @@ For account states, dashboard controls and examples of how the app syncs trades,
 
 In **Accounts**, refresh ProjectX discovery, compare balances and last trade times, and include hidden or missing accounts when looking for older activity. Set a main account, give an account a local display name, or switch the active account used across the workspace. For manually imported trades, create a separate Live CSV account from the Dashboard with a name and opening balance. [Account management](docs/account-workspace.md#accounts)
 
-![Trading Accounts table showing four demo accounts, their balances and status, and the designated main account](docs/screenshots/accounts.png)
+![Trading Accounts table showing four demo accounts, their balances and status, and the designated main account](docs/screenshots/accounts-2026-11-18.png)
 
 ### Read account performance
 
@@ -65,39 +65,39 @@ On the **Dashboard**, choose a date range to compare net profit and loss (P&L), 
 
 Select a day on the Dashboard’s P&L calendar to filter the recent trade feed to that futures session.
 
-![July P&L calendar with daily results, weekly totals and July 24 selected](docs/screenshots/pnl-calendar.png)
+![July P&L calendar with daily results, weekly totals and July 24 selected](docs/screenshots/pnl-calendar-2026-11-18.png)
 
 Follow the **Estimated Balance Path** to see how daily gains and losses accumulated across the selected range.
 
-![Estimated Balance Path reconstructed from the demo account’s daily net P&L](docs/screenshots/daily-account-bal.png)
+![Estimated Balance Path reconstructed from the demo account’s daily net P&L](docs/screenshots/daily-account-bal-2026-11-18.png)
 
 With a day selected, the **Trade Events** table shows the entries, exits, direction, size and P&L behind that day’s result.
 
-![Trade Events filtered to July 24, showing one losing MES trade and one winning MNQ trade](docs/screenshots/recent-trade-events.png)
+![Trade Events filtered to July 24, showing one losing MES trade and one winning MNQ trade](docs/screenshots/recent-trade-events-2026-11-18.png)
 
 ### Import trades and inspect executions
 
 On the Dashboard, preview a Topstep CSV or XLSX export for a Live CSV account, check gross P&L, fees, commissions and duplicates, then confirm to add the new trades. In **Trades**, filter by date and symbol, sync a ProjectX account’s selected window, or open a trade to review its recorded path where coverage is available. [Topstep import rules](docs/topstep-live-trade-imports.md) · [Trade-review workflow](docs/trade-review-workflow.md)
 
-![Trades Desk showing date and symbol filters, performance metrics and the execution feed](docs/screenshots/trades.png)
+![Trades Desk showing date and symbol filters, performance metrics and the execution feed](docs/screenshots/trades-2026-11-18.png)
 
 ### Track expenses and payouts
 
 Use **Expenses** to log evaluation fees, resets, data costs and refunds, and to record payouts separately. Compare payouts minus spend across time periods, or use the combine spend tracker to reconcile inferred evaluation purchases with logged expenses. [Expenses and payouts walkthrough](docs/account-workspace.md#expenses-and-payouts)
 
-![Expenses and Payouts showing recorded spend, payouts, net cash flow and monthly totals](docs/screenshots/expenses.png)
+![Expenses and Payouts showing recorded spend, payouts, net cash flow and monthly totals](docs/screenshots/expenses-2026-11-18.png)
 
 ### Set the workspace theme and zoom
 
 In **Appearance**, preview a palette and adjust the scale of the whole workspace. Preferences persist in this browser and apply across screens. [Appearance settings](docs/account-workspace.md#appearance)
 
-![Appearance page with the app zoom control and theme swatches, with Midnight selected](docs/screenshots/themes.png)
+![Appearance page with the app zoom control and theme swatches, with Midnight selected](docs/screenshots/themes-2026-11-18.png)
 
 ### Run and monitor TopBot
 
 In **Bot**, follow the MNQ chart, order book, liquidity heatmap and strategy decisions for the selected account. By default, TopBot’s `dom_contrarian_v1` preset looks for a 10% imbalance in resting bids and asks sustained for 30 seconds, then trades against the heavier side if risk checks pass. On an eligible practice account, you can start the bot, select fixed or trailing exits, or choose **Stop new entries** to leave protection active on an open position. [Practice strategy](docs/topbot-contrarian.md) · [Exit settings](docs/topbot-fixed-session-exits.md)
 
-![TopBot’s five-minute MNQ candlestick and volume chart beside the order book of resting bids and asks](docs/screenshots/bot.png)
+![TopBot’s five-minute MNQ candlestick and volume chart beside the order book of resting bids and asks](docs/screenshots/bot-2026-11-18.png)
 
 The **Logs** view shows TopBot diagnostics, host restarts and market-feed interruptions. Filter events by severity or search for a message when investigating a gap in activity. [Bot diagnostics](docs/bot-diagnostics.md) · [Production logs](docs/ssh-production-logs.md)
 

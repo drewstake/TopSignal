@@ -21,19 +21,19 @@ It shows:
 
 Dashboard overview:
 
-![Demo dashboard with headline performance metrics, estimated balance path and trading snapshot](screenshots/metrics.png)
+![Demo dashboard with headline performance metrics, estimated balance path and trading snapshot](screenshots/metrics-2026-11-18.png)
 
 Calendar drill-down:
 
-![July P&L calendar with July 24 selected and weekly totals](screenshots/pnl-calendar.png)
+![July P&L calendar with July 24 selected and weekly totals](screenshots/pnl-calendar-2026-11-18.png)
 
 Balance curve derived from the selected trading range:
 
-![Estimated Balance Path for the demo account](screenshots/daily-account-bal.png)
+![Estimated Balance Path for the demo account](screenshots/daily-account-bal-2026-11-18.png)
 
 Executions for the selected calendar day:
 
-![Two demo executions for July 24 with entry and exit prices and net P&L](screenshots/recent-trade-events.png)
+![Two demo executions for July 24 with entry and exit prices and net P&L](screenshots/recent-trade-events-2026-11-18.png)
 
 Important dashboard behaviors:
 
@@ -70,7 +70,7 @@ A user can:
 
 Accounts page:
 
-![Accounts management page](screenshots/accounts.png)
+![Accounts management page](screenshots/accounts-2026-11-18.png)
 
 TopSignal tracks four account states:
 
@@ -98,7 +98,7 @@ The Trades page is the execution-review surface.
 
 Trades page:
 
-![Trade review filters, summary cards, and execution feed](screenshots/trades.png)
+![Trade review filters, summary cards, and execution feed](screenshots/trades-2026-11-18.png)
 
 A user can:
 
@@ -118,7 +118,7 @@ The Expenses page tracks paid account costs, operating costs, and recorded payou
 
 Expenses and payouts page:
 
-![Expenses and Payouts with spending totals, payouts, monthly cash flow and net by period](screenshots/expenses.png)
+![Expenses and Payouts with spending totals, payouts, monthly cash flow and net by period](screenshots/expenses-2026-11-18.png)
 
 A user can:
 
@@ -145,7 +145,7 @@ This combine tracker is implemented on the frontend and is not a standalone back
 
 The practice workspace combines the strategy panel, chart, order book and trade activity. See the [current strategy](topbot-contrarian.md), [fixed exit settings](topbot-fixed-session-exits.md) and [imbalance study](topbot-imbalance-study.md).
 
-![TopBot’s five-minute MNQ chart, traded volume and order-book ladder](screenshots/bot.png)
+![TopBot’s five-minute MNQ chart, traded volume and order-book ladder](screenshots/bot-2026-11-18.png)
 
 ## Appearance
 
@@ -153,7 +153,7 @@ The Appearance page contains app zoom and theme preferences. Zoom defaults to 80
 
 Appearance page:
 
-![App zoom controls and theme palette gallery with Midnight selected](screenshots/themes.png)
+![App zoom controls and theme palette gallery with Midnight selected](screenshots/themes-2026-11-18.png)
 
 A user can:
 
