@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as api from "../../lib/api";
 import { BotSignalChart } from "./BotSignalChart";
@@ -42,8 +42,9 @@ it("does not open a connection when disabled", async () => {
 it("shares the resolved market and clears it when market data is disabled", async () => {
   const onMarketResolved = vi.fn();
   const view = render(<ProjectXSignalChart enabled onMarketResolved={onMarketResolved} />);
-  await screen.findByText("Connected market chart");
-  expect(onMarketResolved).toHaveBeenLastCalledWith(expect.objectContaining({ contract_id: contract.id }));
+  await waitFor(() => expect(onMarketResolved).toHaveBeenLastCalledWith(
+    expect.objectContaining({ contract_id: contract.id }),
+  ));
   view.rerender(<ProjectXSignalChart enabled={false} onMarketResolved={onMarketResolved} />);
   expect(onMarketResolved).toHaveBeenLastCalledWith(null);
 });
