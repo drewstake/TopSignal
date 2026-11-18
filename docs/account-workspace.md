@@ -1,6 +1,6 @@
 # Account workspace walkthrough
 
-These screenshots show earlier versions of the workspace. Follow the [route map](../README.md#frontend-routes) to find each screen in the current checkout.
+The November 18, 2026 screenshots show the local demo workspace and TopBot’s MNQ market view on peteamdpc. Find the code for each screen in the [route map](../README.md#frontend-routes).
 
 ## Dashboard
 
@@ -21,19 +21,19 @@ It shows:
 
 Dashboard overview:
 
-![Dashboard performance, edge, risk, and sustainability panels](screenshots/metrics.png)
+![Demo dashboard with headline performance metrics, estimated balance path and trading snapshot](screenshots/metrics.png)
 
 Calendar drill-down:
 
-![Trading-day PnL calendar](screenshots/pnl-calendar.png)
+![July P&L calendar with July 24 selected and weekly totals](screenshots/pnl-calendar.png)
 
 Balance curve derived from the selected trading range:
 
-![Daily account balance curve](screenshots/daily-account-bal.png)
+![Estimated Balance Path for the demo account](screenshots/daily-account-bal.png)
 
-Recent execution review feed:
+Executions for the selected calendar day:
 
-![Recent trade events table](screenshots/recent-trade-events.png)
+![Two demo executions for July 24 with entry and exit prices and net P&L](screenshots/recent-trade-events.png)
 
 Important dashboard behaviors:
 
@@ -118,7 +118,7 @@ The Expenses page tracks paid account costs, operating costs, and recorded payou
 
 Expenses and payouts page:
 
-![Expenses, combine spend tracker, and payout logging page](screenshots/expenses.png)
+![Expenses and Payouts with spending totals, payouts, monthly cash flow and net by period](screenshots/expenses.png)
 
 A user can:
 
@@ -145,7 +145,7 @@ This combine tracker is implemented on the frontend and is not a standalone back
 
 The practice workspace combines the strategy panel, chart, order book and trade activity. See the [current strategy](topbot-contrarian.md), [fixed exit settings](topbot-fixed-session-exits.md) and [imbalance study](topbot-imbalance-study.md).
 
-![Earlier Bot workspace with signal chart and activity panels](screenshots/bot.png)
+![TopBot’s five-minute MNQ chart, traded volume and order-book ladder](screenshots/bot.png)
 
 ## Appearance
 
@@ -153,7 +153,7 @@ The Appearance page contains app zoom and theme preferences. Zoom defaults to 80
 
 Appearance page:
 
-![Theme palette gallery and live preview](screenshots/themes.png)
+![App zoom controls and theme palette gallery with Midnight selected](screenshots/themes.png)
 
 A user can:
 
