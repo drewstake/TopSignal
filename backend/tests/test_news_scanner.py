@@ -361,3 +361,42 @@ def test_sec_followup_uses_same_identified_access_and_cooldown(scanner, monkeypa
     assert w.sec_slot() > 590
     assert w.lookup_article(url) == ("", None)
     assert calls == [w.cfg.sec_user_agent]
+
+
+def test_issuer_response_and_site_correction_attach_to_original_newsletter(scanner):
+    w, _ = scanner
+    newsletter, website, issuer = list(sources(["AMD"]))[:3]
+    with w.engine.begin() as c:
+        original = store.headline(
+            c, newsletter, Item("n", TITLE, NEWS_URL, NEWS, ("AMD",)), NEWS + 2
+        )
+        store.headline(c, website, Item("s", TITLE, WEB_URL, WEB, ("AMD",)), WEB + 3)
+        store.headline(
+            c,
+            website,
+            Item("s", TITLE + " (corrected)", WEB_URL, WEB, ("AMD",)),
+            WEB + 60,
+        )
+        store.headline(
+            c,
+            issuer,
+            Item(
+                "r",
+                "AMD responds to Hunterbrook",
+                "https://ir.amd.com/r",
+                WEB + 120,
+                ("AMD",),
+            ),
+            WEB + 122,
+        )
+        story = next(e for e in store.feed(c) if e["id"] == original)
+        assert [u["relation"] for u in story["updates"]] == [
+            "Related coverage",
+            "Publisher correction",
+            "Company response",
+        ]
+        assert (story["title"], story["published"], story["received"]) == (
+            TITLE,
+            NEWS,
+            NEWS + 2,
+        )

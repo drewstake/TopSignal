@@ -145,6 +145,19 @@ def key(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def coverage_root(c, event_id):
+    # Related copies and corrections always link directly to the first report.
+    parent = c.scalar(
+        select(links.c.parent)
+        .where(
+            links.c.child == event_id,
+            links.c.relation.in_(["Related coverage", "Publisher correction"]),
+        )
+        .limit(1)
+    )
+    return parent or event_id
+
+
 def ticker_filter(tickers):
     return or_(*(events.c.tickers.like(f"% {t} %") for t in tickers))
 
@@ -227,9 +240,9 @@ def headline(c, source, item, received, baseline=False):
     for k in ids:
         c.execute(insert(aliases).values(key=k, event_id=eid))
     if copy:
-        add_link(c, copy.id, eid, "Related coverage")
+        add_link(c, coverage_root(c, copy.id), eid, "Related coverage")
     if matched:
-        add_link(c, matched.id, eid, "Publisher correction")
+        add_link(c, coverage_root(c, matched.id), eid, "Publisher correction")
     if urgent:
         enqueue(c, eid, "delivery")
         enqueue(c, eid, "summary")
@@ -257,7 +270,7 @@ def headline(c, source, item, received, baseline=False):
                 None,
             )
             if original:
-                add_link(c, original.id, eid, "Company response")
+                add_link(c, coverage_root(c, original.id), eid, "Company response")
     return eid
 
 
