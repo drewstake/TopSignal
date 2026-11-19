@@ -144,8 +144,29 @@ def test_conflicting_duplicate_and_partial_fills_remain_ambiguous(monkeypatch):
                 side="BUY", size=1, price=20000, fees=.36, timestamp=NOW)
     client = SimpleNamespace(fetch_trade_history=lambda **kw: [fill, {**fill, "price": 20001}])
     plan = runner_plan(NOW)
-    with pytest.raises(ValueError, match="exact single-contract"): runner.initialize(trade, plan, client, NOW)
+    with pytest.raises(ValueError, match="verified entry fills"): runner.initialize(trade, plan, client, NOW)
     assert plan["runner"]["stats_status"] == "ambiguous_entry_fills"
+
+
+@pytest.mark.parametrize("side", ["BUY", "SELL"])
+def test_two_contract_split_fills_and_fees(side):
+    sign = 1 if side == "BUY" else -1
+    opposite = "SELL" if sign == 1 else "BUY"
+    trade = SimpleNamespace(id=1, user_id="owner", account_id=1, contract_id=CONTRACT, provider_order_id="entry",
+                            created_at=NOW, side=side, size=2, status="submitted", raw_request={})
+    def fill(identity, order, direction, price, seconds):
+        return dict(source_trade_id=identity, order_id=order, account_id=1, contract_id=CONTRACT, voided=False,
+                    side=direction, size=1, price=price, fees=.36, timestamp=NOW+timedelta(seconds=seconds))
+    fills = [fill("a", "entry", side, 20000, 0), fill("b", "entry", side, 20000.25, .1),
+             fill("c", "exit", opposite, 20000+sign*25, 2), fill("d", "exit", opposite, 20000.25+sign*25, 3)]
+    client = SimpleNamespace(fetch_trade_history=lambda **kw: fills+deepcopy(fills))
+    plan = runner_plan(NOW, exit_mode="fixed")
+    assert finalize(trade, plan, client, NOW+timedelta(seconds=4))
+    runner = plan["runner"]
+    assert runner["quantity"] == 2 and runner["entry_price"] == 20000.125
+    assert runner["gross_pnl_usd"] == runner["initial_risk_usd"] == 100
+    assert runner["fees_usd"] == pytest.approx(2.44) and runner["net_pnl_usd"] == pytest.approx(97.56)
+    assert runner["entry_fill_ids"] == ["a", "b"] and runner["exit_fill_ids"] == ["c", "d"]
 
 
 def test_restart_dedup_and_append_only_result_corrections_account_isolation(tmp_path, monkeypatch):

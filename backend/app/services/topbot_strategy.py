@@ -32,10 +32,22 @@ def normalize_params(params=None):
         raise ValueError("Invalid imbalance_direction")
     if direction == "following":
         result["imbalance_direction"] = direction
+    contracts = (params or {}).get("entry_contracts", 1)
+    if type(contracts) is not int or contracts not in (1, 2):
+        raise ValueError("TopBot supports one or two MNQ contracts")
+    if contracts == 2:
+        result["entry_contracts"] = contracts
+    limit = (params or {}).get("daily_pnl_limit", 500)
+    if type(limit) not in (float, int) or not math.isfinite(limit) or limit <= 0:
+        raise ValueError("Invalid daily P&L limit")
+    if limit != 500:
+        result["daily_pnl_limit"] = limit
     mode = (params or {}).get("exit_mode", "trailing")
     if mode not in ("trailing", "fixed"):
         raise ValueError("Invalid exit_mode; expected trailing or fixed")
     result["exit_mode"] = mode
+    if contracts == 2 and mode != "fixed":
+        raise ValueError("Two-contract entries require fixed brackets")
     session = (params or {}).get("fixed_bracket_session")
     if session is not None:
         if not isinstance(session, str) or date.fromisoformat(session).isoformat() != session:
@@ -116,9 +128,11 @@ def evaluate(candles, *, strategy_params=None, owner=None, contract_id=None, obs
         return SignalResult("HOLD", "Waiting for persistent depth imbalance", None, None, payload)
     price = observation["bid"] if action == "SELL" else observation["ask"]
     at = datetime.fromisoformat(observation["episode_at"])
+    contracts = params.get("entry_contracts", 1)
     payload.update(live_routing_allowed=True, signal_category="entry", protective_stop_ticks=100,
                    stop_loss=price + (25 if action == "SELL" else -25),
-                   current_position_qty=0, target_position_qty=-1 if action == "SELL" else 1, effective_order_size=1)
+                   current_position_qty=0, target_position_qty=-contracts if action == "SELL" else contracts,
+                   effective_order_size=contracts)
     if payload["exit_mode"] == "fixed":
         payload.update(take_profit_ticks=100, take_profit=price + (-25 if action == "SELL" else 25),
                        fixed_bracket_session=params["fixed_bracket_session"])

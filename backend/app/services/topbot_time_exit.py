@@ -54,7 +54,7 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
         return True
     # Match the evaluator's config/account/audit lock order. A stopped config
     # still owns its outstanding exit; it need not be re-armed to reduce risk.
-    service._require_bot_config(db, user_id=candidate.user_id,
+    config = service._require_bot_config(db, user_id=candidate.user_id,
                                 bot_config_id=candidate.bot_config_id, lock_for_update=True)
     account = service._require_owned_account(
         db, user_id=candidate.user_id, account_id=candidate.account_id,
@@ -92,7 +92,8 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
     if is_runner and live_execution_environment_enabled() and worker_lease_token is not None:
         from . import topbot_profit_guard
         try:
-            guard = topbot_profit_guard.poll(entry.user_id, entry.account_id, entry.contract_id, client)
+            guard = topbot_profit_guard.poll(entry.user_id, entry.account_id, entry.contract_id, client,
+                                             (config.strategy_params or {}).get("daily_pnl_limit", topbot_profit_guard.TARGET))
             if guard["trigger"]:
                 plan["profit_stop_reason"] = guard["trigger"]
                 plan["runner_exit_reason"] = guard["trigger"]
@@ -218,6 +219,8 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
             from .topbot_runner import initialize
             initialize(entry, plan, client, now)
         if quantity:
+            from .topbot_runner import working_size
+            two_contracts = is_runner and float(entry.size) == 2
             plan["position_observed_at"] = now.isoformat()
             orders = client.search_open_orders(account_id=entry.account_id)
             opposite = 1 if entry.side == "BUY" else 0
@@ -226,9 +229,12 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
                      and row.get("order_type") == 4 and row.get("side") == opposite
                      and row.get("status") == 1 and row.get("parent_order_id") == str(entry.provider_order_id)
                      and isinstance(row.get("size"), (float, int))
-                     and math.isfinite(row["size"]) and row["size"] == abs(quantity)
+                     and math.isfinite(row["size"])
+                     and (working_size(row) > 0 if two_contracts else row["size"] == abs(quantity))
                      and isinstance((row.get("raw_payload") or {}).get("stopPrice"), (float, int))
                      and math.isfinite(row["raw_payload"]["stopPrice"]) and row["raw_payload"]["stopPrice"] > 0]
+            if two_contracts and sum(working_size(row) for row in stops) != abs(quantity):
+                stops = []
             if stops:
                 plan["protection_verified_at"] = now.isoformat()
             elif not plan.get("missing_stop_alerted_at"):
@@ -245,7 +251,8 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
                 if is_runner:
                     from .topbot_runner import manage
                     flatten_runner = manage(db, entry=entry, plan=plan, client=client, stops=stops,
-                                            worker_lease_token=worker_lease_token, now=now, orders=orders)
+                                            worker_lease_token=worker_lease_token, now=now, orders=orders,
+                                            remaining=abs(quantity))
                 if not flatten_runner:
                     save()
                     return False

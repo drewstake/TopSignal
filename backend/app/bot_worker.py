@@ -746,7 +746,8 @@ class BotWorkerRuntime:
             if profit_guard_live and _background_live_execution_enabled():
                 from .services import topbot_profit_guard
                 try:
-                    guard = topbot_profit_guard.poll(user_id, account_id, archive_contract, client)
+                    guard = topbot_profit_guard.poll(user_id, account_id, archive_contract, client,
+                                                     dom_params.get("daily_pnl_limit", topbot_profit_guard.TARGET))
                 except Exception:
                     try:
                         topbot_profit_guard.mark_unavailable(user_id, account_id)

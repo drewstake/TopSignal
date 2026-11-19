@@ -161,7 +161,10 @@ def dom_entry(db_session, monkeypatch, open_exchange_session, request):
     elif getattr(request, "param", None) == "persistent_fixed":
         config.strategy_params = {**config.strategy_params, "exit_mode": "fixed"}
     elif policy in ("following_bid", "following_ask"):
-        config.strategy_params = {**config.strategy_params, "imbalance_direction": "following", "exit_mode": "fixed"}
+        config.strategy_params = {**config.strategy_params, "imbalance_direction": "following", "exit_mode": "fixed",
+                                  "entry_contracts": 2, "daily_pnl_limit": 800}
+        config.order_size = config.max_contracts = config.max_open_position = 2
+        config.max_daily_loss = 800
     db_session.commit()
     client = RecordingClient()
     result = bot_service.start_bot_run(db_session,user_id=USER_A,bot_config_id=config.id,client=client,

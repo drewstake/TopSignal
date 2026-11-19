@@ -74,9 +74,32 @@ def test_following_entry_rechecks_direction_and_routes_fixed_brackets(dom_entry,
     assert result.order_attempt.side == result.decision.action == expected
     call, = client.place_order_calls
     assert call["side"] == (0 if expected == "BUY" else 1)
+    assert call["size"] == 2
+    saved = result.order_attempt.raw_request["strategySnapshot"]
+    assert saved["initial_risk_usd"] == 100 and saved["risk_limits"]["daily_profit_target"] == 800
     assert call["stop_loss_bracket"] == {"ticks": 100, "type": 4}
     assert call["take_profit_bracket"] == {"ticks": 100, "type": 1}
     assert result.decision.raw_payload["depth_recheck"]["failed_checks"] == []
+
+
+@pytest.mark.parametrize("side", ["BUY", "SELL"])
+def test_two_contract_bracket_requires_full_remaining_protection(side):
+    direction = 1 if side == "BUY" else -1
+    entry = SimpleNamespace(side=side, account_id=9001, contract_id=CONTRACT_ID, provider_order_id="parent")
+    plan = {"runner": {"entry_price": 20000.125, "entry_fill_prices": [20000, 20000.25], "quantity": 2}}
+    def child(kind, size, price, ident):
+        return dict(account_id=9001, contract_id=CONTRACT_ID, parent_order_id="parent", order_id=ident,
+                    order_type=kind, status=1, side=1 if direction == 1 else 0, size=size,
+                    raw_payload={"limitPrice" if kind == 1 else "stopPrice": price})
+    stops = [child(4, 1, 20000-direction*25, "s1"), child(4, 1, 20000.25-direction*25, "s2")]
+    targets = [child(1, 2, 20000+direction*25, "t1")]
+    assert runner._verify_two_contract_bracket(entry, plan, stops, targets, 2)
+    assert not runner._verify_two_contract_bracket(entry, plan, stops[:1], targets, 2)
+    targets[0]["raw_payload"]["fillVolume"] = 1
+    assert not runner._verify_two_contract_bracket(entry, plan, stops, targets, 2)
+    assert runner._verify_two_contract_bracket(entry, plan, stops[:1], targets, 1)
+    targets[0]["parent_order_id"] = "unrelated"
+    assert not runner._verify_two_contract_bracket(entry, plan, stops[:1], targets, 1)
 
 
 @pytest.mark.parametrize("side", ["BUY", "SELL"])

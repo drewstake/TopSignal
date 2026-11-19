@@ -268,3 +268,13 @@ def test_monitor_failure_preserves_existing_stop_management(db_session, dom_entr
     assert managed == [entry.id]
     assert not client.close_position_calls
     assert guard.read(USER_A, 9001)["error"]
+
+
+@pytest.mark.parametrize("trigger_pnl,code", [(800, "daily_profit_target_reached"), (-800, "daily_loss_limit_reached")])
+def test_account_limit_eight_hundred_preserves_session_latch(trigger_pnl, code):
+    for offset, pnl in enumerate((500, -500, 799, -799, trigger_pnl)):
+        observed = guard.observe(USER_A, 9001, pnl, limit=800, now=NOW + timedelta(seconds=offset))
+        assert observed["trigger"] == (code if pnl == trigger_pnl else None)
+    assert "800" in guard.risk_block(observed).message
+    assert guard.observe(USER_A, 9001, 0, limit=800, now=NOW + timedelta(seconds=10))["trigger"] == code
+    assert guard.observe(USER_A, 9002, 500, now=NOW)["trigger"] == "daily_profit_target_reached"

@@ -104,7 +104,14 @@ def prepare_topbot(
     if existing is not None and selected(existing.strategy_params):
         values["strategy_params"]["practice_auto_resume"] = existing.strategy_params.get("practice_auto_resume") is True
         values["strategy_params"]["daily_entry_limit_enabled"] = existing.strategy_params.get("daily_entry_limit_enabled") is not False
-        values["strategy_params"]["exit_mode"] = normalize_params(existing.strategy_params)["exit_mode"]
+        saved = normalize_params(existing.strategy_params)
+        values["strategy_params"]["exit_mode"] = saved["exit_mode"]
+        if "entry_contracts" in saved:
+            contracts = saved["entry_contracts"]
+            values["strategy_params"]["entry_contracts"] = contracts
+            values.update(order_size=contracts, max_contracts=contracts, max_open_position=contracts)
+        if "daily_pnl_limit" in saved:
+            values["max_daily_loss"] = values["strategy_params"]["daily_pnl_limit"] = saved["daily_pnl_limit"]
         if existing.strategy_params.get("imbalance_direction") == "following":
             values["strategy_params"]["imbalance_direction"] = "following"
     values.update(

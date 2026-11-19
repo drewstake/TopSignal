@@ -14,16 +14,16 @@ PROTOCOL = {
     "schema": "dom-exit-study-v1", "registered_on": "2026-11-04",
     "ratios": [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3],
     "stop_points": 25, "trailing_activation": 25, "trailing_distance": 25,
-    "tick_size": .25, "point_value": 2, "quantity": 1,
+    "tick_size": .25, "point_value": 2, "supported_quantities": [1, 2],
     "latency_ms": 250, "stop_slippage_ticks": 1, "limit_trade_through_ticks": 1,
     "trailing_management_seconds": 5,
     "round_turn_cost_usd": 1.72, "max_quote_gap_seconds": 2,
     "max_horizon_minutes": 120, "milestone_entries": 100,
-    "cohort": "All ten resolved outcomes on the same entry; MNQ one-contract 25-point initial risk",
+    "cohort": "All ten resolved outcomes on the same entry; MNQ 25-point initial risk per contract",
     "cutoff": "Earlier of saved session flatten deadline and entry plus 120 minutes; unresolved is censored",
-    "fill_model": "Observed executable BBO, one tick through limit, adverse tick on stop after 250ms; displayed size >= quantity",
+    "fill_model": "Observed executable BBO, one tick through limit, adverse tick on stop after 250ms; full displayed exit quantity required",
     "clock_assumption": "Provider fill and local receipt clocks assumed aligned; offset is unverified",
-    "cost_model": "Fixed $1.72 round turn; actual entry fill already includes entry slippage; no second entry-slippage charge",
+    "cost_model": "Fixed $1.72 round turn per contract; actual entry fill already includes entry slippage",
     "validation": "First 100 prospectively registered entries exploratory; subsequent entries held out, no automatic promotion",
     "limitations": ["Exit-only, not a complete strategy trading schedule: holding periods change later entry eligibility.",
         "Daily account risk/profit rules are captured for actual trades, not counterfactual portfolio rules.",
@@ -48,7 +48,8 @@ def entry_snapshot(config, *, account, contract, side, quantity, plan, now=None)
               ("max_daily_loss", "max_contracts", "max_trades_per_day", "max_open_position", "cooldown_seconds",
                "trading_start_time", "trading_end_time", "max_data_staleness_seconds")}
     limits["allowed_contracts"] = deepcopy(getattr(config, "allowed_contracts", None))
-    limits.update(daily_profit_target=TARGET, daily_entry_limit_enabled=config.strategy_params.get("daily_entry_limit_enabled", True))
+    limits.update(daily_profit_target=config.strategy_params.get("daily_pnl_limit", TARGET),
+                  daily_entry_limit_enabled=config.strategy_params.get("daily_entry_limit_enabled", True))
     parameters = {"rules": rules, "limits": limits, "quantity": float(quantity), "contract": contract}
     params_hash = sha256(canonical(parameters)).hexdigest()
     return {"schema": "strategy-entry-v1", "experiment_id": EXPERIMENT_ID,
@@ -128,7 +129,9 @@ def simulate(entry, quotes, *, gap_reason=None):
         v.update(status="pending", stop=price-sign*25, active_at=start+latency, mfe=0.,
                  next_management_at=start+timedelta(seconds=PROTOCOL["trailing_management_seconds"]))
     reason = gap_reason
-    if spec.get("quantity") != 1 or spec.get("initial_risk_points") != 25 or not str(spec.get("contract_id", "")).startswith("CON.F.US.MNQ."):
+    quantity = spec.get("quantity")
+    if (quantity not in PROTOCOL["supported_quantities"] or spec.get("initial_risk_points") != 25
+            or risk != 50*quantity or not str(spec.get("contract_id", "")).startswith("CON.F.US.MNQ.")):
         reason = "unsupported_contract_quantity_or_risk"
     previous = start
     observed = 0
@@ -160,20 +163,21 @@ def simulate(entry, quotes, *, gap_reason=None):
                 v["trigger_at"] = max(start, at)+latency
             fill, why = None, None
             if "trigger_at" in v:
-                if at >= v["trigger_at"] and size >= 1:
+                if at >= v["trigger_at"] and size >= quantity:
                     fill = mark-sign*tick*PROTOCOL["stop_slippage_ticks"]
                     fill = (math.floor(fill/tick) if sign == 1 else math.ceil(fill/tick))*tick
                     why = "trailing_stop" if v["key"] == "trailing" and sign*(v["stop"]-price) >= 0 else "initial_stop"
             elif at >= v["active_at"] and v["ratio"] is not None:
                 target = price+sign*v["target_points"]
                 target = (math.ceil(target/tick) if sign == 1 else math.floor(target/tick))*tick
-                if sign*(mark-target) >= tick*PROTOCOL["limit_trade_through_ticks"] and size >= 1:
+                if sign*(mark-target) >= tick*PROTOCOL["limit_trade_through_ticks"] and size >= quantity:
                     fill, why = target, "take_profit"
             if fill is not None:
-                gross = sign*(fill-price)*2
-                net = gross-PROTOCOL["round_turn_cost_usd"]
+                gross = sign*(fill-price)*2*quantity
+                costs = PROTOCOL["round_turn_cost_usd"]*quantity
+                net = gross-costs
                 v.update(status="resolved", exit_at=at.isoformat(), exit_price=fill, exit_reason=why,
-                    gross_pnl_usd=gross, costs_usd=PROTOCOL["round_turn_cost_usd"], net_pnl_usd=net, realized_r=net/risk)
+                    gross_pnl_usd=gross, costs_usd=costs, net_pnl_usd=net, realized_r=net/risk)
             elif v["key"] == "trailing" and "trigger_at" not in v:
                 v["mfe"] = max(v["mfe"], points)
                 if at >= v["next_management_at"] and "pending_stop" not in v:

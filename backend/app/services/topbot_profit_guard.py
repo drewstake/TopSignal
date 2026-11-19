@@ -15,8 +15,8 @@ from .trading_day import as_utc, trading_day_key
 TARGET = 500.0
 LOSS_LIMIT = 500.0
 MESSAGES = {
-    "daily_profit_target_reached": "Daily P&L reached +$500. Close the TopBot position and pause entries until the next trading session.",
-    "daily_loss_limit_reached": "Daily P&L reached -$500. Close the TopBot position and pause entries until the next trading session.",
+    "daily_profit_target_reached": "Daily P&L reached +${target:g}. Close the TopBot position and pause entries until the next trading session.",
+    "daily_loss_limit_reached": "Daily P&L reached -${loss_limit:g}. Close the TopBot position and pause entries until the next trading session.",
 }
 
 
@@ -29,15 +29,17 @@ def _empty(now):
                 armed=False, trigger=None, triggered_at=None, observed_at=None, pnl=None, peak_pnl=None, error=None)
 
 
-def _current_policy(state):
+def _current_policy(state, limit=TARGET):
     """Retire saved break-even latches without deleting historical audit events."""
-    state.update(target=TARGET, loss_limit=LOSS_LIMIT, armed=False, arm_at=None, floor=None)
+    if type(limit) not in (int, float) or not math.isfinite(limit) or limit <= 0:
+        raise ValueError("Invalid daily P&L limit")
+    state.update(target=limit, loss_limit=limit, armed=False, arm_at=None, floor=None)
     if state.get("trigger") == "daily_profit_breakeven_stop":
         state.update(trigger=None, triggered_at=None)
     return state
 
 
-def read(owner, account_id, *, now=None):
+def read(owner, account_id, *, limit=TARGET, now=None):
     now = as_utc(now or datetime.now(timezone.utc))
     with connection(owner) as db:
         _table(db)
@@ -45,10 +47,10 @@ def read(owner, account_id, *, now=None):
     state = json.loads(row[0]) if row else _empty(now)
     if state["trading_day"] > trading_day_key(now):
         raise ValueError("Profit guard cannot move backwards to an older session")
-    return _current_policy(state) if state["trading_day"] == trading_day_key(now) else _empty(now)
+    return _current_policy(state if state["trading_day"] == trading_day_key(now) else _empty(now), limit)
 
 
-def observe(owner, account_id, pnl, *, now=None):
+def observe(owner, account_id, pnl, *, limit=TARGET, now=None):
     if isinstance(pnl, bool) or not isinstance(pnl, (float, int)) or not math.isfinite(pnl):
         raise ValueError("Daily profit protection requires finite complete account P&L")
     now = as_utc(now or datetime.now(timezone.utc))
@@ -62,14 +64,14 @@ def observe(owner, account_id, pnl, *, now=None):
             raise ValueError("Out-of-order daily profit observation")
         if state["trading_day"] != day:
             state = _empty(now)
-        state = _current_policy(state)
+        state = _current_policy(state, limit)
         previous_trigger = state["trigger"]
         state.update(pnl=float(pnl), observed_at=now.isoformat(), error=None,
                      peak_pnl=max(state["peak_pnl"] if state["peak_pnl"] is not None else pnl, pnl))
         if not state["trigger"]:
-            if pnl >= TARGET:
+            if pnl >= state["target"]:
                 state["trigger"] = "daily_profit_target_reached"
-            elif pnl <= -LOSS_LIMIT:
+            elif pnl <= -state["loss_limit"]:
                 state["trigger"] = "daily_loss_limit_reached"
             if state["trigger"]:
                 state["triggered_at"] = now.isoformat()
@@ -86,7 +88,7 @@ def observe(owner, account_id, pnl, *, now=None):
 def risk_block(state):
     from .bot_risk import RiskBlock
     code = state.get("trigger")
-    return RiskBlock(code=code, message=MESSAGES[code]) if code in MESSAGES else None
+    return RiskBlock(code=code, message=MESSAGES[code].format(**state)) if code in MESSAGES else None
 
 
 def mark_unavailable(owner, account_id, *, now=None):
@@ -96,19 +98,19 @@ def mark_unavailable(owner, account_id, *, now=None):
         _table(db)
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT state FROM daily_profit_guard WHERE account=?", (int(account_id),)).fetchone()
-        state = _current_policy(json.loads(row[0])) if row else _empty(now)
+        state = json.loads(row[0]) if row else _empty(now)
         state["error"] = "Daily P&L could not be verified. New entries are paused; existing position protection continues."
         db.execute("INSERT INTO daily_profit_guard(account,state) VALUES(?,?) ON CONFLICT(account) DO UPDATE SET state=excluded.state",
                    (int(account_id), json.dumps(state, allow_nan=False)))
 
 
-def poll(owner, account_id, contract_id, client, *, now=None):
+def poll(owner, account_id, contract_id, client, limit=TARGET, *, now=None):
     """Read complete realized P&L, then fresh positions and executable quotes."""
     from . import bot_service as service
     from .topbot_depth import feed
     injected_clock = now is not None
     now = as_utc(now or datetime.now(timezone.utc))
-    state = read(owner, account_id, now=now)
+    state = read(owner, account_id, limit=limit, now=now)
     if state["trigger"]:
         return state  # A latched close must not depend on another P&L request.
     started = monotonic()
@@ -152,11 +154,11 @@ def poll(owner, account_id, contract_id, client, *, now=None):
         if unrealized is None:
             raise ValueError("Complete account unrealized P&L is unavailable")
         total += unrealized
-    return observe(owner, account_id, total, now=checked_at)
+    return observe(owner, account_id, total, limit=limit, now=checked_at)
 
 
-def public_status(owner, account_id, *, now=None):
+def public_status(owner, account_id, *, limit=TARGET, now=None):
     try:
-        return {**read(owner, account_id, now=now), "available": True}
+        return {**read(owner, account_id, now=now, limit=limit), "available": True}
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
         return {"available": False, "message": "Daily profit protection state is unavailable; new entries are blocked."}

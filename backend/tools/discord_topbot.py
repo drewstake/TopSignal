@@ -57,7 +57,9 @@ def payload(row, *, interactive=False, snapshot=False):
         return None
     side = {'BUY': 'LONG', 'SELL': 'SHORT'}[row['side']]
     quantity = number(runner['quantity'])
-    if quantity <= 0 or quantity != number(row['size']):
+    verified_partial = (runner.get('terminal_partial_fill') is True and quantity == 1
+                        and runner.get('requested_quantity') == number(row['size']) == 2)
+    if quantity <= 0 or (quantity != number(row['size']) and not verified_partial):
         raise ValueError('Unreconciled quantity')
     closed = runner.get('stats_status') == 'complete'
     mode = ('PRACTICE' if row['provider_simulated'] is True else

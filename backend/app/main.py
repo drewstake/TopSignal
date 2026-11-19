@@ -3857,7 +3857,7 @@ def get_trading_bot_activity(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     from .services.topbot_strategy import selected as dom_selected
     from .services.topbot_profit_guard import public_status
-    profit_guard = (public_status(user_id, int(payload["config"].account_id))
+    profit_guard = (public_status(user_id, int(payload["config"].account_id), limit=payload["config"].strategy_params.get("daily_pnl_limit", 500))
                     if payload["config"].strategy_type == "topbot_adaptive" and dom_selected(payload["config"].strategy_params) else None)
     return {
         "config": serialize_bot_config(payload["config"]),

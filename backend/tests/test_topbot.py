@@ -84,7 +84,8 @@ def test_account_and_user_isolation(db):
 
 def test_fixed_exit_preference_survives_stop_start_and_contract_roll_without_crossing_accounts(db):
     config = prepare_topbot(db, user_id=USER, account_id=101, dry_run=True, contract_id="CON.F.US.MNQ.U26")
-    config.strategy_params = {**config.strategy_params, "exit_mode": "fixed", "imbalance_direction": "following"}
+    config.strategy_params = {**config.strategy_params, "exit_mode": "fixed", "imbalance_direction": "following",
+                              "entry_contracts": 2, "daily_pnl_limit": 800}
     db.commit()
     updated = prepare_topbot(db, user_id=USER, account_id=101, dry_run=True, contract_id="CON.F.US.MNQ.Z26")
     db.commit()
@@ -94,8 +95,9 @@ def test_fixed_exit_preference_survives_stop_start_and_contract_roll_without_cro
     other = prepare_topbot(db, user_id=USER, account_id=102, dry_run=True, contract_id="CON.F.US.MNQ.Z26")
     assert other.strategy_params["exit_mode"] == "trailing"
     assert "imbalance_direction" not in other.strategy_params
-    assert updated.order_size == updated.max_contracts == 1
-    assert updated.max_daily_loss == 500
+    assert updated.order_size == updated.max_contracts == updated.max_open_position == 2
+    assert updated.max_daily_loss == 800
+    assert other.order_size == 1 and other.max_daily_loss == 500
 
 
 @pytest.mark.parametrize("dry_run", [True, False])

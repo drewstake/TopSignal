@@ -11526,8 +11526,9 @@ def evaluate_risk_gates(
             additional_blocks.append(RiskBlock(code="dom_signal_expired", message=f"Depth no longer qualifies; entry skipped: {details}."))
         if preflight is not None and abs(preflight.current_position_qty) > 1e-9:
             additional_blocks.append(RiskBlock(code="dom_entry_requires_flat", message="TopBot does not add to or adopt existing positions."))
-        if order_size != 1 or float(config.max_contracts) != 1:
-            additional_blocks.append(RiskBlock(code="dom_size_invalid", message="This strategy requires one MNQ contract."))
+        contracts = params.get("entry_contracts", 1)
+        if order_size != contracts or float(config.max_contracts) != contracts or float(config.order_size) != contracts:
+            additional_blocks.append(RiskBlock(code="dom_size_invalid", message="Order size must match the configured MNQ entry size and contract limit."))
     if order_attempt is not None and not position_reducing:
         protection_block = _order_attempt_protection_block(
             config=config,
@@ -11542,7 +11543,8 @@ def evaluate_risk_gates(
             and dom_selected(config.strategy_params)):
         from . import topbot_profit_guard as profit_guard
         try:
-            profit_state = profit_guard.read(user_id, int(config.account_id), now=now)
+            limit = config.strategy_params.get("daily_pnl_limit", profit_guard.TARGET)
+            profit_state = profit_guard.read(user_id, int(config.account_id), limit=limit, now=now)
             if authoritative_entry_risk_required and not profit_state["trigger"]:
                 if (not preflight.unrealized_pnl_complete
                         or trading_day_date(preflight.observed_at) != trading_day_date(now)):
@@ -11551,10 +11553,10 @@ def evaluate_risk_gates(
                     # The common entry preflight may value an existing position
                     # at a candle close. Profit exits require current executable
                     # quotes (or the broker's current unrealized P&L) instead.
-                    profit_state = profit_guard.poll(user_id, int(config.account_id), contract_id, client)
+                    profit_state = profit_guard.poll(user_id, int(config.account_id), contract_id, client, limit)
                 else:
                     profit_state = profit_guard.observe(user_id, int(config.account_id),
-                        preflight.daily_pnl + preflight.account_unrealized_pnl, now=now)
+                        preflight.daily_pnl + preflight.account_unrealized_pnl, limit=limit, now=now)
             profit_block = profit_guard.risk_block(profit_state)
             if profit_block is not None:
                 additional_blocks.append(profit_block)

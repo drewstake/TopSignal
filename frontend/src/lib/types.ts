@@ -1094,6 +1094,7 @@ export interface BotAnalysis {
 
 export interface BotStrategyParams {
   imbalance_direction?: "contrarian" | "following";
+  daily_pnl_limit?: number;
   exit_mode?: "fixed" | "trailing";
   imbalance_threshold?: number;
   persistence_seconds?: number;
@@ -1739,7 +1740,7 @@ export interface BotLogs {
 
 export interface BotActivity {
   profit_guard?: {
-    available: boolean; trading_day?: string; target?: number; arm_at?: number | null; floor?: number | null;
+    available: boolean; trading_day?: string; target?: number; loss_limit?: number; arm_at?: number | null; floor?: number | null;
     armed?: boolean; trigger?: string | null; triggered_at?: string | null;
     observed_at?: string | null; pnl?: number | null; peak_pnl?: number | null;
     error?: string | null; message?: string;

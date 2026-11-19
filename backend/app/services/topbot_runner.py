@@ -54,22 +54,69 @@ def _trades(client, entry, now):
     return unique
 
 
+def _fill_id(row):
+    return row.get("source_trade_id") or row.get("trade_id") or row.get("id")
+
+
+def _fill_summary(rows, side, quantity, *, exit_fill=False):
+    """Aggregate identifiable executions once, including split fills at different prices."""
+    if not rows or any(r["side"] != side or r["size"] not in (1, 2)
+                       or not math.isfinite(r["price"]) or r["price"] <= 0
+                       or not math.isfinite(r["fees"]) for r in rows):
+        return None
+    if sum(r["size"] for r in rows) != quantity:
+        return None
+    ids = [_fill_id(r) for r in rows]
+    if len(rows) > 1 and (not all(ids) or len(set(map(str, ids))) != len(ids)):
+        return None
+    ordered = sorted(rows, key=lambda r: r["timestamp"])
+    summary = dict(ordered[-1] if exit_fill else ordered[0])
+    summary.update(size=quantity, price=sum(r["price"] * r["size"] for r in rows)/quantity,
+                   fees=sum(r["fees"] for r in rows), fill_ids=ids)
+    if all(r.get("commissions") is not None for r in rows):
+        summary["commissions"] = sum(r["commissions"] for r in rows)
+    else:
+        summary["commissions"] = None
+    return summary
+
+
 def initialize(entry, plan, client, now):
     runner = plan["runner"]
     if runner.get("entry_at"): return True
     fills = [r for r in _trades(client, entry, now) if str(r["order_id"]) == str(entry.provider_order_id)]
     if not fills: return False
-    if len(fills) != 1 or fills[0]["side"] != entry.side or fills[0]["size"] != 1 or float(entry.size) != 1:
+    quantity = float(entry.size)
+    if quantity == 2 and _fill_summary(fills, entry.side, 1) is not None:
+        # A first execution may be visible before the second. Only a terminal
+        # parent with verified fillVolume permits booking a smaller position.
+        raw_order = (getattr(entry, "raw_response", None) or {}).get("provider_order", {})
+        terminal_partial = getattr(entry, "status", None) == "cancelled" and raw_order.get("fillVolume") == 1
+        if not terminal_partial and hasattr(client, "search_orders"):
+            from .bot_service import _as_utc
+            history = client.search_orders(account_id=entry.account_id,
+                                          start=_as_utc(entry.created_at)-timedelta(minutes=1), end=now)
+            terminal_partial = any(str(o.get("order_id")) == str(entry.provider_order_id)
+                                   and o.get("account_id") == entry.account_id and o.get("contract_id") == entry.contract_id
+                                   and o.get("status") in (2, 3, 4) and (o.get("raw_payload") or {}).get("fillVolume") == 1
+                                   for o in history)
+        if not terminal_partial:
+            runner.update(stats_status="awaiting_remaining_entry_fill", partial_entry_price=fills[0]["price"])
+            return False
+        quantity = 1
+    fill = _fill_summary(fills, entry.side, quantity) if quantity in (1, 2) else None
+    if fill is None:
         runner["stats_status"] = "ambiguous_entry_fills"
         runner["reconciliation"] = {"entry_fill_count": len(fills), "reason": "partial_or_mismatched_entry_fills"}
-        raise ValueError("Runner requires an exact single-contract entry fill; reconcile mismatched exposure.")
-    fill = fills[0]
+        raise ValueError("Runner requires verified entry fills matching the order quantity.")
     if not math.isfinite(fill["price"]) or fill["price"] <= 0: raise ValueError("Invalid entry fill price")
     runner.update(entry_at=fill["timestamp"].isoformat(), entry_price=fill["price"], entry_fees=fill["fees"],
                   side=entry.side, mfe_points=0., mae_points=0., stats_status="open", coverage_complete=False)
     runner.update(entry_order_id=str(entry.provider_order_id), entry_fill_id=fill.get("source_trade_id", fill.get("trade_id", fill.get("id"))),
                   quantity=float(fill["size"]), contract_id=entry.contract_id, account_id=entry.account_id,
                   initial_risk_usd=float(runner.get("initial_stop_points", 25))*2*float(fill["size"]))
+    if float(entry.size) == 2:
+        runner.update(entry_fill_ids=fill["fill_ids"], entry_fill_prices=[r["price"] for r in fills],
+                      requested_quantity=2, terminal_partial_fill=quantity < 2)
     from .topbot_execution_trace import entry_metrics
     observed_at = datetime.now(timezone.utc).isoformat()
     runner["execution"] = entry_metrics(getattr(entry, "raw_request", None) or {}, entry.side, fill["price"], runner["entry_at"], observed_at)
@@ -81,7 +128,55 @@ def initialize(entry, plan, client, now):
     return True
 
 
-def manage(db, *, entry, plan, client, stops, worker_lease_token, now, orders=None):
+def working_size(order):
+    filled = (order.get("raw_payload") or {}).get("fillVolume") or 0
+    size = order.get("size")
+    if size not in (1, 2) or filled not in (0, 1, 2) or filled > size:
+        return 0
+    return size - filled
+
+
+def _verify_two_contract_bracket(entry, plan, stops, orders, remaining):
+    runner = plan["runner"]
+    sign = 1 if entry.side == "BUY" else -1
+    entry_prices = runner["entry_fill_prices"]
+    mean_price = runner["entry_price"]
+    for kind, group, field, offset in (
+        ("stop", stops, "stopPrice", -25),
+        ("target", [o for o in orders if o.get("account_id") == entry.account_id
+                    and o.get("contract_id") == entry.contract_id and o.get("status") == 1
+                    and o.get("side") == (1 if sign == 1 else 0) and o.get("order_type") == 1
+                    and str(o.get("parent_order_id")) == str(entry.provider_order_id)], "limitPrice", 25),
+    ):
+        ids = [str(o["order_id"]) for o in group]
+        if not group or len(ids) != len(set(ids)) or sum(working_size(o) for o in group) != remaining:
+            plan["runner_exit_reason"] = f"fixed_{kind}_quantity_not_verified"
+            return False
+        for o in group:
+            price = (o.get("raw_payload") or {}).get(field)
+            if not isinstance(price, (int, float)) or not math.isfinite(price):
+                plan["runner_exit_reason"] = f"fixed_{kind}_price_not_verified"
+                return False
+            # Native brackets may be attached to individual executions or a
+            # broker's tick-rounded average entry (two fills can average a half tick).
+            at_average = abs(price - (mean_price + sign*offset)) <= .125
+            at_fill = working_size(o) == 1 and price in [p + sign*offset for p in entry_prices]
+            if not (at_average or at_fill):
+                plan["runner_exit_reason"] = f"fixed_{kind}_price_not_verified"
+                return False
+        average = sum(o["raw_payload"][field] * working_size(o) for o in group)/remaining
+        if remaining == runner.get("quantity") and abs(average - (mean_price + sign*offset)) > .125:
+            plan["runner_exit_reason"] = f"fixed_{kind}_price_not_verified"
+            return False
+        runner[kind+"_order_ids"] = sorted(set(runner.get(kind+"_order_ids", [])) | set(ids))
+        runner[kind+"_order_id"] = ids[0]
+        runner["confirmed_"+kind] = average
+    runner.update(trailing_active=False, management_status="Fixed stop and target",
+                  desired_stop=runner["confirmed_stop"])
+    return True
+
+
+def manage(db, *, entry, plan, client, stops, worker_lease_token, now, orders=None, remaining=None):
     """Return True when a retraced price requires the existing verified flatten path."""
     from .bot_service import _ProviderMutationFence
     runner = plan["runner"]
@@ -89,7 +184,17 @@ def manage(db, *, entry, plan, client, stops, worker_lease_token, now, orders=No
     runner.pop("decision_reason", None)
     feed.ensure(entry.user_id, entry.contract_id, client)
     if not initialize(entry, plan, client, now):
+        if remaining == 1 and runner.get("stats_status") == "awaiting_remaining_entry_fill" and runner.get("exit_mode") == "fixed":
+            partial = {**plan, "runner": {**runner, "entry_price": runner["partial_entry_price"],
+                                          "entry_fill_prices": [runner["partial_entry_price"]]}}
+            if _verify_two_contract_bracket(entry, partial, stops, orders or [], remaining):
+                return False
+            plan["runner_exit_reason"] = partial["runner_exit_reason"]
+            return True
         raise ValueError("Waiting for the broker entry fill before managing the runner")
+    if float(entry.size) == 2 and runner.get("exit_mode") == "fixed":
+        runner.update(feed.track(entry.user_id, entry.contract_id, entry.id, runner))
+        return not _verify_two_contract_bracket(entry, plan, stops, orders or [], remaining or runner["quantity"])
     if len(stops) != 1:
         raise ValueError("Runner requires exactly one matching protective child stop")
     stop = stops[0]
@@ -194,6 +299,8 @@ def finalize(entry, plan, client, now):
     runner = plan["runner"]
     if runner.get("stats_status") == "complete": return True
     if not initialize(entry, plan, client, now):
+        if runner.get("stats_status") == "awaiting_remaining_entry_fill":
+            return False
         if entry.status == "cancelled":
             runner["stats_status"] = "not_filled"
             return True
@@ -204,11 +311,25 @@ def finalize(entry, plan, client, now):
     if not exits:
         runner["stats_status"] = "awaiting_exit_fill"
         return False
-    if len(exits) != 1 or exits[0]["side"] == entry.side or exits[0]["size"] != 1:
+    quantity = runner.get("quantity", float(entry.size))
+    opposite = "SELL" if entry.side == "BUY" else "BUY"
+    exit_fill = _fill_summary(exits, opposite, quantity, exit_fill=True)
+    exit_orders = {str(r["order_id"]) for r in exits}
+    if exit_fill is not None and len(exit_orders) > 1:
+        known = set(runner.get("stop_order_ids", [])) | set(runner.get("target_order_ids", []))
+        close = (plan.get("audit") or {}).get("close_response") or {}
+        known.add(str(close.get("orderId", close.get("order_id"))))
+        if not exit_orders <= known and hasattr(client, "search_orders"):
+            history = client.search_orders(account_id=entry.account_id, start=utc(runner["entry_at"])-timedelta(minutes=1), end=now)
+            known.update(str(o.get("order_id")) for o in history if o.get("account_id") == entry.account_id
+                         and o.get("contract_id") == entry.contract_id and str(o.get("parent_order_id")) == str(entry.provider_order_id)
+                         and o.get("side") == (1 if entry.side == "BUY" else 0) and o.get("order_type") in (1, 4))
+        if not exit_orders <= known:
+            exit_fill = None
+    if exit_fill is None:
         runner["stats_status"] = "ambiguous_fills"
         runner["reconciliation"] = {"exit_fill_count": len(exits), "reason": "partial_or_ambiguous_exit_fills"}
         return False
-    exit_fill = exits[0]
     if any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in
            (exit_fill["price"], exit_fill["fees"], runner["entry_fees"])):
         runner["stats_status"] = "invalid_fill_values"
@@ -217,7 +338,7 @@ def finalize(entry, plan, client, now):
     direction = 1 if entry.side == "BUY" else -1
     points = (exit_fill["price"]-runner["entry_price"])*direction
     costs = cost_summary(runner["entry_fees"]+exit_fill["fees"], points,
-                         exit_fill["timestamp"], entry.contract_id, exit_fill.get("commissions"))
+                         exit_fill["timestamp"], entry.contract_id, exit_fill.get("commissions"), quantity=quantity)
     fees = costs["fees_usd"]
     from .topbot_study import exit_classification
     # A fast native bracket may fill before management sees its working child.
@@ -241,13 +362,22 @@ def finalize(entry, plan, client, now):
         except Exception:
             runner["exit_order_history_status"] = "unavailable"
     reason, reason_basis = exit_classification(runner, plan, exit_fill["order_id"])
+    if float(entry.size) == 2:
+        runner.update(exit_fill_ids=exit_fill["fill_ids"], exit_order_ids=sorted(exit_orders))
+        if exit_orders <= set(runner.get("target_order_ids", [])):
+            reason, reason_basis = "take_profit", "verified_target_order_ids"
+        elif exit_orders <= set(runner.get("stop_order_ids", [])):
+            reason, reason_basis = "initial_stop", "verified_fixed_stop_order_ids"
+        elif len(exit_orders) > 1:
+            reason, reason_basis = "mixed_exit", "multiple_verified_exit_orders"
+    gross = points * 2 * quantity
     runner.setdefault("initial_risk_usd", float(runner.get("initial_stop_points", 25))*2*float(entry.size))
     runner.update(stats_status="complete", exit_at=exit_fill["timestamp"].isoformat(), exit_price=exit_fill["price"],
                   hold_seconds=max(0,(exit_fill["timestamp"]-utc(runner["entry_at"])).total_seconds()),
-                  gross_points=points, fees_usd=fees, net_pnl_usd=points*2-fees,
+                  gross_points=points, fees_usd=fees, net_pnl_usd=gross-fees,
                   exit_reason=reason, exit_reason_basis=reason_basis,
                   exit_order_id=str(exit_fill["order_id"]), exit_fill_id=exit_fill.get("source_trade_id", exit_fill.get("trade_id", exit_fill.get("id"))),
-                  gross_pnl_usd=points*2, realized_r=(points*2-fees)/runner["initial_risk_usd"])
+                  gross_pnl_usd=gross, realized_r=(gross-fees)/runner["initial_risk_usd"])
     runner.update(costs)
     runner["mfe_points"] = max(runner["mfe_points"], points)
     runner["mae_points"] = min(runner["mae_points"], points)
@@ -269,19 +399,20 @@ def finalize(entry, plan, client, now):
     return True
 
 
-def cost_summary(broker_fees, gross_points, exit_at, contract_id, commissions=None):
+def cost_summary(broker_fees, gross_points, exit_at, contract_id, commissions=None, *, quantity=1):
     """Use the same round-turn commission basis as the account trade journal."""
     from .topstep_fees import effective_topstep_trade_fee
     if any(not isinstance(v, (int, float)) or not math.isfinite(v)
            for v in (broker_fees, gross_points)):
         raise ValueError("Invalid runner cost inputs")
-    fees = effective_topstep_trade_fee(trade_timestamp=exit_at, pnl=gross_points*2,
-        fees=broker_fees, symbol="MNQ", contract_id=contract_id, size=1,
+    gross = gross_points*2*quantity
+    fees = effective_topstep_trade_fee(trade_timestamp=exit_at, pnl=gross,
+        fees=broker_fees, symbol="MNQ", contract_id=contract_id, size=quantity,
         raw_fee_is_per_side=False, commissions=commissions)
     if not math.isfinite(fees): raise ValueError("Invalid runner commission")
     return {"fee_basis": "broker_fees_plus_commission_v1", "broker_fees_usd": broker_fees,
             "commission_basis": "broker_explicit" if commissions is not None else "configured_round_turn_schedule",
-            "commissions_usd": fees-broker_fees, "fees_usd": fees, "net_pnl_usd": gross_points*2-fees}
+            "commissions_usd": fees-broker_fees, "fees_usd": fees, "net_pnl_usd": gross-fees}
 
 
 def statistics_item(row):
