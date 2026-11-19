@@ -43,11 +43,11 @@ class Article(HTMLParser):
             self.description = a.get("content") or self.description
 
 
-def article(url):
+def article(url, retrieve=fetch):
     if not canonical(url) or urlsplit(url).hostname not in TRUSTED:
         return "", None
     try:
-        html = fetch(url, limit=3_000_000)[2].decode("utf-8", errors="replace")
+        html = retrieve(url, limit=3_000_000)[2].decode("utf-8", errors="replace")
         meta = Article()
         meta.feed(html)
         date = meta.date or next(
@@ -62,11 +62,11 @@ def article(url):
         return "", None
 
 
-def request_body(event, kind, model):
+def request_body(event, kind, model, lookup=None):
     if kind == "summary":
         body = event.excerpt
         if not body:
-            body = article(event.link)[0]
+            body = (lookup or article)(event.link)[0]
         evidence = {
             "publisher": event.source,
             "headline": event.title,
@@ -151,7 +151,7 @@ def respond(cfg, payload):
     return r.json()
 
 
-def result(reply, kind, event, prefix, now):
+def result(reply, kind, event, prefix, now, lookup=None):
     blocks = reply.get("output", [])
     content = [
         p
@@ -189,7 +189,7 @@ def result(reply, kind, event, prefix, now):
         or not matches(quote, event.tickers.strip())
     ):
         return {}
-    body, published = article(url)
+    body, published = (lookup or article)(url)
     if (
         not published
         or not event.move_start - 1800 <= published <= min(now, event.received + 1800)

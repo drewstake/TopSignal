@@ -341,3 +341,23 @@ def test_delivery_timeout_not_duplicated_on_restart(scanner):
     assert not w.deliver()
     with w.engine.connect() as c:
         assert store.feed(c)[0]["jobs"]["delivery"]["detail"] == "Outcome unconfirmed"
+
+
+def test_sec_followup_uses_same_identified_access_and_cooldown(scanner, monkeypatch):
+    w, _ = scanner
+    calls = []
+
+    def limited(url, headers, limit):
+        calls.append(headers["User-Agent"])
+        response = requests.Response()
+        response.status_code = 429
+        raise requests.HTTPError(response=response)
+
+    monkeypatch.setattr("app.scanner.worker.fetch", limited)
+    url = "https://www.sec.gov/Archives/edgar/data/2488/filing.htm"
+    assert w.lookup_article(url) == ("", None)
+    w.cfg.sec_user_agent = "TopSignal contact@example.org"
+    assert w.lookup_article(url) == ("", None)
+    assert w.sec_slot() > 590
+    assert w.lookup_article(url) == ("", None)
+    assert calls == [w.cfg.sec_user_agent]

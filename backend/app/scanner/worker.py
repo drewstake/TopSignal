@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from urllib.parse import urlsplit
 
 import requests
 from sqlalchemy import create_engine, select, text, update
@@ -85,6 +86,33 @@ class Worker:
             )
         self.raw_ready.set()
 
+    def sec_slot(self):
+        with self.sec_lock:
+            wait = self.sec_next - time.monotonic()
+            if wait > 1:
+                return wait
+            if wait > 0:
+                time.sleep(wait)
+            self.sec_next = time.monotonic() + 0.4
+        return 0
+
+    def sec_document(self, url, limit):
+        if not self.cfg.sec_user_agent or self.sec_slot():
+            raise ValueError("SEC access deferred")
+        try:
+            return fetch(url, {"User-Agent": self.cfg.sec_user_agent}, limit)
+        except requests.HTTPError as exc:
+            if category(exc) in {"HTTP 403", "HTTP 429"}:
+                with self.sec_lock:
+                    delay = max(600, retry_after(exc, self.clock()))
+                    self.sec_next = max(self.sec_next, time.monotonic() + delay)
+            raise
+
+    def lookup_article(self, url):
+        if urlsplit(url).hostname == "www.sec.gov":
+            return ai.article(url, self.sec_document)
+        return ai.article(url)
+
     def poll(self, source):
         previous = self.state(source.name)
         now = self.clock()
@@ -96,13 +124,9 @@ class Worker:
                 self.status(source.name, "SEC contact not configured")
                 return 600
             headers["User-Agent"] = self.cfg.sec_user_agent
-            with self.sec_lock:
-                wait = self.sec_next - time.monotonic()
-                if wait > 1:
-                    return wait
-                if wait > 0:
-                    time.sleep(wait)
-                self.sec_next = time.monotonic() + 0.4
+            wait = self.sec_slot()
+            if wait:
+                return wait
         if previous.get("etag"):
             headers["If-None-Match"] = previous["etag"]
         if previous.get("modified"):
@@ -362,12 +386,14 @@ class Worker:
                 )
                 return True
         try:
-            payload, prefix = ai.request_body(e, job.kind, model)
+            payload, prefix = ai.request_body(e, job.kind, model, self.lookup_article)
             response = ai.respond(self.cfg, payload)
             cost, counts = ai.costs(response, self.cfg, model)
             with self.engine.begin() as c:
                 db.settle(c, reservation, cost, counts)
-            fields = ai.result(response, job.kind, e, prefix, self.clock())
+            fields = ai.result(
+                response, job.kind, e, prefix, self.clock(), self.lookup_article
+            )
             with self.engine.begin() as c:
                 if fields:
                     c.execute(
@@ -470,7 +496,6 @@ def main():
     args = parser.parse_args()
     cfg = Options.load(args.config)
     ISSUERS.update(cfg.additional_issuers)
-    from urllib.parse import urlsplit
 
     ai.TRUSTED.update(
         urlsplit(issuer.releases).hostname for issuer in cfg.additional_issuers.values()
