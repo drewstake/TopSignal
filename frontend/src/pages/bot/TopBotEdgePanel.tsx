@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { performance, type EdgeReport, type Inclusion, type ReportState, type SignalStudy } from "./imbalanceReport";
+import { performance, savedVersionLabel, type EdgeReport, type Inclusion, type ReportState, type SignalStudy } from "./imbalanceReport";
 
 const money = (v: number | null) => v == null ? "—" : v.toLocaleString("en-US", { style: "currency", currency: "USD" });
 const pct = (v: number | null) => v == null ? "—" : (v*100).toFixed(1)+"%";
@@ -27,8 +27,8 @@ function PerformanceView({ data, now }: { data: EdgeReport; now: number }) {
     <div className="topbot-comparison-filters">
       <label>Exit plan <select value={mode} onChange={e => { setMode(e.target.value); setVersion(""); }}>
         <option value="fixed">Fixed bracket</option><option value="trailing">Trailing stop</option><option value="">All saved plans</option></select></label>
-      <label>Saved strategy version <select value={version} onChange={e => setVersion(e.target.value)}>
-        <option value="">All versions</option>{versions.map(v => <option key={v} value={v}>{v}</option>)}</select></label>
+      <label>Saved strategy version <select className="topbot-version-select" value={version} onChange={e => setVersion(e.target.value)}>
+        <option value="">All versions</option>{versions.map(v => <option key={v} value={v}>{savedVersionLabel(v, data.version_labels)}</option>)}</select></label>
     </div>
     <p className="topbot-muted">{stats.count} closed practice trades · {stats.sessions} trading sessions · {stats.win} wins / {stats.loss} losses / {stats.flats} flat
       {" · "}Updated {time(data.as_of)}{now-Date.parse(data.as_of)>90_000 && " · Stale report"}{data.truncated && " · Latest 5,000 attempts only"}</p>

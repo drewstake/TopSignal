@@ -131,7 +131,7 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
     {edge.data && <SignalPanel data={edge.data} now={now} />}
     <TopBotActivity activity={monitor.activity} />
     <TopBotEvaluation activity={strategyActivity} now={now} failed={Boolean(monitor.error)} strategyUnconfigured={strategyUnconfigured} />
-    <TopBotStrategyPanel key={`${accountId}:${demoMode}`} accountId={accountId} bot={monitor.bot} activity={monitor.activity} inclusion={edge.data?.coverage}
+    <TopBotStrategyPanel key={`${accountId}:${demoMode}`} accountId={accountId} bot={monitor.bot} activity={monitor.activity} inclusion={edge.data?.coverage} versionLabels={edge.data?.version_labels}
       demoMode={demoMode || pending || unavailable} onChanged={() => setRefreshToken(value => value + 1)} />
     <footer className="topbot-footer"><span>TOPBOT / OBSERVATION WORKSPACE</span><span>Live market streams · recorded bot decisions · times in New York</span></footer>
   </div>;

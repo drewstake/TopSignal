@@ -3,7 +3,7 @@ import { botsApi } from "../../lib/api";
 import type { Readiness } from "./TopBotResearchStatus";
 import { ago, span, stateLabel } from "./researchStatusFormat";
 import { InclusionPanel } from "./TopBotEdgePanel";
-import type { Inclusion } from "./imbalanceReport";
+import { savedVersionLabel, type Inclusion } from "./imbalanceReport";
 
 type Metrics = { count: number; sessions: number; wins: number; losses: number; average_win: number | null;
   average_loss: number | null; expectancy: number | null; profit_factor: number | null; interval_95: [number, number] | null };
@@ -84,7 +84,7 @@ function Denominators({ r }: { r: Readiness }) {
   </div>;
 }
 
-export function TopBotComparison({ accountId, inclusion }: { accountId: number; inclusion?: Inclusion[] }) {
+export function TopBotComparison({ accountId, inclusion, versionLabels }: { accountId: number; inclusion?: Inclusion[]; versionLabels?: Record<string, string> }) {
   const [data, setData] = useState<Comparison | null>(null);
   const [error, setError] = useState(false);
   const [version, setVersion] = useState("");
@@ -129,8 +129,8 @@ export function TopBotComparison({ accountId, inclusion }: { accountId: number; 
     <h3>Actual results &amp; exit-only research</h3>
     <div className="topbot-comparison-filters">
       <label>Actual entry strategy <select value={strategy} onChange={e => change(setStrategy, e.target.value)}><option value="">All saved strategies</option><option value="trailing">Trailing</option><option value="fixed">Fixed</option><option value="unknown">Unknown</option></select></label>
-      <label>Strategy version <select value={version} onChange={e => change(setVersion, e.target.value)}><option value="">All versions</option>
-        {data?.versions.map(v => <option key={v} value={v}>{v}</option>)}{version && !data?.versions.includes(version) && <option value={version}>{version}</option>}</select></label>
+      <label>Strategy version <select className="topbot-version-select" value={version} onChange={e => change(setVersion, e.target.value)}><option value="">All versions</option>
+        {data?.versions.map(v => <option key={v} value={v}>{savedVersionLabel(v, versionLabels)}</option>)}{version && !data?.versions.includes(version) && <option value={version}>{savedVersionLabel(version, versionLabels)}</option>}</select></label>
       <label>From (UTC) <input type="date" value={start} onChange={e => change(setStart, e.target.value)} /></label>
       <label>Through (UTC) <input type="date" value={end} onChange={e => change(setEnd, e.target.value)} /></label>
       <label>Units <select value={unit} onChange={e => setUnit(e.target.value as "dollars" | "r")}><option value="dollars">Dollars</option><option value="r">R</option></select></label>

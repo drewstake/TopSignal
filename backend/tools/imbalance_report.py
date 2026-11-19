@@ -3,11 +3,39 @@
 import json
 import math
 import time
+from collections import Counter
 from datetime import datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from imbalance_study import HORIZONS, directory
 from track_imbalances import iso, pg
+
+
+def version_label(trade, entry, plan, limits, quantity):
+    parts = []
+    if entry.get("revision") == "dom_contrarian_v1":
+        direction = entry.get("imbalance_direction", "contrarian")
+        if direction in ("following", "contrarian"):
+            parts.append("Follow imbalance" if direction == "following" else "Contrarian")
+    if quantity:
+        symbol = trade["contract"].split(".")
+        parts.append(f"{float(quantity):g} {symbol[-2]}" if len(symbol) >= 2 else f"{float(quantity):g} contracts")
+    mode = trade["mode"]
+    stop, target = plan.get("initial_stop_points"), plan.get("take_profit_points")
+    if mode == "fixed" and stop and stop == target:
+        parts.append(f"{stop:g}-pt fixed bracket")
+    elif mode == "fixed" and stop and target:
+        parts.append(f"{stop:g}-pt stop / {target:g}-pt target")
+    elif mode == "trailing" and plan.get("trail_points"):
+        parts.append(f"{plan['trail_points']:g}-pt trailing stop")
+    else:
+        parts.append({"fixed": "Fixed bracket", "trailing": "Trailing stop"}.get(mode, "Saved plan"))
+    profit, loss = limits.get("daily_profit_target"), limits.get("max_daily_loss")
+    if profit is not None and loss is not None:
+        profit, loss = float(profit), float(loss)
+        parts.append(f"±${profit:g}/day" if profit == loss else f"+${profit:g} / −${loss:g} daily")
+    return " · ".join(parts)
 
 
 def execution_rows(db, owner, account, config):
@@ -17,12 +45,16 @@ def execution_rows(db, owner, account, config):
        raw_request->'strategySnapshot'->>'strategy_version_id' AS version,
        raw_request->'entryEvidence'->'implementation' AS implementation,
        raw_request->'entryEvidence'->'signal'->>'episode_at' AS episode,
-       raw_request->'entryEvidence'->'signal'->'evidence'->>'capture_id' AS capture
+       raw_request->'entryEvidence'->'signal'->'evidence'->>'capture_id' AS capture,
+       raw_request->'strategySnapshot'->'rules' AS rules,
+       raw_request->'strategySnapshot'->'risk_limits' AS limits,
+       raw_request->'strategySnapshot'->'quantity' AS planned_quantity
        FROM bot_order_attempts WHERE user_id=%s AND account_id=%s AND bot_config_id=%s
        AND raw_request->'timeExit'->'runner'->>'version'='1' ORDER BY id DESC LIMIT 5001"""
     rows = db.execute(sql, (owner, account, config)).fetchall()
     actual = []
-    for id_, side, status, contract, size, runner, version, impl, episode, capture in rows[:5000]:
+    first_by_version = {}
+    for id_, side, status, contract, size, runner, version, impl, episode, capture, rules, limits, quantity in rows[:5000]:
         request = {
             "timeExit": {"runner": runner},
             "strategySnapshot": {"strategy_version_id": version} if version else {},
@@ -58,7 +90,24 @@ def execution_rows(db, owner, account, config):
                 "contract": contract,
             }
         )
-    return actual, len(rows) > 5000
+        trade = actual[-1]
+        first = first_by_version.get(trade["version"])
+        at = datetime.fromisoformat(trade["entry"])
+        if first is None or (at, id_) < first[:2]:
+            rules = rules or {}
+            first_by_version[trade["version"]] = (at, id_, trade, rules.get("entry") or {},
+                                                  rules.get("exit") or runner or {}, limits or {}, quantity or size)
+    labels = {}
+    for version, (at, _, trade, entry, plan, limits, quantity) in first_by_version.items():
+        label = version_label(trade, entry, plan, limits, quantity)
+        et = at.astimezone(ZoneInfo("America/New_York"))
+        labels[version] = f"{et:%b} {et.day}, {et.year} {et:%H:%M} ET · {label}"
+    # Distinguish two revisions first traded in the same minute.
+    occurrences = Counter(labels.values())
+    for version, label in labels.items():
+        if occurrences[label] > 1:
+            labels[version] = f"{label} · entry #{first_by_version[version][1]}"
+    return actual, len(rows) > 5000, labels
 
 
 def coverage(owner, account, actual):
@@ -248,7 +297,7 @@ def observed(db, source, contract, start, through):
 
 def build_report(cfg, dsn, cache, owner, contract, db, start, through):
     with pg(dsn) as client:
-        actual, truncated = execution_rows(client, owner, cfg["account"], cfg["config"])
+        actual, truncated, labels = execution_rows(client, owner, cfg["account"], cfg["config"])
         dispositions(client, db, owner, cfg, start, actual)
     for t in actual:
         q = db.execute(
@@ -271,6 +320,7 @@ def build_report(cfg, dsn, cache, owner, contract, db, start, through):
         "started": iso(start),
         "as_of": iso(time.time()),
         "actual": actual,
+        "version_labels": labels,
         "truncated": truncated,
         "coverage": coverage(owner, cfg["account"], actual),
         "studies": [

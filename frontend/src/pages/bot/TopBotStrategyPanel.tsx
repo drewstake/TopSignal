@@ -44,9 +44,9 @@ function protectionLabel(trade: OpenTradeProtection) {
 const duration = (value: number | null | undefined) => value == null ? "—" : `${(value / 60).toFixed(1)}m`;
 const number = (value: number | undefined) => value == null ? "—" : value.toFixed(2);
 
-export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChanged, inclusion }: {
+export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChanged, inclusion, versionLabels }: {
   accountId: number | null; bot: BotConfig | null; activity: BotActivity | null;
-  demoMode: boolean; onChanged: () => void; inclusion?: Inclusion[];
+  demoMode: boolean; onChanged: () => void; inclusion?: Inclusion[]; versionLabels?: Record<string, string>;
 }) {
   const [stats, setStats] = useState<TopBotStatistics | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -130,6 +130,6 @@ export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChan
     <TopBotAuditTrail key={`audit:${accountId}`} accountId={accountId} demoMode={demoMode} />
     <TopBotRecordingStatus evidence={stats?.depth?.evidence} />
     {accountId != null && !demoMode && <TopBotResearchStatus key={`research:${accountId}`} accountId={accountId} />}
-    {accountId != null && !demoMode && <TopBotComparison key={`comparison:${accountId}`} accountId={accountId} inclusion={inclusion} />}
+    {accountId != null && !demoMode && <TopBotComparison key={`comparison:${accountId}`} accountId={accountId} inclusion={inclusion} versionLabels={versionLabels} />}
   </section>;
 }

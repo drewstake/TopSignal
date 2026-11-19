@@ -13,8 +13,16 @@ type Episode = { id: number; episode: string; at: string; side: number; bid: num
 export type SignalStudy = { source: string; total: number; matched: number; filled: number; horizons: Horizon[];
   recent: Episode[]; gaps: number; through: string | null };
 export type EdgeReport = { account_id: number; config_id: number; contract: string; started: string; as_of: string;
+  version_labels?: Record<string, string>;
   actual: Actual[]; truncated: boolean; coverage: Inclusion[]; studies: SignalStudy[] };
 export type ReportState = { account: number | null; data?: EdgeReport; message?: string };
+
+export function savedVersionLabel(version: string, labels?: Record<string, string>) {
+  if (labels && Object.hasOwn(labels, version)) return labels[version];
+  if (version === "unknown") return "Unrecorded version";
+  const digest = /^(?:dom|historical)-([a-f0-9]+)$/.exec(version);
+  return digest ? `Saved revision ${digest[1].slice(0, 8)}` : version;
+}
 
 export function useImbalanceReport(account: number | null) {
   const [state, setState] = useState<ReportState>({ account: null });

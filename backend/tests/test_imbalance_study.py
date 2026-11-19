@@ -6,7 +6,17 @@ from app.services.imbalance_study import Observations, open_store
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import track_imbalances
-from imbalance_report import observed
+from imbalance_report import observed, version_label
+
+
+def test_version_labels_use_saved_rules_and_limits():
+    trade = {"mode": "fixed", "contract": "CON.F.US.MNQ.Z26"}
+    entry = {"revision": "dom_contrarian_v1", "imbalance_direction": "following"}
+    plan = {"initial_stop_points": 25, "take_profit_points": 25}
+    limits = {"daily_profit_target": 800, "max_daily_loss": "800.000000"}
+    assert version_label(trade, entry, plan, limits, 2) == "Follow imbalance · 2 MNQ · 25-pt fixed bracket · ±$800/day"
+    assert version_label(trade, {"revision": "dom_contrarian_v1"}, plan, {}, 1).startswith("Contrarian · 1 MNQ")
+    assert version_label(trade, {}, {}, {}, None) == "Fixed bracket"
 
 
 def event(at):

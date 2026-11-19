@@ -16,6 +16,9 @@ experiment and its validation cohort are independent of this study.
   and average absolute net loss. Both win rates omit flats. Closed drawdown orders
   trades by exit time and starts the equity curve at zero. Up to 5,000 recent
   attempts are read; truncation is labeled. Fill prices already incorporate slippage.
+  Saved version menus show the earliest entry in the report for that version (New
+  York time), along with the recorded direction, size, exit plan and daily limits
+  when available. The version ID remains the filter key.
 - **Exit-study inclusion** uses each registered exploratory entry's actual broker
   outcome and the latest checksummed research result. Pending entries remain in the
   denominator; the main exclusion counts distinct affected entries. The controls
@@ -64,6 +67,12 @@ free-space floor; it never deletes observations. The optional worker reader
 defers under recorder pressure. The configured release path supplies the
 matching code and local database settings. Verify that binding when changing
 releases or signal semantics. No cloud storage or historical bars are involved.
+
+The November 19 version-label rollout uses the report helper in
+`C:/ProgramData/TopSignal/tools/imbalance-study-20261119-v2`. The study task
+uses the existing protected v1 config. Use the v2 paths for
+`track_imbalances.py`, `imbalance_study.py` and `imbalance_report.py` when
+preparing subsequent host release companion checks.
 
 The viewing PC serves the selected account at `http://127.0.0.1:4173/bot` using its
 limited **TopSignal Study View** logon task. The existing host connection
