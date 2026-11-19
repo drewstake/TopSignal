@@ -1583,6 +1583,14 @@ export function getDemoApiResponse<T>(
   path: string,
   query?: Record<string, DemoQueryValue>,
 ): DemoApiResponse<T> | null {
+  if (path === "/api/scanner/alerts") return handled({ cursor: 1, events: [] }) as DemoApiResponse<T>;
+  if (path === "/api/scanner") {
+    const received = Date.parse(DEMO_AS_OF_ISO) / 1000;
+    return handled({ worker: "Demo", sources: [{ name: "Equity prices", status: "Simulated", success: received }],
+      spend: null, events: [{ id: 1, kind: "move", tickers: ["AMD"], title: "AMD +1.20% in 1 min · 2.40× relative volume · SOXX +0.18%",
+        source: "Demo equity feed", link: "", received, published: null, baseline: false, delayed: false, summary: null,
+        cause: "Cause unknown", citation: null, citation_time: null, updates: [], jobs: {} }] }) as DemoApiResponse<T>;
+  }
   if (path === "/api/auth/me") {
     return handled<AuthMe>({ user_id: DEMO_USER_ID, email: "demo@topsignal.local" }) as DemoApiResponse<T>;
   }

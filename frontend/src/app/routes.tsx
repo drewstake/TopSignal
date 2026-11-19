@@ -3,6 +3,9 @@ import { Navigate, createBrowserRouter, redirect } from "react-router-dom";
 import { AppShell } from "./AppShell";
 import { RouteErrorPage } from "./RouteErrorPage";
 import { AccountAccess } from "./AccountAccess";
+import { ScannerAlerts } from "../pages/scanner/ScannerAlerts";
+
+const ScannerPage = lazy(() => import("../pages/scanner/ScannerPage").then(m => ({ default: m.ScannerPage })));
 
 const DashboardPage = lazy(() =>
   import("../pages/dashboard/DashboardPage").then((module) => ({ default: module.DashboardPage })),
@@ -32,7 +35,7 @@ const BacktestingPage = lazy(() =>
 export const router = createBrowserRouter([
   {
     path: "/bot-results/:botId",
-    element: <AccountAccess><BotForwardResultsPage /></AccountAccess>,
+    element: <AccountAccess><ScannerAlerts /><BotForwardResultsPage /></AccountAccess>,
     errorElement: <RouteErrorPage fullScreen />,
   },
   {
@@ -68,6 +71,11 @@ export const router = createBrowserRouter([
       {
         path: "bot",
         element: <BotPage />,
+        errorElement: <RouteErrorPage />,
+      },
+      {
+        path: "scanner",
+        element: <ScannerPage />,
         errorElement: <RouteErrorPage />,
       },
       {

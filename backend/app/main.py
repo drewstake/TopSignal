@@ -99,6 +99,7 @@ from .trade_plan_schemas import TradeEvaluationResultOut, TradePlanEvaluationIn
 from .services.trade_excursions import attach_trade_excursions
 from .market_data_routes import router as market_data_router
 from .market_event_routes import router as market_event_router
+from .scanner.routes import router as scanner_router
 from .market_observation_routes import router as market_observation_router
 from .risk_forecast_routes import router as risk_forecast_router
 from .metrics_schemas import (
@@ -482,6 +483,7 @@ async def app_lifespan(_: FastAPI):
 app = FastAPI(title="TopSignal API", lifespan=app_lifespan)
 app.include_router(market_data_router)
 app.include_router(market_event_router)
+app.include_router(scanner_router)
 app.include_router(market_observation_router)
 app.include_router(risk_forecast_router)
 

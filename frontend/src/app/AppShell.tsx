@@ -2,6 +2,7 @@ import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { Button } from "../components/ui/Button";
+import { ScannerAlerts } from "../pages/scanner/ScannerAlerts";
 import { Select } from "../components/ui/Select";
 import { Skeleton } from "../components/ui/Skeleton";
 import { Tabs } from "../components/ui/Tabs";
@@ -81,6 +82,7 @@ const WORKSPACE_PAGE_LABELS: ReadonlyArray<readonly [string, string]> = [
   ["/trades", "Trades"],
   ["/expenses", "Expenses"],
   ["/bot", "Bot"],
+  ["/scanner", "Scanner"],
   ["/backtesting", "Backtesting"],
   ["/appearance", "Appearance"],
 ];
@@ -529,6 +531,7 @@ export function AppShell() {
               { label: "Trades", to: `/trades${accountSuffix}` },
               { label: "Expenses", to: `/expenses${accountSuffix}` },
               { label: "Bot", to: `/bot${accountSuffix}` },
+              { label: "Scanner", to: "/scanner" },
               { label: "Backtesting", to: `/backtesting${accountSuffix}` },
               { label: "Appearance", to: `/appearance${accountSuffix}` },
             ]}
@@ -719,8 +722,9 @@ export function AppShell() {
             Demo data · read only · scenario as of {DEMO_AS_OF_LABEL}
           </div>
         ) : null}
+        <ScannerAlerts />
         <Suspense fallback={<AppShellRouteFallback />}>
-          {unavailableAccountLink ? accountsLoading ? <AppShellRouteFallback /> : (
+          {unavailableAccountLink && location.pathname !== "/scanner" ? accountsLoading ? <AppShellRouteFallback /> : (
             <div className="space-y-3 rounded-xl border border-app-warning/40 p-6" role="alert">
               <h1 className="text-lg font-semibold">Account link unavailable</h1>
               <p>{accountsError
