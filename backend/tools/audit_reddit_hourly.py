@@ -1,9 +1,11 @@
 """Independent source-bar and arithmetic checks for completed hourly research."""
 import argparse
+from bisect import bisect_left
 import csv
 from datetime import datetime, timedelta
 import json
 import math
+from operator import attrgetter
 from pathlib import Path
 import sys
 
@@ -17,7 +19,6 @@ def main():
     parser.add_argument("run", type=Path)
     args = parser.parse_args()
     offline_environment()
-    from app.services import bot_backtesting as replay
     from app.services.databento_cache import DatabentoReplayStore
     from app.services.trading_day import TRADING_TZ
     manifest = json.loads((args.run / "manifest.json").read_text())
@@ -30,6 +31,7 @@ def main():
                   root_symbol="MNQ", start=first, end=last, closed_by=last)
     hours = store.open_candles(unit="hour", unit_number=1, **common)
     minutes = store.open_candles(unit="minute", unit_number=1, **common)
+    candle_time = attrgetter("candle_timestamp")
     audits = []
     for ledger_path in sorted(args.run.glob("*.trades.json")):
         key = ledger_path.name.removesuffix(".trades.json")
@@ -46,7 +48,7 @@ def main():
             assert 8 <= local.hour < 14 and local.minute == 0
             assert entered <= exited and (prior_exit is None or entered >= prior_exit)
             prior_exit = exited
-            ix = replay._search_candle_start(hours, signal, side="left")
+            ix = bisect_left(hours, signal, key=candle_time)
             assert hours[ix].candle_timestamp == signal
             history = hours[max(0, ix-199):ix+1]
             assert len(history) == 200
@@ -66,7 +68,7 @@ def main():
             else:
                 assert opened >= low > close > ema
                 assert trade["stop_loss"] == high
-            minute_ix = replay._search_candle_start(minutes, entered, side="left")
+            minute_ix = bisect_left(minutes, entered, key=candle_time)
             minute = minutes[minute_ix]
             assert minute.candle_timestamp == entered
             assert minute.source_instrument_id == trade["source_instrument_id"]
@@ -83,12 +85,12 @@ def main():
             if reason in ("stop_loss", "stop_loss_same_bar_conservative", "take_profit"):
                 boundary = trade["take_profit"] if reason == "take_profit" else trade["stop_loss"]
                 assert trade["exit_price"] == boundary-direction*slip
-                exit_ix = replay._search_candle_start(minutes, exited-timedelta(minutes=1), side="left")
+                exit_ix = bisect_left(minutes, exited-timedelta(minutes=1), key=candle_time)
                 bar = minutes[exit_ix]
                 assert bar.candle_timestamp == exited-timedelta(minutes=1)
                 assert float(bar.low_price) <= boundary <= float(bar.high_price)
             elif reason in ("scheduled_session_flatten", "stop_loss_gap", "take_profit_gap"):
-                exit_ix = replay._search_candle_start(minutes, exited, side="left")
+                exit_ix = bisect_left(minutes, exited, key=candle_time)
                 bar = minutes[exit_ix]
                 assert bar.candle_timestamp == exited
                 if reason != "take_profit_gap":

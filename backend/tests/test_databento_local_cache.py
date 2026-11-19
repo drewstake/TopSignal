@@ -30,7 +30,6 @@ from databento_dbn import (
 )
 
 import app.services.databento_cache as databento_cache
-from tools import benchmark_databento_cache
 from app.services.databento_cache import (
     CachedCandleList,
     DatabentoCacheError,
@@ -1489,91 +1488,6 @@ def test_archive_metadata_accepts_each_supported_root(
     assert descriptor.schema == "definition"
     assert descriptor.dataset == DATASET
     assert descriptor.sha256 == hashlib.sha256(archive.read_bytes()).hexdigest()
-
-
-def test_sqlite_persistence_benchmark_checks_cold_and_warm_result_cache(
-    tmp_path: Path,
-):
-    archives, start = _tiny_mnq_archives(
-        tmp_path / "archives",
-        bar_count=150,
-    )
-    cache_root = tmp_path / "cache"
-    build_databento_cache(
-        archives,
-        cache_root=cache_root,
-        timeframes=("5m",),
-    )
-    end = start + timedelta(minutes=150)
-    args = benchmark_databento_cache._parser().parse_args(
-        [
-            "--cache-dir",
-            str(cache_root),
-            "--root",
-            "MNQ",
-            "--timeframe",
-            "5m",
-            "--start",
-            start.isoformat(),
-            "--end",
-            end.isoformat(),
-            "--cold-repeats",
-            "1",
-            "--warm-repeats",
-            "1",
-            "--max-rows",
-            "1000",
-            "--lookback-bars",
-            "25",
-            "--fast-period",
-            "1",
-            "--slow-period",
-            "2",
-            "--sqlite-persistence",
-        ]
-    )
-
-    report = benchmark_databento_cache._run_benchmark(args)
-    persistence = report["sqlite_persistence"]
-
-    assert report["case"]["input_mode"] == "lazy"
-    assert report["case"]["source_method"] == "open_candles"
-    assert report["case"]["input_type"] == "MmapCandleSequence"
-    assert report["case"]["lazy_mmap"] is True
-    assert report["case"]["storage_bytes_per_row"] == 68
-    assert "prepare_input" in report["cold"]["phase_seconds"]
-    assert persistence is not None
-    assert persistence["input_mode"] == "application_lazy_mmap"
-    assert persistence["cold"]["samples"][0]["source_calls"] == {
-        "open_candles": 1,
-        "load_candles": 0,
-    }
-    assert persistence["warm"]["samples"][0]["source_calls"] == {
-        "open_candles": 1,
-        "load_candles": 0,
-    }
-    assert persistence["tables"] == [
-        "bot_backtests",
-        "bot_configs",
-        "instrument_metadata",
-    ]
-    assert persistence["persisted_rows"] == 2
-    assert persistence["semantic_match"] is True
-    assert persistence["cold"]["samples"][0]["result_cache_hit"] is False
-    assert persistence["warm"]["samples"][0]["result_cache_hit"] is True
-    assert (
-        persistence["cold"]["samples"][0]["input_fingerprint"]
-        == persistence["warm"]["samples"][0]["input_fingerprint"]
-    )
-
-    args.input_mode = "eager"
-    args.sqlite_persistence = False
-    eager_report = benchmark_databento_cache._run_benchmark(args)
-    assert eager_report["case"]["input_mode"] == "eager"
-    assert eager_report["case"]["source_method"] == "load_candles"
-    assert eager_report["case"]["input_type"] == "CachedCandleList"
-    assert eager_report["case"]["lazy_mmap"] is False
-    assert eager_report["semantic_sha256"] == report["semantic_sha256"]
 
 
 @pytest.mark.parametrize("skip_minutes", [(), (2, 4)])

@@ -95,7 +95,22 @@ def test_bot_error_sanitizer_redacts_json_headers_and_bearer_values():
     assert sanitized.count("[REDACTED]") == 5
 
 
-def test_app_lifespan_does_not_run_backtest_warming(monkeypatch):
+def test_historical_backtesting_routes_are_retired():
+    paths = main_module.app.openapi()["paths"]
+    retired = {
+        "/api/bots/{bot_config_id}/backtests",
+        "/api/market-data/databento/backtests",
+        "/api/market-data/databento/backtests/{job_id}",
+        "/api/market-data/databento/backtests/{job_id}/cancel",
+        "/api/market-data/databento/backtest-model",
+        "/api/market-data/databento/candles",
+    }
+    assert retired.isdisjoint(paths)
+    assert "/api/accounts/{account_id}/topbot/comparison" in paths
+    assert "/api/bots/{bot_config_id}/forward-results" in paths
+
+
+def test_app_lifespan_initializes_and_stops_runtime(monkeypatch):
     lifecycle_calls = []
 
     monkeypatch.setattr(
@@ -124,14 +139,6 @@ def test_app_lifespan_does_not_run_backtest_warming(monkeypatch):
         "_stop_streaming_runtime",
         lambda: lifecycle_calls.append("stream_stop"),
     )
-    monkeypatch.setattr(
-        main_module,
-        "create_bot_backtest",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("backtest warming must remain request-scoped")
-        ),
-    )
-
     async def run_lifespan():
         async with main_module.app_lifespan(main_module.app):
             lifecycle_calls.append("ready")

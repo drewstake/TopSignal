@@ -17,7 +17,6 @@ from app.models import Account, BotBacktest, ProjectXTradeEvent
 from app.risk_forecast_routes import router, risk_forecast_user_id
 from app.risk_forecast_schemas import RiskForecastRequest
 from app.services import account_risk_forecast as risk
-from app.services.topbot_backtest_jobs import BacktestRequest, Job, Jobs
 from test_market_data_workspace import request as http_request
 
 OWNER = "11111111-1111-1111-1111-111111111111"
@@ -139,7 +138,7 @@ def test_insufficient_sample_has_no_probabilities_and_ready_sample_is_bounded():
 
 @pytest.mark.parametrize("fields", [{"horizon_days": 61}, {"horizon_days": True}, {"loss_buffer": 0},
     {"starting_balance": math.inf}, {"daily_loss_limit": -1}, {"trailing_mode": "end_of_day"},
-    {"trailing_distance": 5}, {"source_id": "../../data"}, {"source_id": "saved:9999999999999999999"},
+    {"trailing_distance": 5}, {"source_id": "../../data"}, {"source_id": "job:" + "a"*32}, {"source_id": "saved:9999999999999999999"},
     {"trailing_mode": "trade_close", "trailing_distance": 100}, {"extra_cost_per_trade": -1}])
 def test_rejects_invalid_inputs(fields):
     with pytest.raises(ValidationError):
@@ -147,14 +146,13 @@ def test_rejects_invalid_inputs(fields):
 
 
 @pytest.fixture
-def db(monkeypatch):
+def db():
     engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine, tables=[Account.__table__, BotBacktest.__table__, ProjectXTradeEvent.__table__])
     session = sessionmaker(bind=engine)()
     session.add_all([Account(user_id=OWNER, provider="projectx", external_id="123", balance=1000),
                      Account(user_id=OTHER, provider="projectx", external_id="456", balance=9999)])
     session.commit()
-    monkeypatch.setattr(risk, "jobs", Jobs())
     yield session
     session.close(); engine.dispose()
 
@@ -209,22 +207,6 @@ def test_saved_source_scopes_account_and_rejects_truncated_detail(db):
     with pytest.raises(ValueError, match="incomplete"):
         risk.load_outcomes(db, OWNER, 123, payload(source_id=f"saved:{row.id}"), NOW)
     assert [source["id"] for source in risk.sources(db, OWNER, 123)["sources"]] == ["trades", f"saved:{row.id}"]
-
-
-def test_temporary_runs_are_owner_scoped_completed_and_expire(db):
-    backtest = saved(db)
-    job = Job(OWNER, BacktestRequest(start=NOW-timedelta(days=3), end=NOW), status="complete", result=backtest.result_snapshot)
-    foreign = Job(OTHER, job.request, status="complete", result=job.result)
-    risk.jobs.items = {job.id: job, foreign.id: foreign}
-    assert len(risk.jobs.completed(OWNER)) == 1
-    result, _, warnings = risk.load_outcomes(db, OWNER, 123, payload(source_id=f"job:{job.id}"), NOW)
-    assert result[0].net == -25 and any("not this account" in item for item in warnings)
-    with pytest.raises(LookupError):
-        risk.load_outcomes(db, OWNER, 123, payload(source_id=f"job:{foreign.id}"), NOW)
-    job.touched -= 3601
-    assert not risk.jobs.completed(OWNER)
-    with pytest.raises(LookupError):
-        risk.load_outcomes(db, OWNER, 123, payload(source_id=f"job:{job.id}"), NOW)
 
 
 def test_http_routes_validation_tenant_isolation_and_read_only_result(db):

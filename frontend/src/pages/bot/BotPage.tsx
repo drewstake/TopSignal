@@ -15,8 +15,7 @@ import { SessionOrderFlowPanel } from "./SessionOrderFlowPanel";
 import { TopBotActivity, TopBotEvaluation, TopBotThinking } from "./TopBotEvaluation";
 import { TopBotPosition } from "./TopBotPosition";
 import { TopBotStrategyPanel } from "./TopBotStrategyPanel";
-import { TopBotTradeRecorder } from "./TopBotTradeRecorder";
-import { SignalPanel, TopBotEdgePanel } from "./TopBotEdgePanel";
+import { TopBotEdgePanel } from "./TopBotEdgePanel";
 import { OrderflowSettings } from "./OrderflowSettings";
 import { useImbalanceReport } from "./imbalanceReport";
 import { TopBotLiveImbalance } from "./TopBotLiveImbalance";
@@ -102,7 +101,6 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
     {reportAccount != null && monitor.bot?.account_id === reportAccount && monitor.bot.strategy_params?.revision === "dom_contrarian_v1" &&
       <OrderflowSettings key={monitor.bot.id} bot={monitor.bot} onChanged={() => setRefreshToken(value => value + 1)} />}
     {reportAccount != null && <TopBotEdgePanel state={edge} now={now} />}
-    {!demoMode && !pending && !unavailable && accountId != null && <TopBotTradeRecorder accountId={accountId} />}
     <SessionOrderFlowPanel accountId={accountId} contractId={market?.contract_id ?? null} scope={monitor.scope}
       enabled={!demoMode && !pending && !unavailable} />
     <TopBotBiasStrip key={`${market?.contract_id ?? "pending"}:${demoMode}`} market={market} demoMode={demoMode} />
@@ -131,10 +129,9 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
           following={monitor.bot.strategy_params.imbalance_direction === "following"}
           monitor={monitor}
           enabled={!demoMode && !pending && !unavailable && accountId != null} />} />
-    {edge.data && <SignalPanel data={edge.data} now={now} />}
     <TopBotActivity activity={monitor.activity} />
     <TopBotEvaluation activity={strategyActivity} now={now} failed={Boolean(monitor.error)} strategyUnconfigured={strategyUnconfigured} />
-    <TopBotStrategyPanel key={`${accountId}:${demoMode}`} accountId={accountId} bot={monitor.bot} activity={monitor.activity} inclusion={edge.data?.coverage} versionLabels={edge.data?.version_labels}
+    <TopBotStrategyPanel key={`${accountId}:${demoMode}`} accountId={accountId} bot={monitor.bot} activity={monitor.activity} versionLabels={edge.data?.version_labels}
       demoMode={demoMode || pending || unavailable} onChanged={() => setRefreshToken(value => value + 1)} />
     <footer className="topbot-footer"><span>TOPBOT / OBSERVATION WORKSPACE</span><span>Live market streams · recorded bot decisions · times in New York</span></footer>
   </div>;

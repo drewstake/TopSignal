@@ -1,8 +1,10 @@
 """Prospective executable-quote study. No account, order, or provider mutations."""
 
 import heapq
+import json
 import math
 import sqlite3
+import zlib
 from collections import deque
 from datetime import datetime
 from hashlib import sha256
@@ -16,6 +18,26 @@ ET = ZoneInfo("America/New_York")
 
 def directory(cache, owner, account):
     return Path(cache) / SCHEMA / sha256(str(owner).encode()).hexdigest() / str(int(account))
+
+
+def batch_before(cap, stamp):
+    """Seek to the batch preceding a receipt time. The caller must seed from a full snapshot."""
+    last = cap.db.execute("SELECT coalesce(max(id),0) FROM batches").fetchone()[0]
+    lo, hi = 1, last + 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        raw = cap.db.execute("SELECT payload FROM batches WHERE id=?", (mid,)).fetchone()[0]
+        decoder = zlib.decompressobj()
+        data = decoder.decompress(raw, 6 * 1024**2)
+        if not decoder.eof:
+            raise ValueError("Invalid capture batch")
+        end = datetime.fromisoformat(json.loads(data.splitlines()[-1])["received_at"]).timestamp()
+        if end < stamp:
+            lo = mid + 1
+        else:
+            hi = mid
+    row = cap.db.execute("SELECT id,hash,last_index FROM batches WHERE id=?", (lo - 1,)).fetchone()
+    return tuple(row) if row else (0, cap.meta_hash, 0)
 
 
 def open_store(path):

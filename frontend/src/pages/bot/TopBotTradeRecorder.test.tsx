@@ -30,7 +30,7 @@ it("shows the recorder without changing enrollment or fetching trade history unt
   expect(accountsApi.getTrades).not.toHaveBeenCalled();
 });
 
-it("reviews an account's path directly on Bot and keeps the all-trades link scoped", async () => {
+it("reviews an account's path in the recorder panel and keeps the all-trades link scoped", async () => {
   vi.mocked(requestJson).mockImplementation(async url => url.endsWith("/progress") ? { matches: [], status } : status);
   const user = userEvent.setup();
   render(view(1));

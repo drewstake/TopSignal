@@ -259,21 +259,6 @@ def test_trade_cache_provider_fallback_log_uses_safe_reason_code(monkeypatch, ca
     assert record.exc_info is None
 
 
-def test_backtest_stream_internal_failure_does_not_log_exception_text(caplog):
-    caplog.set_level(logging.ERROR, logger=main_module.logger.name)
-
-    response = main_module._backtest_stream_error(
-        RuntimeError(f"{SECRET_SENTINEL}: provider-derived payload"),
-    )
-
-    record = _matching_record(caplog, "backtest_stream_failed")
-    assert response == {"status": 500, "detail": "Backtest failed."}
-    assert SECRET_SENTINEL not in caplog.text
-    assert record.reason_code == "backtest_internal_error"
-    assert record.error_type == "RuntimeError"
-    assert record.exc_info is None
-
-
 @pytest.mark.parametrize(
     ("status_code", "reason_code", "expected_http_status"),
     [

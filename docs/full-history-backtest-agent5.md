@@ -1,6 +1,6 @@
 # Databento full-history backtest boundary
 
-This note documents the current historical replay contract.
+This archived note describes the historical runner before its retirement on November 19, 2026.
 
 - Databento is the only production historical market-data source used by
   `POST /api/bots/{id}/backtests`.

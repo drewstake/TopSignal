@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { botsApi } from "../../lib/api";
 import { usePageVisibility } from "./usePageVisibility";
+import { TopBotRecordingStatus, type RecordingEvidence } from "./TopBotExecutionEvidence";
 import { ago, failureText, PROBLEMS, span, stateLabel } from "./researchStatusFormat";
 
 type Failure = { category?: string; type?: string; code?: string; phase?: string; exit_code?: number; limit_seconds?: number } | null;
@@ -26,7 +27,7 @@ export type ResearchStatus = {
   post_exit_recording: { problems: string[]; scope: string;
     capture: { state: string; durable_age_seconds?: number | null; durable_progress?: string; dropped_events?: number;
       last_drop?: { received_at?: string } | null; uncommitted_events?: number; last_commit_completed_at?: string | null; stale?: boolean;
-      retain_until?: string | null };
+      retain_until?: string | null } & RecordingEvidence["recording"];
     open_windows: { entry_id: number; exit_at?: string | null; exit_reason?: string | null; cutoff: string; seconds_remaining: number;
       position_closed: boolean; retention: { state: string; at?: string; error_type?: string }; capture_matches_entry: boolean | null }[] };
   analysis: { reader: { state?: string; last_cycle_at?: string | null; last_error_type?: string | null; last_error_at?: string | null;
@@ -67,6 +68,7 @@ export function TopBotResearchStatus({ accountId }: { accountId: number }) {
   const stale = error || (data != null && now-data.at > POLL_MS*2);
   return <section className="topbot-panel topbot-research-status" aria-label="Recording and research status">
     <h3>Recording &amp; research status</h3>
+    {value && <TopBotRecordingStatus evidence={{ recording: value.post_exit_recording.capture }} />}
     {stale && <p role="status" className="topbot-warning">{data ? `Status could not be refreshed. Showing data from ${clock(value?.as_of)}; it may be out of date.` : "Status unavailable."}</p>}
     {!value ? (!error && <p className="topbot-muted">Checking recorders and research…</p>) : <div className="topbot-status-grid">
       <PositionRecording value={value} />

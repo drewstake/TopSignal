@@ -21,8 +21,7 @@ It persists:
 
 ProjectX remains the source for API-connected accounts, executions, positions
 and order routing. Topstep Live account executions can also enter
-through the reviewed CSV/XLSX import flow. Databento is the sole historical
-market-data source for backtesting. Both API and imported trade analytics use
+through the reviewed CSV/XLSX import flow. The local cache retains historical Databento market data. Both API and imported trade analytics use
 `projectx_trade_events`, not the legacy `trades` table.
 
 ## Persistence Strategy
@@ -176,9 +175,7 @@ installation that applied the retired relational-market-data migration or used
 the legacy importer. Fresh schemas omit them, and baseline/adoption validation
 does not require them. Their ORM definitions and importer remain available only
 for compatibility. Existing tables and imported rows are left untouched: no
-startup, migration, or cache-building path drops them. The canonical backtest
-source is the local versioned Parquet/mmap cache, and production backtests do
-not query these tables.
+startup, migration, or cache-building path drops them. The canonical historical source is the local versioned Parquet/mmap cache.
 
 - `databento_import_batches` records the Databento job/archive identity,
   archive SHA-256, manifest, progress counts, status, and error/timestamp
@@ -476,7 +473,7 @@ Use the [setup and migration guide](README.md) for fresh baselining, incremental
 - Local anonymous mode uses the synthetic default UUID `00000000-0000-0000-0000-000000000000`
 - The backend contains compatibility patches for older Postgres dev databases
 - The main routed analytics read from `projectx_trade_events`
-- Backtests read the local fingerprinted Databento Parquet/mmap cache and persist only completed evidence in `bot_backtests`
+- Prior runs remain in `bot_backtests` for account-scoped reporting
 - `projectx_market_candles` is retained for live/evaluation workflows, not historical backtest acquisition
 - The legacy `/metrics/*` routes still read from `trades`
 
@@ -485,7 +482,7 @@ Use the [setup and migration guide](README.md) for fresh baselining, incremental
 - models: `backend/app/models.py`
 - DB setup and compatibility patches: `backend/app/db.py`
 - API routes: `backend/app/main.py`
-- configuration backtest replay and snapshot rules: `backend/app/services/bot_backtesting.py`
+- saved historical result reader: `backend/app/services/account_risk_forecast.py`
 - trade sync and summary logic: `backend/app/services/projectx_trades.py`
 - Journal recovery: [archive tool](../backend/tools/archive_journal.py)
 - credentials storage: `backend/app/services/projectx_credentials.py`

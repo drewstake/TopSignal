@@ -24,7 +24,7 @@ import { buildTradeSymbolSearchText, getDisplayTradeSymbol } from "../../lib/tra
 import type { AccountInfo, AccountSummary, AccountTrade } from "../../lib/types";
 import { formatCurrency, formatInteger, formatNumber, formatPercent, formatPnl } from "../../utils/formatters";
 import { runAccountScopedTradeSync } from "./tradesAccountRequests";
-import { ProgressRecorderStatus, TradeProgressReview } from "./TradeProgress";
+import { TradeProgressReview } from "./TradeProgress";
 
 const PAGE_SIZE = 20;
 const DEFAULT_LIMIT = 200;
@@ -634,7 +634,6 @@ export function TradesPage() {
   return (
     <div className="flex flex-col gap-4 pb-8 lg:min-h-0 lg:flex-1 lg:gap-3 lg:overflow-hidden lg:pb-0">
       {reviewTrade && reviewTrade.account_id === selectedAccountId && <TradeProgressReview key={`${selectedAccountId}:${reviewTrade.id}`} trade={reviewTrade} onClose={() => setReviewTrade(null)} />}
-      <ProgressRecorderStatus key={selectedAccountId} account={selectedAccountId} disabled={demoModeEnabled || selectedAccountIsCsvImport} />
       <DemoModeNotice compact>
         <p>
           Filters, paging, and refresh explore the fixed sample timeline. Provider sync is disabled so this page never contacts or changes a connected account.

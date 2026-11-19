@@ -9,10 +9,8 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
 from app.services import bot_service
 from app.bot_schemas import BotStrategyType
-from app.services.bot_backtesting import SUPPORTED_BACKTEST_STRATEGIES
 from app.services.bot_serialization import serialize_supported_bot_configs
 from app.services.bot_strategy_registry import (
-    BACKTEST_SUPPORTED_STRATEGY_IDENTIFIERS,
     STRATEGY_REGISTRY,
     SUPPORTED_STRATEGY_IDENTIFIERS,
     dispatch_strategy,
@@ -50,7 +48,6 @@ def test_registry_contains_every_supported_bot_strategy():
     assert set(STRATEGY_REGISTRY) == EXPECTED_EVALUATORS.keys()
     assert SUPPORTED_STRATEGY_IDENTIFIERS == frozenset(bot_service._SUPPORTED_STRATEGY_TYPES)
     assert SUPPORTED_STRATEGY_IDENTIFIERS == frozenset(get_args(BotStrategyType))
-    assert BACKTEST_SUPPORTED_STRATEGY_IDENTIFIERS == SUPPORTED_BACKTEST_STRATEGIES
 
 
 @pytest.mark.parametrize(("identifier", "evaluator_name"), EXPECTED_EVALUATORS.items())
@@ -66,7 +63,6 @@ def test_registry_entries_expose_required_metadata(identifier, evaluator_name):
     assert callable(definition.evaluator)
     assert definition.evaluator.callable_name == evaluator_name
     assert isinstance(definition.auxiliary_data_requirements, tuple)
-    assert definition.backtesting_supported is (identifier in BACKTEST_SUPPORTED_STRATEGY_IDENTIFIERS)
 
     assert isinstance(definition.parameter_normalizer(None), dict)
     history = definition.minimum_history()

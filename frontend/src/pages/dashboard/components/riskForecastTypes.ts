@@ -1,4 +1,4 @@
-export type RiskSource = { id: string; label: string; kind: "trades" | "saved" | "job" };
+export type RiskSource = { id: string; label: string; kind: "trades" | "saved" };
 export type RiskSources = { account_id: number; balance: number | null; sources: RiskSource[] };
 export type RiskProbability = { probability: number; simulation_interval: [number, number] };
 export type RiskFanPoint = { day: number; p10: number; p50: number; p90: number };

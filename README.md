@@ -1,6 +1,6 @@
 # TopSignal
 
-TopSignal brings ProjectX accounts and Topstep trade exports into one futures trading workspace. Review trading performance, track costs and payouts, follow TopBot’s Micro E-mini Nasdaq-100 (MNQ) practice trades, or test a saved model on historical prices.
+TopSignal brings ProjectX accounts and Topstep trade exports into one futures trading workspace. Review trading performance, track costs and payouts, and follow TopBot’s Micro E-mini Nasdaq-100 (MNQ) practice trades.
 
 [Run locally](#local-quick-start) · [Find the code](#where-to-find-things) · [Explore the features](#feature-tour)
 
@@ -39,13 +39,13 @@ Try **Demo mode** for sample data, or create a **Live Account (CSV)** and previe
 | Expenses (`/expenses`) | [Expenses and payouts](frontend/src/pages/expenses/ExpensesPage.tsx) · [Inferred combine fees](backend/app/services/combine_expenses.py) |
 | Appearance (`/appearance`) | [Theme and zoom controls](frontend/src/pages/themes/ThemePage.tsx) · [Palette definitions](frontend/src/lib/theme.ts) |
 | TopBot (`/bot`) and Logs (`/bot?view=logs`) | [Bot page](frontend/src/pages/bot/BotPage.tsx) · [Practice controls](frontend/src/pages/bot/TopBotStrategyPanel.tsx) · [Account preset](backend/app/services/topbot.py) · [Depth signal](backend/app/services/topbot_strategy.py) · [Position management](backend/app/services/topbot_runner.py) |
-| Bot configuration and execution | [Strategy registry and replay support](backend/app/services/bot_strategy_registry.py) · [API schemas](backend/app/bot_schemas.py) · [Bot service](backend/app/services/bot_service.py) · [Worker and lease handling](backend/app/bot_worker.py) |
+| Bot configuration and execution | [Strategy registry](backend/app/services/bot_strategy_registry.py) · [API schemas](backend/app/bot_schemas.py) · [Bot service](backend/app/services/bot_service.py) · [Worker and lease handling](backend/app/bot_worker.py) |
 | Session order flow, imbalance study and recording | [Session volume](backend/app/services/session_order_flow.py) · [Imbalance study](backend/app/services/imbalance_study.py) · [Standalone depth recorder](backend/tools/record_market_depth.py) · [Account trade-progress recorder](backend/app/services/trade_progress_recorder.py) |
 | Forward results (`/bot-results/:botId`) | [Bot results page](frontend/src/pages/bot/BotForwardResultsPage.tsx) · [Forward observations and simulated accounts](backend/app/services/forward_results.py) |
-| Backtesting (`/backtesting`) | [Backtesting page](frontend/src/pages/backtesting/BacktestingPage.tsx) · [Market-data API](backend/app/market_data_routes.py) · [Historical jobs](backend/app/services/topbot_backtest_jobs.py) · [Saved-model replay](backend/app/services/topbot_backtest.py) · [Configuration replay and saved results](backend/app/services/bot_backtesting.py) |
+| Recorders (`/recorders`) | [Trade paths and recorder status](frontend/src/pages/recorders/RecordersPage.tsx) · [Recorded signal replay](backend/app/services/recorded_signals.py) |
 | Database and host | [Data model](db/data-model.md) · [Schema](db/schema.sql) · [Migrations](db/migrations) · [Migration runner](backend/tools/migrate_db.py) · [Release and task scripts](scripts) · [Operator tools](backend/tools) |
 
-Three shortcuts preserve query parameters. `/data` opens Dashboard, `/themes` opens Appearance and `/logs` opens the Bot Logs view.
+Shortcuts preserve query parameters. `/data` opens Dashboard, `/themes` opens Appearance, `/logs` opens the Bot Logs view and `/backtesting` opens Recorders.
 
 ## Feature tour
 
@@ -107,19 +107,15 @@ The **Session order flow** panel in Bot counts contracts from recorded market tr
 
 ### Study what happens after an imbalance
 
-The **Imbalance signal study** in Bot records when an imbalance first meets the strategy’s threshold and duration, even if no order fills. Compare subsequent price moves at 30 seconds, 2 minutes and 5 minutes with matched below-threshold observations, then inspect skipped signals and linked practice fills. The panel reports the worker’s signals and the independent market observations separately. [Imbalance study](docs/topbot-imbalance-study.md) · [Worker evidence](docs/topbot-worker-evidence.md) · [Exit study](docs/topbot-exit-study.md)
+In **Recorders**, select a capture date and one or more recorded worker signals. Compare two stop and target pairs on the same entries, with modeled fees included. The **Imbalance signal study** also shows subsequent price moves at 30 seconds, 2 minutes and 5 minutes, matched controls, skipped signals and linked practice fills. [Imbalance study](docs/topbot-imbalance-study.md) · [Worker evidence](docs/topbot-worker-evidence.md) · [Exit study](docs/topbot-exit-study.md)
 
 ### Review independent recordings
 
-The host’s standalone depth recorder captures MNQ order-book updates, quotes and market trades so you can inspect past liquidity in Bot. A separate API-managed recorder samples open positions on enrolled ProjectX accounts about once a second, including manual trades. Both collect independently of bot arming, account selection, the browser and the viewing PC, so you can return to Bot or Trades to inspect recorded activity and its coverage gaps. [Recorded liquidity in Bot](docs/order-book-history.md) · [Depth recording](docs/topbot-depth-recording.md) · [Trade-progress recording](docs/trade-progress-recording.md)
+The host’s standalone depth recorder captures MNQ order-book updates, quotes and market trades so you can inspect past liquidity in Bot. A separate API-managed recorder samples open positions on enrolled ProjectX accounts about once a second, including manual trades. Both collect independently of bot arming, account selection, the browser and the viewing PC. Open **Recorders** to check capture status and review trade paths. [Recorded liquidity in Bot](docs/order-book-history.md) · [Depth recording](docs/topbot-depth-recording.md) · [Trade-progress recording](docs/trade-progress-recording.md)
 
 ### Review forward simulations
 
 Open **Bot results** at `/bot-results/:botId` for a bot you own to see how its recorded dry-run decisions played out as new candles arrived. The report shows simulated positions, closed trades, net P&L and rejection reasons, alongside forecast outcomes. [Paper simulation timing and eligibility](docs/topbot-paper-v2.md)
-
-### Backtest a saved model on historical prices
-
-In **Backtesting**, browse locally installed Databento MNQ candles and replay the registered TopBot mathematical model over a historical period after its training cutoff. Set the starting balance, fees and slippage, then inspect simulated trades, equity and drawdown. Export the result as JSON to keep it after the temporary job expires. [History installation](docs/databento-history-transfer.md) · [Replay implementation and benchmarks](docs/databento-backtest-benchmarks.md)
 
 The retired **Simulation** screen let you place trades with simulated funds in a browser-generated market. Its former `/simulation` address now returns to `/`.
 

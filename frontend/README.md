@@ -10,7 +10,7 @@ The account workspace uses React 19, TypeScript, React Router and Vite. Start th
 | Sign-in and owner changes | [AccountAccess](src/app/AccountAccess.tsx) and [local session client](src/lib/localAuth.ts) |
 | Requests and cache invalidation | [API client](src/lib/api.ts) and [shared types](src/lib/types.ts) |
 | Dashboard metrics and imports | [Dashboard components](src/pages/dashboard/components), [dashboard metrics](src/pages/dashboard/metrics) and [shared metric helpers](src/utils/metrics) |
-| Practice controls and historical research | [Bot page](src/pages/bot/BotPage.tsx), [forward results](src/pages/bot/BotForwardResultsPage.tsx) and [Backtesting page](src/pages/backtesting/BacktestingPage.tsx) |
+| Practice controls and forward results | [Bot page](src/pages/bot/BotPage.tsx) and [forward results](src/pages/bot/BotForwardResultsPage.tsx) |
 | Reusable UI and styling | [UI primitives](src/components/ui), [metric components](src/components/metrics) and [styles](src/styles) |
 
 The API client attaches local session tokens, deduplicates in-flight requests and invalidates cached reads after mutations. Account selection, appearance preferences and the dashboard’s analytics-only Copy Trade Mode also use browser state. [Account walkthrough](../docs/account-workspace.md)

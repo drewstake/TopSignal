@@ -175,6 +175,6 @@ limit 20;
 ## Notes
 
 - This repo does not include `db/seed.sql`
-- Databento is the historical market-data source for backtests; canonical raw bars, rolls, and mmap timeframes are local cache artifacts. Fresh schemas omit the retired relational market tables, while upgraded installations retain any existing `databento_*` tables untouched and production replay never queries them
+- Databento raw bars, rolls, and mmap timeframes are retained local cache artifacts. Fresh schemas omit the retired relational market tables, while upgraded installations retain any existing `databento_*` tables untouched and production replay never queries them
 - ProjectX remains the account, execution, position, analytics, and order-routing source
 - The legacy `trades` table still exists for old `/metrics/*` routes

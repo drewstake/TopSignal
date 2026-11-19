@@ -50,7 +50,9 @@ const botStatus = () => within(screen.getByRole("banner")).getByRole("status");
 it("shows green only for a confirmed running bot and healthy worker", async () => {
   render(<MemoryRouter><BotPage /></MemoryRouter>);
   expect(screen.getByRole("heading", { name: "TopBot" })).not.toBeNull();
-  expect(screen.getByText("Trade recorder for 1")).toBeTruthy();
+  expect(screen.queryByText("Trade recorder for 1")).toBeNull();
+  expect(screen.queryByRole("region", { name: "Recording and research status" })).toBeNull();
+  expect(screen.queryByRole("heading", { name: "Recorded live signal replay" })).toBeNull();
   await waitFor(() => expect(botStatus().title).toBe("Dry Run active"));
   expect(botStatus().querySelector(".bg-emerald-400")).not.toBeNull();
   expect(within(screen.getByRole("region", { name: "What TopBot sees" })).getByText("Liquidity history for 1")).toBeTruthy();

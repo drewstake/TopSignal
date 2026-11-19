@@ -3,12 +3,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-import pytest
-
-from app.services import bot_backtesting as replay
 from tools.fixtures import reddit_orb as orb
-from tools.research_reddit_orb import make_engine_class
-from test_bot_backtesting import BASE_TIME, _candle, _config, _scripted_evaluator
 
 
 def setup_rows():
@@ -72,36 +67,6 @@ def test_actual_fill_plan_keeps_absolute_low_and_rejects_wide_risk():
     assert orb.fill_plan(190.25, 90) is None
     assert orb.fill_plan(90, 90) is None
     assert orb.fill_plan(float("nan"), 90) is None
-
-
-@pytest.mark.parametrize("slippage", [1, 2])
-def test_observed_gap_entry_preserves_stop_and_charges_both_fees(slippage):
-    signals = [_candle(BASE_TIME + timedelta(minutes=index)) for index in (0, 5, 10)]
-    minutes = [_candle(BASE_TIME + timedelta(minutes=index), unit_number=1,
-                       open_price=105, high_price=106, low_price=104, close_price=105)
-               for index in range(15)]
-    minutes[6].low_price = 89
-    instruction = {"action": "BUY", "price": 100,
-                   "payload": {"signal_category": "entry", "stop_loss": 90,
-                               "take_profit": 115, "range_low": 90,
-                               "target_position_qty": 1}}
-    engine = make_engine_class(replay, orb, orb.VARIANT)(
-        config=_config(strategy_type="topbot_adaptive", max_daily_loss=250,
-                       max_contracts=1, max_open_position=1),
-        candles=signals, execution_candles=minutes,
-        signal_evaluator=_scripted_evaluator({BASE_TIME: instruction}),
-        settings=replay.BacktestSettings(start=BASE_TIME, end=BASE_TIME + timedelta(minutes=15),
-                                        starting_balance=50_000, commission_per_contract=.61,
-                                        slippage_ticks=slippage, tick_size=.25, tick_value=.5),
-    )
-    result = engine.run()
-    trade = result["trades"][0]
-    assert trade["entry_price"] == 105 + .25 * slippage
-    assert trade["stop_loss"] == 90
-    assert trade["exit_price"] == 90 - .25 * slippage
-    assert trade["commission"] == 1.22
-    assert trade["net_pnl"] == pytest.approx(-30 - slippage - 1.22)
-    assert sum(row["net_pnl"] for row in engine.session_ledger()) == pytest.approx(trade["net_pnl"])
 
 
 def test_holiday_clock_does_not_reset_after_missing_deadline():

@@ -15,7 +15,7 @@ export type SignalStudy = { source: string; total: number; matched: number; fill
 export type EdgeReport = { account_id: number; config_id: number; contract: string; started: string; as_of: string;
   version_labels?: Record<string, string>;
   actual: Actual[]; truncated: boolean; coverage: Inclusion[]; studies: SignalStudy[] };
-export type ReportState = { account: number | null; data?: EdgeReport; message?: string };
+export type ReportState = { account: number | null; data?: EdgeReport; message?: string; checkedAt?: number };
 
 export function savedVersionLabel(version: string, labels?: Record<string, string>) {
   if (labels && Object.hasOwn(labels, version)) return labels[version];
@@ -37,9 +37,9 @@ export function useImbalanceReport(account: number | null) {
       try {
         const report = await requestJson<EdgeReport>(url, { signal: controller.signal });
         if (report.account_id !== account) throw new Error("Account mismatch");
-        if (!controller.signal.aborted) setState({ account, data: report });
+        if (!controller.signal.aborted) setState({ account, data: report, checkedAt: Date.now() });
       } catch (error) {
-        if (!controller.signal.aborted) setState(old => ({ account, data: old.account === account ? old.data : undefined,
+        if (!controller.signal.aborted) setState(old => ({ account, checkedAt: Date.now(), data: old.account === account ? old.data : undefined,
           message: error instanceof ApiError && error.status === 404 ? "No study report for this account." : "Study refresh unavailable." }));
       } finally {
         if (!controller.signal.aborted) timer = setTimeout(load, 20_000);

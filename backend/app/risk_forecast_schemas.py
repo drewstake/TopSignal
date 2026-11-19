@@ -8,7 +8,7 @@ from .input_bounds import MAX_DATABASE_ID
 class RiskForecastRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
-    source_id: str = Field(default="trades", pattern=r"^(trades|saved:[1-9][0-9]{0,18}|job:[a-f0-9]{32})$")
+    source_id: str = Field(default="trades", pattern=r"^(trades|saved:[1-9][0-9]{0,18})$")
     lookback_days: int = Field(default=365, ge=30, le=3650, strict=True)
     horizon_days: int = Field(default=20, ge=1, le=60, strict=True)
     starting_balance: float = Field(ge=-1e9, le=1e9)

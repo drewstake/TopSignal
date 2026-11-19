@@ -18,7 +18,6 @@ vi.mock("./demoData", () => ({
 
 import {
   accountsApi,
-  botsApi,
   requestBlob,
   streamProjectXMarketDepth,
   streamProjectXMarketPrice,
@@ -95,21 +94,6 @@ describe("Demo Mode transport isolation", () => {
 
     closePrice();
     closeDepth();
-  });
-
-  it("blocks both backtest transports before authentication", async () => {
-    const input = {
-      starting_balance: 50_000,
-      commission_per_contract: 1.2,
-      slippage_ticks: 1,
-    };
-
-    await expect(botsApi.runBacktest(7, input)).rejects.toThrow("Demo mode is read-only");
-    await expect(botsApi.runBacktest(7, input, { onProgress: vi.fn() })).rejects.toThrow(
-      "Demo mode is read-only",
-    );
-    expect(getAccessTokenMock).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("cancels an in-flight live JSON request when Demo Mode is enabled", async () => {
@@ -198,16 +182,10 @@ describe("Demo Mode transport isolation", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("wins pending-token races for multipart, blob, and streamed backtest transports", async () => {
-    const input = {
-      starting_balance: 50_000,
-      commission_per_contract: 1.2,
-      slippage_ticks: 1,
-    };
+  it("wins pending-token races for multipart and blob transports", async () => {
     const starts: Array<() => Promise<unknown>> = [
       () => accountsApi.previewTradeImport(910001, new File(["trade"], "trades.csv", { type: "text/csv" })),
       () => requestBlob("/api/accounts/910001/journal/22/images/3/content"),
-      () => botsApi.runBacktest(7, input, { onProgress: vi.fn() }),
     ];
 
     for (const start of starts) {
@@ -227,41 +205,6 @@ describe("Demo Mode transport isolation", () => {
 
       await expect(pending).rejects.toMatchObject({ status: 409 });
       expect(fetch).not.toHaveBeenCalled();
-    }
-  });
-
-  it("aborts both active backtest transports without delivering progress", async () => {
-    const input = {
-      starting_balance: 50_000,
-      commission_per_contract: 1.2,
-      slippage_ticks: 1,
-    };
-
-    for (const streamed of [false, true]) {
-      setDemoModeEnabled(false);
-      getAccessTokenMock.mockReset();
-      getAccessTokenMock.mockResolvedValue("live-token");
-      vi.mocked(fetch).mockReset();
-      const onProgress = vi.fn();
-      let fetchSignal: AbortSignal | undefined;
-      vi.mocked(fetch).mockImplementation((_input, init) => {
-        fetchSignal = init?.signal ?? undefined;
-        return new Promise<Response>((_resolve, reject) => {
-          fetchSignal?.addEventListener(
-            "abort",
-            () => reject(new DOMException("Aborted", "AbortError")),
-            { once: true },
-          );
-        });
-      });
-
-      const pending = botsApi.runBacktest(7, input, streamed ? { onProgress } : undefined);
-      await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
-      setDemoModeEnabled(true);
-
-      expect(fetchSignal?.aborted).toBe(true);
-      await expect(pending).rejects.toMatchObject({ status: 409 });
-      expect(onProgress).not.toHaveBeenCalled();
     }
   });
 
@@ -373,39 +316,6 @@ describe("Demo Mode transport isolation", () => {
 
     closePrice();
     closeDepth();
-  });
-
-  it("suppresses buffered backtest progress and results after Demo activation", async () => {
-    setDemoModeEnabled(false);
-    getAccessTokenMock.mockResolvedValue("live-token");
-    const encoder = new TextEncoder();
-    let streamController!: ReadableStreamDefaultController<Uint8Array>;
-    let fetchSignal: AbortSignal | undefined;
-    vi.mocked(fetch).mockImplementation((_input, init) => {
-      fetchSignal = init?.signal ?? undefined;
-      const stream = new ReadableStream<Uint8Array>({
-        start(controller) {
-          streamController = controller;
-        },
-      });
-      return Promise.resolve(new Response(stream, { status: 200 }));
-    });
-    const onProgress = vi.fn();
-    const pending = botsApi.runBacktest(
-      7,
-      { starting_balance: 50_000, commission_per_contract: 1.2, slippage_ticks: 1 },
-      { onProgress },
-    );
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
-
-    setDemoModeEnabled(true);
-    expect(fetchSignal?.aborted).toBe(true);
-    streamController.enqueue(encoder.encode('event: progress\ndata: {"phase":"replay","percent":80}\n\n'));
-    streamController.enqueue(encoder.encode('event: result\ndata: {"net_pnl":999999}\n\n'));
-    streamController.close();
-
-    await expect(pending).rejects.toMatchObject({ status: 409 });
-    expect(onProgress).not.toHaveBeenCalled();
   });
 
   it("keeps live cached reads out of the Demo cache lane", async () => {

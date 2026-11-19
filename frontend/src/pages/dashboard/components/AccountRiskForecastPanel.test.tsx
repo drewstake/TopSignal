@@ -84,11 +84,11 @@ describe("Account Risk Forecast", () => {
     expect(screen.queryByText("Account floor hit")).toBeNull();
   });
 
-  it("shows expired-source errors and allows retrying", async () => {
-    api.mockResolvedValueOnce(catalog).mockRejectedValueOnce(new Error("Backtest expired or was not found."));
+  it("shows source errors and allows retrying", async () => {
+    api.mockResolvedValueOnce(catalog).mockRejectedValueOnce(new Error("Saved result unavailable."));
     render(<AccountRiskForecastPanel accountId={123} accountName="Main"/>);
     await open(); await calculate();
-    expect((await screen.findByRole("alert")).textContent).toContain("Backtest expired");
+    expect((await screen.findByRole("alert")).textContent).toContain("Saved result unavailable");
     expect((screen.getByRole("button", { name: "Calculate risk forecast" }) as HTMLButtonElement).disabled).toBe(false);
   });
 

@@ -6,6 +6,7 @@ import { AccountAccess } from "./AccountAccess";
 import { ScannerAlerts } from "../pages/scanner/ScannerAlerts";
 
 const ScannerPage = lazy(() => import("../pages/scanner/ScannerPage").then(m => ({ default: m.ScannerPage })));
+const RecordersPage = lazy(() => import("../pages/recorders/RecordersPage").then(m => ({ default: m.RecordersPage })));
 
 const DashboardPage = lazy(() =>
   import("../pages/dashboard/DashboardPage").then((module) => ({ default: module.DashboardPage })),
@@ -28,10 +29,6 @@ const BotForwardResultsPage = lazy(() =>
 const AppearancePage = lazy(() =>
   import("../pages/themes/ThemePage").then((module) => ({ default: module.AppearancePage })),
 );
-const BacktestingPage = lazy(() =>
-  import("../pages/backtesting/BacktestingPage").then((module) => ({ default: module.BacktestingPage })),
-);
-
 export const router = createBrowserRouter([
   {
     path: "/bot-results/:botId",
@@ -79,9 +76,13 @@ export const router = createBrowserRouter([
         errorElement: <RouteErrorPage />,
       },
       {
-        path: "backtesting",
-        element: <BacktestingPage />,
+        path: "recorders",
+        element: <RecordersPage />,
         errorElement: <RouteErrorPage />,
+      },
+      {
+        path: "backtesting",
+        loader: ({ request }) => redirect(`/recorders${new URL(request.url).search}`),
       },
       {
         path: "logs",

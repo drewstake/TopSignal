@@ -12,20 +12,6 @@ from typing import Any, Callable, Literal, Mapping
 
 TimeframeSource = Literal["configured", "fixed", "derived"]
 
-BACKTEST_SUPPORTED_STRATEGY_IDENTIFIERS = frozenset(
-    {
-        "topbot_adaptive",
-        "sma_cross",
-        "ema_trend_pullback",
-        "pullback_trap_reversal",
-        "bollinger_mean_reversion",
-        "bollinger_rsi_reversal",
-        "vwap_atr_mean_reversion",
-        "orb_fibonacci_pullback",
-    }
-)
-
-
 @dataclass(frozen=True)
 class TimeframeRequirement:
     """A candle series required to evaluate a strategy."""
@@ -146,7 +132,6 @@ class StrategyDefinition:
     minimum_history: Callable[..., tuple[HistoryRequirement, ...]]
     evaluator: Callable[..., Any]
     auxiliary_data_requirements: tuple[str, ...]
-    backtesting_supported: bool = False
 
 
 def _configured(
@@ -206,7 +191,6 @@ def _definition(
         minimum_history=MinimumHistoryResolver(identifier),
         evaluator=LazyEvaluator(evaluator_name),
         auxiliary_data_requirements=auxiliary_data_requirements,
-        backtesting_supported=identifier in BACKTEST_SUPPORTED_STRATEGY_IDENTIFIERS,
     )
 
 
@@ -651,7 +635,6 @@ def _resolve_minimum_history(
 
 __all__ = [
     "HistoryRequirement",
-    "BACKTEST_SUPPORTED_STRATEGY_IDENTIFIERS",
     "STRATEGY_REGISTRY",
     "SUPPORTED_STRATEGY_IDENTIFIERS",
     "StrategyDefinition",

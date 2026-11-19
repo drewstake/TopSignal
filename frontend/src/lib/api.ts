@@ -4,7 +4,7 @@ import type { ForwardResults } from "../pages/bot/BotForwardResultsPanel";
 import type { ManualOrderInput, ManualOrderResult, ManualOrderState } from "./manualOrderTypes";
 import { ACCOUNT_EXPENSES_UPDATED_EVENT } from "./financialEvents";
 
-import type { AccountEmergencyFlattenResult, AccountAutomationClassification, AccountArchiveUpdateResult, AccountMainUpdateResult, AccountInfo, AccountLastTradeInfo, AccountRenameResult, AuthMe, LiveImportAccountInput, AccountPnlCalendarDay, AccountSummary, AccountSummaryWithPointBases, AccountTrade, AccountTradeRefreshResult, BehaviorMetrics, CombineTrackerSuppressionsResponse, DayPnlPoint, ExpenseCreateInput, ExpenseListQuery, ExpenseListResponse, ExpenseRange, ExpenseRecord, ExpenseTotals, ExpenseUpdateInput, FinancialSummary, PayoutCreateInput, PayoutListQuery, PayoutListResponse, PayoutRecord, PayoutTotals, HourPnlPoint, StreakMetrics, SummaryMetrics, SymbolPnlPoint, TradeRecord, TradeImportConfirmResult, TradeImportPreview, TradeImportStatus, ProjectXCredentialsInput, ProjectXCredentialsStatus, BotActivity, BotLogs, BotBacktestInput, BotBacktestProgress, BotBacktestResult, BotConfig, BotConfigInput, BotConfigListResponse, BotConfigUpdateInput, BotEvaluation, BotEmergencyFlattenResult, BotRuntimeStatus, BotTimeframeUnit, ProjectXContract, ProjectXMarketCandle, ProjectXMarketDepthConnectionState, ProjectXMarketDepthSnapshot, ProjectXMarketDepthState, ProjectXMarketDepthUpdate, ProjectXMarketPrice, TradeEvaluationResult, TradePlanEvaluationInput } from "./types";
+import type { AccountEmergencyFlattenResult, AccountAutomationClassification, AccountArchiveUpdateResult, AccountMainUpdateResult, AccountInfo, AccountLastTradeInfo, AccountRenameResult, AuthMe, LiveImportAccountInput, AccountPnlCalendarDay, AccountSummary, AccountSummaryWithPointBases, AccountTrade, AccountTradeRefreshResult, BehaviorMetrics, CombineTrackerSuppressionsResponse, DayPnlPoint, ExpenseCreateInput, ExpenseListQuery, ExpenseListResponse, ExpenseRange, ExpenseRecord, ExpenseTotals, ExpenseUpdateInput, FinancialSummary, PayoutCreateInput, PayoutListQuery, PayoutListResponse, PayoutRecord, PayoutTotals, HourPnlPoint, StreakMetrics, SummaryMetrics, SymbolPnlPoint, TradeRecord, TradeImportConfirmResult, TradeImportPreview, TradeImportStatus, ProjectXCredentialsInput, ProjectXCredentialsStatus, BotActivity, BotLogs, BotConfig, BotConfigInput, BotConfigListResponse, BotConfigUpdateInput, BotEvaluation, BotEmergencyFlattenResult, BotRuntimeStatus, BotTimeframeUnit, ProjectXContract, ProjectXMarketCandle, ProjectXMarketDepthConnectionState, ProjectXMarketDepthSnapshot, ProjectXMarketDepthState, ProjectXMarketDepthUpdate, ProjectXMarketPrice, TradeEvaluationResult, TradePlanEvaluationInput } from "./types";
 import { dispatchAccountDisplayNameUpdated } from "./accountSelection";
 import { reclassifyAccountListProviderFreshness } from "./accountProviderState";
 import { isDemoModeEnabled, sanitizeDemoApiResponse, subscribeToDemoModeChanges } from "./demoMode";
@@ -18,7 +18,6 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000
 const ACCOUNTS_CACHE_TTL_MS = 10 * 60_000;
 const ACCOUNT_READ_CACHE_TTL_MS = 10 * 60_000;
 const navigationReadCache = new NavigationReadCache(ACCOUNT_READ_CACHE_TTL_MS);
-const BACKTEST_REQUEST_TIMEOUT_MS = 2 * 60 * 60_000;
 
 type QueryValue = string | number | boolean | null | undefined;
 
@@ -665,10 +664,6 @@ const tradeRefreshCache = new TradeRefreshCache<AccountTradeRefreshResult>();
 
 interface RequestSignalOptions {
   signal?: AbortSignal;
-}
-
-interface BacktestRequestOptions extends RequestSignalOptions {
-  onProgress?: (progress: BotBacktestProgress) => void;
 }
 
 interface GetAccountsOptions {
@@ -2336,7 +2331,7 @@ export function streamProjectXMarketTrades(contractId: string, callbacks: Market
             if (buffer.length > 2_000_000) throw new Error("Trade feed frame exceeds display limit.");
             let boundary = buffer.indexOf("\n\n");
             while (boundary >= 0) {
-              const event = parseBacktestSseFrame(buffer.slice(0, boundary));
+              const event = parseMarketTradesSseFrame(buffer.slice(0, boundary));
               buffer = buffer.slice(boundary + 2);
               if (signal.aborted || isDemoModeEnabled()) return;
               if (event?.event === "trades") {
@@ -2394,12 +2389,12 @@ function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === "AbortError";
 }
 
-interface ParsedBacktestStreamEvent {
+interface MarketTradesStreamEvent {
   event: string;
   data: unknown;
 }
 
-export function parseBacktestSseFrame(frame: string): ParsedBacktestStreamEvent | null {
+function parseMarketTradesSseFrame(frame: string): MarketTradesStreamEvent | null {
   let event = "message";
   const dataLines: string[] = [];
   for (const line of frame.split(/\r?\n/)) {
@@ -2421,206 +2416,6 @@ export function parseBacktestSseFrame(frame: string): ParsedBacktestStreamEvent 
     return { event, data: JSON.parse(dataLines.join("\n")) as unknown };
   } catch {
     return null;
-  }
-}
-
-function parseBacktestProgress(value: unknown): BotBacktestProgress | null {
-  const record = asUnknownRecord(value);
-  if (!record) {
-    return null;
-  }
-  const phase = record.phase;
-  if (
-    phase !== "preparing"
-    && phase !== "loading"
-    && phase !== "replaying"
-    && phase !== "finalizing"
-    && phase !== "complete"
-  ) {
-    return null;
-  }
-  const optionalNumber = (candidate: unknown): number | null => (
-    typeof candidate === "number" && Number.isFinite(candidate) ? candidate : null
-  );
-  const percent = optionalNumber(record.percent);
-  const remainingPercent = optionalNumber(record.remaining_percent);
-  return {
-    phase,
-    completed: optionalNumber(record.completed),
-    total: optionalNumber(record.total),
-    percent: percent === null ? null : Math.max(0, Math.min(100, Math.round(percent))),
-    remaining_percent: remainingPercent === null
-      ? null
-      : Math.max(0, Math.min(100, Math.round(remainingPercent))),
-  };
-}
-
-async function runBacktestStream(
-  botConfigId: number,
-  payload: BotBacktestInput,
-  signal: AbortSignal,
-  onProgress: (progress: BotBacktestProgress) => void,
-): Promise<BotBacktestResult> {
-  if (isDemoModeEnabled()) {
-    throw new ApiError("Demo mode is read-only. Turn it off to sync or save changes.", 409, null, null);
-  }
-  const path = `/api/bots/${botConfigId}/backtests`;
-  const url = buildUrl(path);
-  const accessToken = await getAccessToken();
-  if (isDemoModeEnabled()) {
-    throw new ApiError(DEMO_READ_ONLY_MESSAGE, 409, null, null);
-  }
-  const headers: Record<string, string> = {
-    Accept: "text/event-stream",
-    "Content-Type": "application/json",
-  };
-  if (accessToken) {
-    headers.Authorization = `Bearer ${accessToken}`;
-  }
-  const response = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-    signal,
-    cache: "no-store",
-  });
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    let detail = body || `Backtest request failed (${response.status} ${response.statusText})`;
-    try {
-      const parsed = asUnknownRecord(JSON.parse(body) as unknown);
-      if (typeof parsed?.detail === "string") {
-        detail = parsed.detail;
-      }
-    } catch {
-      // Keep the response text fallback.
-    }
-    throw new ApiError(detail, response.status, body, detail);
-  }
-  if (!response.body) {
-    throw new Error("Backtest progress response did not include a body.");
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let result: BotBacktestResult | null = null;
-
-  const handleFrame = (frame: string) => {
-    if (signal.aborted || isDemoModeEnabled()) {
-      throw new ApiError(DEMO_READ_ONLY_MESSAGE, 409, null, null);
-    }
-    const parsed = parseBacktestSseFrame(frame);
-    if (!parsed) {
-      return;
-    }
-    if (parsed.event === "progress") {
-      const progress = parseBacktestProgress(parsed.data);
-      if (progress) {
-        onProgress(progress);
-      }
-      return;
-    }
-    if (parsed.event === "result") {
-      result = parsed.data as BotBacktestResult;
-      return;
-    }
-    if (parsed.event === "error") {
-      const error = asUnknownRecord(parsed.data);
-      const status = typeof error?.status === "number" ? error.status : 500;
-      const detail = typeof error?.detail === "string"
-        ? error.detail
-        : "Backtest failed.";
-      throw new ApiError(detail, status, parsed.data, error?.detail ?? null);
-    }
-  };
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      buffer += decoder.decode();
-      break;
-    }
-    buffer += decoder.decode(value, { stream: true });
-    let boundary = buffer.search(/\r?\n\r?\n/);
-    while (boundary >= 0) {
-      const frame = buffer.slice(0, boundary);
-      const separator = /^\r\n\r\n/.test(buffer.slice(boundary)) ? 4 : 2;
-      buffer = buffer.slice(boundary + separator);
-      handleFrame(frame);
-      boundary = buffer.search(/\r?\n\r?\n/);
-    }
-  }
-  if (buffer.trim()) {
-    handleFrame(buffer);
-  }
-  if (!result) {
-    throw new Error("Backtest progress stream ended before returning a result.");
-  }
-  if (signal.aborted || isDemoModeEnabled()) {
-    throw new ApiError(DEMO_READ_ONLY_MESSAGE, 409, null, null);
-  }
-  return result;
-}
-
-async function runBacktestRequest(
-  botConfigId: number,
-  payload: BotBacktestInput,
-  options: BacktestRequestOptions = {},
-): Promise<BotBacktestResult> {
-  const controller = new AbortController();
-  let timedOut = false;
-  let blockedByDemo = isDemoModeEnabled();
-  const abortFromCaller = () => controller.abort();
-  if (options.signal?.aborted) {
-    abortFromCaller();
-  } else {
-    options.signal?.addEventListener("abort", abortFromCaller, { once: true });
-  }
-  const timeoutId = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, BACKTEST_REQUEST_TIMEOUT_MS);
-  const unsubscribeFromDemoMode = subscribeToDemoModeChanges(({ enabled }) => {
-    if (enabled) {
-      blockedByDemo = true;
-      controller.abort();
-    }
-  });
-  const finishLiveMutation = options.onProgress && !blockedByDemo ? beginLiveMutationRequest() : null;
-  try {
-    let result: BotBacktestResult;
-    if (options.onProgress) {
-      result = await runBacktestStream(
-        botConfigId,
-        payload,
-        controller.signal,
-        options.onProgress,
-      );
-    } else {
-      result = await requestJson<BotBacktestResult>(`/api/bots/${botConfigId}/backtests`, {
-        method: "POST",
-        body: payload,
-        signal: controller.signal,
-      });
-    }
-    if (blockedByDemo || isDemoModeEnabled()) {
-      throw new ApiError(DEMO_READ_ONLY_MESSAGE, 409, null, null);
-    }
-    return result;
-  } catch (error) {
-    if (blockedByDemo || isDemoModeEnabled()) {
-      throw new ApiError(DEMO_READ_ONLY_MESSAGE, 409, null, null);
-    }
-    if (isAbortError(error) && timedOut) {
-      throw new Error("Full-history backtest timed out after two hours. Start a new Run to supersede it.");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
-    unsubscribeFromDemoMode();
-    options.signal?.removeEventListener("abort", abortFromCaller);
-    finishLiveMutation?.();
   }
 }
 
@@ -2711,7 +2506,6 @@ export const botsApi = {
       body: botStartPayload(options),
       signal: requestOptions.signal,
     }),
-  runBacktest: runBacktestRequest,
   stop: (botConfigId: number) =>
     requestJson<BotEvaluation["run"]>(`/api/bots/${botConfigId}/stop`, {
       method: "POST",

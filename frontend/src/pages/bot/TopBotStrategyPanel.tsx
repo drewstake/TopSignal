@@ -3,10 +3,8 @@ import { botsApi } from "../../lib/api";
 import type { BotActivity, BotConfig } from "../../lib/types";
 import { usePageVisibility } from "./usePageVisibility";
 import { TopBotAuditTrail } from "./TopBotAuditTrail";
-import { TopBotComparison } from "./TopBotComparison";
-import { savedVersionLabel, type Inclusion } from "./imbalanceReport";
-import { TopBotResearchStatus } from "./TopBotResearchStatus";
-import { TopBotExecutionEvidence, TopBotRecordingStatus, type ExecutionEvidence, type ExcursionCoverage, type RecordingEvidence } from "./TopBotExecutionEvidence";
+import { savedVersionLabel } from "./imbalanceReport";
+import { TopBotExecutionEvidence, type ExecutionEvidence, type ExcursionCoverage, type RecordingEvidence } from "./TopBotExecutionEvidence";
 
 type RunnerTrade = {
   entry_id: number; side: string; stats_status: string; entry_at?: string; exit_at?: string;
@@ -44,9 +42,9 @@ function protectionLabel(trade: OpenTradeProtection) {
 const duration = (value: number | null | undefined) => value == null ? "—" : `${(value / 60).toFixed(1)}m`;
 const number = (value: number | undefined) => value == null ? "—" : value.toFixed(2);
 
-export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChanged, inclusion, versionLabels }: {
+export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChanged, versionLabels }: {
   accountId: number | null; bot: BotConfig | null; activity: BotActivity | null;
-  demoMode: boolean; onChanged: () => void; inclusion?: Inclusion[]; versionLabels?: Record<string, string>;
+  demoMode: boolean; onChanged: () => void; versionLabels?: Record<string, string>;
 }) {
   const [stats, setStats] = useState<TopBotStatistics | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -126,10 +124,6 @@ export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChan
       <td><TopBotExecutionEvidence execution={row.execution} coverage={row.coverage} /></td>
     </tr>)}</tbody></table></div> : <p className="topbot-muted">No strategy fills recorded yet. Holding times and P&amp;L populate from broker executions.</p>}
     <p className="topbot-footnote">{stats?.scope ?? "Most recent 500 strategy entries on this account"}. Excursions and milestone times use observed executable quotes and may miss moves during data gaps. A dash means not observed, not zero. Holding-time statistics do not delay stops.</p>
-    {/* Sibling keys must be unique: a shared key makes React orphan a poller without cleanup on every re-render. */}
     <TopBotAuditTrail key={`audit:${accountId}`} accountId={accountId} demoMode={demoMode} />
-    <TopBotRecordingStatus evidence={stats?.depth?.evidence} />
-    {accountId != null && !demoMode && <TopBotResearchStatus key={`research:${accountId}`} accountId={accountId} />}
-    {accountId != null && !demoMode && <TopBotComparison key={`comparison:${accountId}`} accountId={accountId} inclusion={inclusion} />}
   </section>;
 }

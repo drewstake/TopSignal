@@ -3,8 +3,7 @@
 Measured on 2026-07-11 on Windows with the pre-existing local Python 3.10.11
 virtual environment. TopSignal's supported development and CI runtime remains
 Python 3.11 or newer; the version here records the original measurement
-environment and is not a support declaration. Re-run the commands below with a
-supported Python 3.11+ environment for release comparisons. The source
+environment and is not a support declaration. The benchmark commands below refer to the retired historical runner. The source
 fingerprint was
 `8126869196675afdf8e3b0b80817b167dccd4041157897b8935bb6055e29ed92`.
 

@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
-from threading import BoundedSemaphore, Event, Lock
+from threading import BoundedSemaphore
 from time import perf_counter
 from typing import Literal, NamedTuple
 from uuid import uuid4
@@ -80,8 +80,6 @@ from .expense_schemas import (
 from .bot_schemas import (
     AccountEmergencyFlattenOut,
     BotActivityOut,
-    BotBacktestIn,
-    BotBacktestOut,
     BotConfigCreateIn,
     BotConfigListOut,
     BotConfigOut,
@@ -250,17 +248,6 @@ from .services.bot_service import (
     stop_latest_bot_run,
     update_bot_config,
 )
-from .services.bot_backtesting import (
-    BacktestError,
-    BacktestSupersededError,
-    InsufficientBacktestDataError,
-    MalformedBacktestDataError,
-    UnsupportedBacktestStrategyError,
-    create_bot_backtest,
-    databento_backtest_history_available,
-    legacy_projectx_backtest_fixtures_enabled,
-    serialize_bot_backtest,
-)
 from .services.bot_serialization import serialize_supported_bot_configs
 from .services.trade_plan_evaluator import MarketContext, TradePlan, TradePlanEvaluator
 
@@ -299,9 +286,6 @@ _market_trades_registry = ProjectXOrderBookRegistry(
     session_factory=ProjectXMarketTradesSession,
     disconnect_grace_seconds=_DISPLAY_STREAM_DISCONNECT_GRACE_SECONDS,
 )
-_backtest_capacity_lock = Lock()
-_backtest_active_total = 0
-_backtest_active_by_user: dict[str, "_BacktestCapacityLease"] = {}
 _ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
@@ -310,67 +294,6 @@ _ALLOWED_ORIGINS = [
 _ALLOW_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX", _LOCAL_ORIGIN_REGEX)
 _EXPOSE_HEADERS = "Server-Timing, X-Server-Time-Ms, X-Request-ID, Content-Length"
 _ALLOW_ORIGIN_PATTERN = re.compile(_ALLOW_ORIGIN_REGEX) if _ALLOW_ORIGIN_REGEX else None
-
-
-class _BacktestCapacityLease:
-    def __init__(self, user_id: str):
-        self.user_id = user_id
-        self.released = False
-        self.cancel_event = Event()
-
-    def cancel(self) -> None:
-        self.cancel_event.set()
-
-    def is_cancelled(self) -> bool:
-        return self.cancel_event.is_set()
-
-    def _release_locked(self) -> None:
-        global _backtest_active_total
-        if self.released:
-            return
-        self.released = True
-        _backtest_active_total = max(0, _backtest_active_total - 1)
-        if _backtest_active_by_user.get(self.user_id) is self:
-            _backtest_active_by_user.pop(self.user_id, None)
-
-    def release(self) -> None:
-        with _backtest_capacity_lock:
-            self._release_locked()
-
-
-def _backtest_capacity_limit(name: str, default: int) -> int:
-    raw = os.getenv(name, str(default)).strip()
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be a positive integer") from exc
-    if value <= 0:
-        raise RuntimeError(f"{name} must be a positive integer")
-    return value
-
-
-def _acquire_backtest_capacity(user_id: str) -> _BacktestCapacityLease:
-    global _backtest_active_total
-    global_limit = _backtest_capacity_limit("BACKTEST_MAX_CONCURRENT_GLOBAL", 2)
-    _backtest_capacity_limit("BACKTEST_MAX_CONCURRENT_PER_USER", 1)
-    with _backtest_capacity_lock:
-        existing = _backtest_active_by_user.get(user_id)
-        if existing is not None:
-            # A newer Run supersedes this user's older worker. Release its
-            # accounting immediately; cooperative checks stop it before it can
-            # persist a partial or stale result.
-            existing.cancel()
-            existing._release_locked()
-        if _backtest_active_total >= global_limit:
-            raise HTTPException(
-                status_code=429,
-                detail="backtest_capacity_exhausted",
-                headers={"Retry-After": "5"},
-            )
-        lease = _BacktestCapacityLease(user_id)
-        _backtest_active_total += 1
-        _backtest_active_by_user[user_id] = lease
-    return lease
 
 
 def _run_trade_import_preview_cleanup() -> None:
@@ -403,8 +326,6 @@ async def app_lifespan(_: FastAPI):
     if _bot_worker_runtime is not None:
         raise RuntimeError("previous_bot_worker_shutdown_incomplete")
     _validate_runtime_security_configuration()
-    _backtest_capacity_limit("BACKTEST_MAX_CONCURRENT_GLOBAL", 2)
-    _backtest_capacity_limit("BACKTEST_MAX_CONCURRENT_PER_USER", 1)
     guard_against_local_database_url()
     log_runtime_connection_targets()
     init_db()
@@ -3087,238 +3008,6 @@ def delete_trading_bot(
     return Response(status_code=204)
 
 
-@app.post(
-    "/api/bots/{bot_config_id}/backtests",
-    response_model=BotBacktestOut,
-    status_code=201,
-)
-def create_trading_bot_backtest(
-    bot_config_id: int,
-    payload: BotBacktestIn,
-    request: Request = None,  # type: ignore[assignment]
-    db: Session = Depends(get_db),
-):
-    """Prepare required TopBot history, then replay closed candles without routing orders."""
-
-    user_id = get_authenticated_user_id()
-    if bot_config_id <= 0:
-        raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
-    if request is not None and "text/event-stream" in request.headers.get("accept", "").lower():
-        return _stream_trading_bot_backtest(
-            request,
-            user_id=user_id,
-            bot_config_id=bot_config_id,
-            payload=payload,
-        )
-    capacity_lease = _acquire_backtest_capacity(user_id)
-    try:
-        config = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
-        if config is None:
-            raise LookupError("bot_config_not_found")
-        use_legacy_sqlite_fixture = (
-            legacy_projectx_backtest_fixtures_enabled(db)
-            and not databento_backtest_history_available(db, config=config)
-        )
-        client = (
-            _projectx_client_for_user(db, user_id=user_id)
-            if str(payload.strategy_type or config.strategy_type) == "topbot_adaptive"
-            and use_legacy_sqlite_fixture
-            else None
-        )
-        row = create_bot_backtest(
-            db,
-            user_id=user_id,
-            bot_config_id=bot_config_id,
-            payload=payload,
-            client=client,
-            cancellation_callback=capacity_lease.is_cancelled,
-        )
-        if capacity_lease.is_cancelled():
-            raise BacktestSupersededError("backtest_superseded_by_newer_run")
-        db.commit()
-    except ProjectXClientError as exc:
-        db.rollback()
-        raise _to_http_exception(exc) from exc
-    except LookupError as exc:
-        db.rollback()
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except UnsupportedBacktestStrategyError as exc:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except (InsufficientBacktestDataError, MalformedBacktestDataError) as exc:
-        db.rollback()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except BacktestSupersededError as exc:
-        db.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except BacktestError as exc:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        capacity_lease.release()
-    return serialize_bot_backtest(row)
-
-
-def _stream_trading_bot_backtest(
-    request: Request,
-    *,
-    user_id: str,
-    bot_config_id: int,
-    payload: BotBacktestIn,
-) -> StreamingResponse:
-    """Run a backtest off the event loop and stream replay progress to the caller."""
-
-    async def events():
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
-        accept_events = Event()
-        accept_events.set()
-
-        def enqueue(event: dict[str, object] | None) -> None:
-            if not accept_events.is_set():
-                return
-            try:
-                loop.call_soon_threadsafe(queue.put_nowait, event)
-            except RuntimeError:
-                # The browser disconnected and the response event loop is gone.
-                return
-
-        def report_progress(progress: dict[str, object]) -> None:
-            enqueue({"event": "progress", "data": progress})
-
-        def run() -> None:
-            capacity_lease: _BacktestCapacityLease | None = None
-            try:
-                # Reserve capacity only once the worker actually starts. A client
-                # can disconnect after receiving response headers but before this
-                # generator is scheduled; acquiring outside the worker leaked the
-                # per-user slot forever in that race.
-                capacity_lease = _acquire_backtest_capacity(user_id)
-                with SessionLocal() as worker_db:
-                    try:
-                        config = get_bot_config(
-                            worker_db,
-                            user_id=user_id,
-                            bot_config_id=bot_config_id,
-                        )
-                        if config is None:
-                            raise LookupError("bot_config_not_found")
-                        use_legacy_sqlite_fixture = (
-                            legacy_projectx_backtest_fixtures_enabled(worker_db)
-                            and not databento_backtest_history_available(
-                                worker_db,
-                                config=config,
-                            )
-                        )
-                        client = (
-                            _projectx_client_for_user(worker_db, user_id=user_id)
-                            if str(payload.strategy_type or config.strategy_type)
-                            == "topbot_adaptive"
-                            and use_legacy_sqlite_fixture
-                            else None
-                        )
-                        row = create_bot_backtest(
-                            worker_db,
-                            user_id=user_id,
-                            bot_config_id=bot_config_id,
-                            payload=payload,
-                            client=client,
-                            progress_callback=report_progress,
-                            cancellation_callback=capacity_lease.is_cancelled,
-                        )
-                        if capacity_lease.is_cancelled():
-                            raise BacktestSupersededError(
-                                "backtest_superseded_by_newer_run"
-                            )
-                        worker_db.commit()
-                        report_progress(
-                            {
-                                "phase": "complete",
-                                "completed": int(row.bar_count),
-                                "total": int(row.bar_count),
-                                "percent": 100,
-                                "remaining_percent": 0,
-                            }
-                        )
-                        enqueue(
-                            {
-                                "event": "result",
-                                "data": serialize_bot_backtest(row),
-                            }
-                        )
-                    except Exception:
-                        worker_db.rollback()
-                        raise
-            except Exception as exc:
-                enqueue({"event": "error", "data": _backtest_stream_error(exc)})
-            finally:
-                if capacity_lease is not None:
-                    capacity_lease.release()
-                enqueue(None)
-
-        worker: asyncio.Task[None] | None = None
-        try:
-            worker = asyncio.create_task(asyncio.to_thread(run))
-            yield ": connected\n\n"
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-                    continue
-                if event is None:
-                    break
-                yield _serialize_sse_event(event)
-        finally:
-            accept_events.clear()
-            if worker is not None and worker.done():
-                await worker
-            # A disconnected client does not terminate the worker thread. Leave
-            # its task running so the DB transaction finishes and its capacity
-            # lease is released by run(). Progress events are dropped above.
-
-    return StreamingResponse(
-        events(),
-        status_code=200,
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-def _backtest_stream_error(exc: Exception) -> dict[str, object]:
-    if isinstance(exc, HTTPException):
-        return {"status": int(exc.status_code), "detail": exc.detail}
-    if isinstance(exc, ProjectXClientError):
-        http_error = _to_http_exception(exc)
-        return {"status": int(http_error.status_code), "detail": http_error.detail}
-    if isinstance(exc, LookupError):
-        return {"status": 404, "detail": str(exc)}
-    if isinstance(exc, UnsupportedBacktestStrategyError):
-        return {"status": 400, "detail": str(exc)}
-    if isinstance(exc, BacktestSupersededError):
-        return {"status": 409, "detail": str(exc)}
-    if isinstance(exc, (InsufficientBacktestDataError, MalformedBacktestDataError)):
-        return {"status": 422, "detail": str(exc)}
-    if isinstance(exc, BacktestError):
-        return {"status": 400, "detail": str(exc)}
-    logger.error(
-        "backtest_stream_failed",
-        extra={
-            "reason_code": "backtest_internal_error",
-            "error_type": type(exc).__name__,
-        },
-    )
-    return {"status": 500, "detail": "Backtest failed."}
-
-
 def _validate_bot_start_admission(db: Session, body: BotStartIn) -> None:
     if body.poll_interval_seconds is not None:
         raise HTTPException(
@@ -3403,6 +3092,54 @@ def get_topbot_edge(account_id: int, response: Response, db: Session = Depends(g
         raise HTTPException(status_code=404, detail="study_not_enrolled") from exc
     except (OSError, KeyError, ValueError) as exc:
         raise HTTPException(status_code=503, detail="study_unavailable") from exc
+
+
+def _recorded_signal_owner(account_id: int, response: Response, db: Session = Depends(get_db)):
+    owner = get_authenticated_user_id()
+    _require_owned_projectx_account(db, user_id=owner, account_id=account_id)
+    db.rollback()  # Release the account lookup before reading the local capture.
+    response.headers["Cache-Control"] = "no-store"
+    return owner
+
+
+@app.get("/api/accounts/{account_id}/recorded-signals")
+def list_recorded_signals(account_id: int, owner: str = Depends(_recorded_signal_owner),
+                          day: date | None = Query(None, ge=MIN_SUPPORTED_DATE, le=MAX_SUPPORTED_DATE),
+                          before: int | None = Query(None, gt=0, le=MAX_DATABASE_ID)):
+    from .services.recorded_signals import signals
+    try:
+        return signals(owner, account_id, day, before)
+    except (sqlite3.Error, OSError) as exc:
+        raise HTTPException(503, "recorded_signals_unavailable") from exc
+
+
+_SIGNAL_REPLAY_SLOT = BoundedSemaphore(1)
+
+
+@app.get("/api/accounts/{account_id}/recorded-signals/{signal_id}/replay")
+def replay_recorded_signal(request: Request, account_id: int, signal_id: int, owner: str = Depends(_recorded_signal_owner),
+                           direction: Literal["following", "contrarian"] = "following",
+                           quantity: int = Query(1, ge=1, le=2), timed: bool = False,
+                           stop_a: float = Query(gt=0, le=10000, multiple_of=.25),
+                           target_a: float = Query(gt=0, le=10000, multiple_of=.25),
+                           stop_b: float = Query(gt=0, le=10000, multiple_of=.25),
+                           target_b: float = Query(gt=0, le=10000, multiple_of=.25)):
+    from anyio import from_thread
+    from .services.recorded_signals import replay_in_worker, SignalNotFound
+    if not 0 < signal_id <= MAX_DATABASE_ID:
+        raise HTTPException(404, "signal_not_found")
+    if not _SIGNAL_REPLAY_SLOT.acquire(blocking=False):
+        raise HTTPException(429, "signal_replay_busy", headers={"Retry-After": "2"})
+    try:
+        return replay_in_worker(dict(owner=owner, account=account_id, signal_id=signal_id, direction=direction,
+                                     quantity=quantity, timed=timed, stop_a=stop_a, target_a=target_a,
+                                     stop_b=stop_b, target_b=target_b), lambda: from_thread.run(request.is_disconnected))
+    except SignalNotFound as exc:
+        raise HTTPException(404, "signal_not_found") from exc
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        raise HTTPException(503, "signal_capture_unavailable") from exc
+    finally:
+        _SIGNAL_REPLAY_SLOT.release()
 
 
 @app.get("/api/accounts/{account_id}/topbot/comparison")

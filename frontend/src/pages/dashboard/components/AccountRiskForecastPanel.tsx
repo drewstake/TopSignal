@@ -79,8 +79,8 @@ function ForecastForm({ accountId }: { accountId: number }) {
 
   const scenario = result?.scenarios.find(item => item.multiplier === multiplier);
   return <div className="mt-5 space-y-5 border-t border-app-border pt-5">
-    <p className="text-sm text-app-muted">Uses one source at a time. Recorded trades belong to this account; temporary backtests are strategy scenarios applied to its limits. Copy Trade Mode is not combined here.</p>
-    {!catalog && !error && <p role="status" className="text-sm text-app-muted">Loading available trade and backtest sources…</p>}
+    <p className="text-sm text-app-muted">Choose recorded trades or a previously saved result for this account. Each forecast uses one source.</p>
+    {!catalog && !error && <p role="status" className="text-sm text-app-muted">Loading available forecast sources…</p>}
     <form onSubmit={event => void run(event)} onChange={() => { setResult(null); setError(null); }} className="space-y-4">
       <fieldset disabled={busy || !catalog} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <label className={`${labelClass} sm:col-span-2`}>Data source<select value={source} onChange={event => setSource(event.target.value)} className={inputClass}>

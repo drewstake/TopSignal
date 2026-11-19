@@ -122,15 +122,6 @@ def test_receipt_time_prevents_using_provisional_or_future_candle_values(tmp_pat
     assert result.raw_payload["probabilistic_research"]["reasons"][0] == result.reason
 
 
-def test_ordinary_backtest_cannot_replay_a_current_mathematical_artifact():
-    from app.services import bot_backtesting
-    from app.bot_schemas import BotBacktestIn
-    from app.models import BotConfig
-    config = BotConfig(strategy_type="topbot_adaptive", strategy_params=dict(strategy.RULES))
-    with pytest.raises(bot_backtesting.BacktestConfigurationError, match="chronological"):
-        bot_backtesting._config_for_backtest_request(config, BotBacktestIn(strategy_type="topbot_adaptive", instrument="MNQ"))
-
-
 @pytest.mark.parametrize("operation", ["prepare", "start", "evaluate"])
 def test_live_entry_points_require_enabled_worker_before_provider_or_run_changes(db_session, monkeypatch, operation):
     monkeypatch.setenv("TOPSIGNAL_BOT_WORKER_ENABLED", "false")

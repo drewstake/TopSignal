@@ -52,6 +52,22 @@ used once. Unmatched signals stay in the ledger and in the all-signal mean.
 Paired differences include only pairs with both prices at the specified horizon.
 The display shows the latest 40 episodes; the compact SQLite store retains the rest.
 
+## Replay a recorded qualification
+
+Open **Recorders** for the selected ProjectX account. Choose a New York capture
+date, select worker signals, and enter stop and target distances in MNQ points
+for brackets A and B. Both brackets share the original qualification time,
+replay direction, quantity and entry price. The replay reads the retained worker
+capture, including signals without a linked order. The date picker and previous
+and next recorded-day controls include older entries beyond the study summary.
+
+Each result uses the executable bid or ask, displayed size, a 250 ms fill model
+and $1.22 round-trip costs per contract. Optional timed exits use the same
+entry. The comparison total includes signals where both brackets resolved.
+Unresolved exits show the coverage limitation. Each signal is an independent
+hypothetical trade. Portfolio daily limits, overlapping positions and live bot
+settings do not enter this comparison.
+
 ## Operations
 
 The study reads local PostgreSQL using read-only transactions and tails verified
@@ -69,11 +85,11 @@ defers under recorder pressure. The configured release path supplies the
 matching code and local database settings. Verify that binding when changing
 releases or signal semantics. No cloud storage or historical bars are involved.
 
-The November 19 version-label rollout uses the report helper in
-`C:/ProgramData/TopSignal/tools/imbalance-study-20261119-v2`. The study task
-uses the existing protected v1 config. Use the v2 paths for
-`track_imbalances.py`, `imbalance_study.py` and `imbalance_report.py` when
-preparing subsequent host release companion checks.
+The November 19 Recorders release uses the helper in
+`C:/ProgramData/TopSignal/tools/imbalance-study-20261119-v3`. The study task
+uses the existing protected v1 config. Its v3 runner and the replay API share
+the same capture-seeking logic. Include the active paths for `track_imbalances.py`,
+`imbalance_study.py` and `imbalance_report.py` in host release companion checks.
 
 The viewing PC serves the selected account at `http://127.0.0.1:4173/bot` using its
 limited **TopSignal Study View** logon task. The existing host connection

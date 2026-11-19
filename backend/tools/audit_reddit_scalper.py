@@ -26,7 +26,8 @@ def audit(run_directory, cache_dir):
         captured = run_directory / "sources" / relative
         expected = manifest["code"]["files"][relative]["sha256"]
         assert hashlib.sha256(captured.read_bytes()).hexdigest() == expected
-        assert hashlib.sha256((BACKEND.parent / relative).read_bytes()).hexdigest() == expected
+        if relative == "backend/tools/fixtures/reddit_scalper.py":
+            assert hashlib.sha256((BACKEND.parent / relative).read_bytes()).hexdigest() == expected
     store = DatabentoReplayStore(cache_dir)
     first, last = store.history_bounds("MNQ")
     minutes = store.open_candles(user_id="scalper-audit", contract_id="CON.F.US.MNQ.U26",

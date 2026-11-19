@@ -4,12 +4,7 @@ Open **Dashboard → Account Risk Forecast → Configure forecast**. The panel i
 available in both dashboard layouts, scoped to the selected account. It loads
 data only when opened and is unavailable in Demo mode.
 
-Choose recorded account trades, one of the latest 20 saved account backtests,
-or a completed temporary TopBot historical run owned by the signed-in user.
-Temporary runs are strategy scenarios applied to the selected account's limits;
-they are not treated as that account's executed history. They expire with the
-existing backtest job retention (one hour or a backend restart). Refresh sources
-after completing a new backtest. Sources are never pooled together.
+Choose recorded account trades or one of the latest 20 saved results for the selected account. Each forecast uses one source.
 
 Confirm the starting balance and enter the **remaining account loss buffer**:
 current balance minus the current account failure floor. The nominal account
@@ -74,8 +69,7 @@ imply zero risk.
 - `POST /api/accounts/{account_id}/risk-forecast`
 
 Both routes enforce authenticated user and account ownership. Saved backtests
-must also match the selected account. Temporary jobs must match the user and
-be completed and unexpired. Requests are bounded to 50,000 source trades,
+must also match the selected account. Requests are bounded to 50,000 source trades,
 2,000 closes per source day, and 60 forecast days, with one concurrent forecast
 per backend process. Working matrices are limited to 128 paths at a time.
 
@@ -87,5 +81,5 @@ per scenario; no source trade list or input candle series is returned.
 
 Validation covers numerical agreement with a sequential account ledger,
 threshold equality, daily resets, absorbing account failure, trailing caps,
-costs and exposure scaling, insufficient history, source ownership/expiry,
+costs and exposure scaling, insufficient history, source ownership,
 fee reconciliation, and UI account-switch and stale-response behavior.

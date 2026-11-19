@@ -9,9 +9,8 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 import pytest
 
-from app.services.trading_day import TRADING_TZ, trading_day_date
+from app.services.trading_day import TRADING_TZ
 from tools.fixtures import topbot_research_overnight as research
-from tools.research_topbot import make_engine_class
 
 
 def et(value):
@@ -169,64 +168,3 @@ def test_malformed_prices_fail_explicitly_before_producing_a_signal(price):
     rows[-1].close_price = price
     with pytest.raises(ValueError, match="invalid_market_candle"):
         research.evaluate(rows, "overnight_long_75")
-
-
-@pytest.mark.parametrize("variant,expected_entries", [
-    ("overnight_long_50", 2), ("overnight_long_100", 1),
-])
-def test_real_engine_overnight_clock_and_next_day_proposed_stop_budget(variant, expected_entries):
-    from app.services import bot_backtesting as replay
-    from test_bot_backtesting import _config
-
-    rows = signal_rows()
-    next_signal = deepcopy(rows[-1])
-    next_signal.candle_timestamp += timedelta(days=1)
-    signals = [*rows, next_signal]
-    # Synthetic sparse observations deliberately omit the target exit minute.
-    # The actual first available 09:27 open must determine the clock exit.
-    observations = [
-        ("2026-07-06T15:59", 20_000), ("2026-07-06T16:00", 20_000),
-        ("2026-07-06T16:01", 20_000), ("2026-07-06T16:30", 20_000),
-        ("2026-07-06T18:00", 20_000), ("2026-07-07T00:00", 20_000),
-        ("2026-07-07T09:24", 19_960), ("2026-07-07T09:27", 19_960),
-        ("2026-07-07T15:59", 20_000), ("2026-07-07T16:00", 20_000),
-        ("2026-07-07T16:01", 20_000),
-    ]
-    minutes = []
-    for timestamp, price in observations:
-        candle = deepcopy(rows[-1])
-        candle.candle_timestamp = et(timestamp)
-        candle.unit_number = 1
-        candle.open_price = candle.close_price = price
-        candle.high_price, candle.low_price = price + 1, price - 1
-        minutes.append(candle)
-    config = _config(strategy_type="topbot_adaptive", user_id="research-test",
-                     contract_id="CON.F.US.MNQ.U26", allowed_contracts=["CON.F.US.MNQ.U26"],
-                     **research.get_settings(variant))
-    engine = make_engine_class(replay, research, variant)(
-        config=config, candles=signals, execution_candles=minutes,
-        settings=replay.BacktestSettings(
-            start=minutes[0].candle_timestamp, end=et("2026-07-07T16:02"),
-            starting_balance=50_000, commission_per_contract=.61,
-            slippage_ticks=1, tick_size=.25, tick_value=.5,
-        ),
-    )
-    result = engine.run()
-    assert len(result["trades"]) == expected_entries
-    first = result["trades"][0]
-    assert first["signal_timestamp"] == rows[-1].candle_timestamp.isoformat()
-    assert first["entry_timestamp"] == et("2026-07-06T16:00").isoformat()
-    assert first["exit_timestamp"] == et("2026-07-07T09:27").isoformat()
-    assert first["exit_reason"] == "scheduled_session_flatten"
-    risk = research.CANDIDATES[variant]["parameters"]["stop_points"]
-    assert first["stop_loss"] == first["entry_price"] - risk
-    assert first["take_profit"] == first["entry_price"] + 2 * risk
-    assert first["exit_price"] == 19_959.75
-    assert first["commission"] == 1.22
-    assert first["net_pnl"] == pytest.approx(-82.22)
-    assert engine.daily_entry_counts[trading_day_date(et("2026-07-06T16:00"))] == 1
-    if expected_entries == 1:
-        assert engine.block_counts["proposed_stop_risk_exceeds_daily_loss_budget"] == 1
-    else:
-        assert engine.daily_entry_counts[trading_day_date(et("2026-07-07T16:00"))] == 1
-    assert sum(row["net_pnl"] for row in engine.session_ledger()) == pytest.approx(result["metrics"]["net_pnl"])

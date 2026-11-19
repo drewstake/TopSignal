@@ -407,6 +407,7 @@ def _capture_progress(owner, contract, now, samples={}):
     else:
         progress = "idle_no_new_events"
     return {"state": status["state"], "capture_id": capture.capture_id, "durable_index": status["durable_index"],
+            **{key: status.get(key) for key in ("last_durable_at", "durable_events", "inflight_events", "phase", "phase_elapsed_seconds")},
             "produced_index": status["produced_index"], "uncommitted_events": lag,
             "last_commit_completed_at": committed, "durable_age_seconds": round(age, 3) if age is not None else None,
             "durable_progress": progress, "dropped_events": status["dropped_events"], "last_drop": status["last_drop"],

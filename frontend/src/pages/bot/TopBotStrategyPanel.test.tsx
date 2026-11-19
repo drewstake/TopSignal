@@ -42,8 +42,8 @@ it("keeps exactly one audit poller when the panel re-renders", async () => {
   await waitFor(() => expect(screen.getByText(/No audit events recorded yet/)).toBeTruthy());
   expect(screen.getAllByRole("region", { name: "TopBot action audit" })).toHaveLength(1);
   expect(botsApi.getTopBotAudit).toHaveBeenCalledTimes(1);
-  expect(botsApi.getTopBotResearchStatus).toHaveBeenCalledTimes(1);
-  expect(botsApi.getTopBotComparison).toHaveBeenCalledTimes(1);
+  expect(botsApi.getTopBotResearchStatus).not.toHaveBeenCalled();
+  expect(botsApi.getTopBotComparison).not.toHaveBeenCalled();
 });
 it("stops all audit polling when a re-rendered panel unmounts", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });

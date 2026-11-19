@@ -16,7 +16,6 @@ from ..risk_forecast_schemas import RiskForecastRequest
 from .projectx_accounts import get_projectx_account_row
 from .projectx_metrics import _effective_fee
 from .projectx_trades import _non_voided_trade_event_expr, _to_metric_sample
-from .topbot_backtest_jobs import jobs
 from .trading_day import as_utc, trading_day_date, trading_day_key
 
 VERSION = "account-risk-session-blocks-v1"
@@ -53,11 +52,6 @@ def sources(db: Session, owner: str, account_id: int) -> dict:
     choices += [{"id": f"saved:{r.id}", "kind": "saved",
                  "label": f"Saved #{r.id} · {r.strategy_type} · {r.actual_start:%Y-%m-%d} – {r.actual_end:%Y-%m-%d}"}
                 for r in saved]
-    # Local historical runs belong to a user, not an account. Explicitly label
-    # them as scenarios applied to this account's independently entered limits.
-    choices += [{"id": f"job:{r['id']}", "kind": "job",
-                 "label": f"Temporary TopBot scenario · {r['start'][:10]} – {r['end'][:10]} · {r['id'][:8]}"}
-                for r in jobs.completed(owner)]
     balance = float(account.balance) if account.balance is not None else None
     return {"account_id": account_id, "balance": balance if balance is not None and math.isfinite(balance) else None,
             "sources": choices}
@@ -105,18 +99,14 @@ def load_outcomes(db: Session, owner: str, account_id: int, request: RiskForecas
         label = "Recorded account trades"
         warnings.append("Uses locally stored closed trades with the dashboard's fee and commission treatment. Missing imports or unsynced trades are not reconstructed.")
     else:
-        if request.source_id.startswith("saved:"):
-            row = (db.query(BotBacktest).filter(BotBacktest.id == int(request.source_id.split(":")[1]),
-                                             BotBacktest.user_id == owner, BotBacktest.account_id == account_id).first())
-            if row is None:
-                raise LookupError("Saved backtest not found for this account.")
-            result, label = row.result_snapshot, f"Saved backtest #{row.id} · {row.strategy_type}"
-        else:
-            job = jobs.get(owner, request.source_id.split(":")[1])
-            if job["status"] != "complete" or not job["result"]:
-                raise ValueError("Select a completed historical backtest.")
-            result, label = job["result"], f"Temporary TopBot scenario · {job['id'][:8]}"
-            warnings.append("This user-owned historical run is a strategy scenario, not this account's executed trade history. Temporary runs expire after one hour or a backend restart.")
+        row = db.query(BotBacktest).filter(
+            BotBacktest.id == int(request.source_id.split(":")[1]),
+            BotBacktest.user_id == owner,
+            BotBacktest.account_id == account_id,
+        ).first()
+        if row is None:
+            raise LookupError("Saved backtest not found for this account.")
+        result, label = row.result_snapshot, f"Saved backtest #{row.id} · {row.strategy_type}"
         trades = result.get("trades") if isinstance(result, dict) else None
         if not isinstance(trades, list) or len(trades) > MAX_TRADES:
             raise ValueError("Backtest must contain a complete trade list of at most 50,000 trades.")

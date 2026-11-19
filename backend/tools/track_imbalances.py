@@ -7,7 +7,6 @@ import shutil
 import sys
 import threading
 import time
-import zlib
 from contextlib import closing
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -61,22 +60,9 @@ def scope(dsn, cfg):
 
 def start_anchor(cap, start):
     """Seek near the prospective boundary, seeding the book from a later full snapshot."""
-    last = cap.db.execute("SELECT coalesce(max(id),0) FROM batches").fetchone()[0]
-    lo, hi = 1, last + 1
-    while lo < hi:
-        mid = (lo + hi) // 2
-        raw = cap.db.execute("SELECT payload FROM batches WHERE id=?", (mid,)).fetchone()[0]
-        decoder = zlib.decompressobj()
-        data = decoder.decompress(raw, 6 * 1024**2)
-        if not decoder.eof:
-            raise ValueError("Invalid capture batch")
-        end = datetime.fromisoformat(json.loads(data.splitlines()[-1])["received_at"]).timestamp()
-        if end < start - 70:
-            lo = mid + 1
-        else:
-            hi = mid
-    row = cap.db.execute("SELECT id,hash,last_index FROM batches WHERE id=?", (lo - 1,)).fetchone()
-    return tuple(row) if row else (0, cap.meta_hash, 0)
+    from imbalance_study import batch_before
+
+    return batch_before(cap, start - 70)
 
 
 def worker_chunk(path, conn, owner, contract, threshold, persistence, start):

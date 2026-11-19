@@ -39,8 +39,7 @@ the development default is `backend/storage/databento`.
 
 The legacy `backend/tools/import_databento.py` and its service entry points now
 reject non-SQLite database imports before archive inspection or connection.
-SQLite relational imports exist only for repository fixtures. Production
-backtests already read the local cache. Do not remove this guard, repopulate
+SQLite relational imports exist only for repository fixtures. Historical market archives remain in the local cache. Do not remove this guard, repopulate
 legacy cloud tables, or reintroduce cloud candle imports through migrations,
 ad-hoc SQL, backtest results, or a new importer.
 
