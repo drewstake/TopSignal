@@ -2692,6 +2692,10 @@ export const botsApi = {
       method: "PATCH",
       body: payload,
     }),
+  saveOrderflowSettings: (botConfigId: number, settings: {
+    contracts: number; daily_loss_limit: number; daily_profit_target: number;
+    take_profit_points: number; stop_loss_points: number; expected_updated_at: string;
+  }) => requestJson<BotConfig>(`/api/bots/${botConfigId}/orderflow-settings`, { method: "PATCH", body: settings }),
   deleteConfig: (botConfigId: number) =>
     requestJson<void>(`/api/bots/${botConfigId}`, {
       method: "DELETE",

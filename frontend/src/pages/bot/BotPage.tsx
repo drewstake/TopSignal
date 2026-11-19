@@ -17,6 +17,7 @@ import { TopBotPosition } from "./TopBotPosition";
 import { TopBotStrategyPanel } from "./TopBotStrategyPanel";
 import { TopBotTradeRecorder } from "./TopBotTradeRecorder";
 import { SignalPanel, TopBotEdgePanel } from "./TopBotEdgePanel";
+import { OrderflowSettings } from "./OrderflowSettings";
 import { useImbalanceReport } from "./imbalanceReport";
 import { TopBotLiveImbalance } from "./TopBotLiveImbalance";
 import { HistoryView } from "./history/BotLiquidityHistory";
@@ -98,6 +99,8 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
         <span>{monitor.status.label}</span><small>{monitor.updatedAt ? `Bot checked ${timeLabel(monitor.updatedAt)}` : "Waiting for bot status"} · polls every 15s</small>
       </div>
     </header>
+    {reportAccount != null && monitor.bot?.account_id === reportAccount && monitor.bot.strategy_params?.revision === "dom_contrarian_v1" &&
+      <OrderflowSettings key={monitor.bot.id} bot={monitor.bot} onChanged={() => setRefreshToken(value => value + 1)} />}
     {reportAccount != null && <TopBotEdgePanel state={edge} now={now} />}
     {!demoMode && !pending && !unavailable && accountId != null && <TopBotTradeRecorder accountId={accountId} />}
     <SessionOrderFlowPanel accountId={accountId} contractId={market?.contract_id ?? null} scope={monitor.scope}

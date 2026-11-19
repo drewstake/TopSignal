@@ -82,6 +82,19 @@ def test_following_entry_rechecks_direction_and_routes_fixed_brackets(dom_entry,
     assert result.decision.raw_payload["depth_recheck"]["failed_checks"] == []
 
 
+@pytest.mark.parametrize("dom_entry", ["custom_bracket"], indirect=True)
+def test_custom_distances_are_routed_and_saved_with_order(dom_entry):
+    result, client, _ = dom_entry
+    call, = client.place_order_calls
+    assert call["stop_loss_bracket"] == {"ticks": 49, "type": 4}
+    assert call["take_profit_bracket"] == {"ticks": 130, "type": 1}
+    request = result.order_attempt.raw_request
+    assert request["strategySnapshot"]["initial_risk_usd"] == 49
+    assert request["timeExit"]["runner"]["initial_stop_points"] == 12.25
+    assert request["timeExit"]["runner"]["take_profit_points"] == 32.5
+    assert bot_service._order_attempt_protection_block(config=result.config, order_attempt=result.order_attempt) is None
+
+
 @pytest.mark.parametrize("side", ["BUY", "SELL"])
 def test_two_contract_bracket_requires_full_remaining_protection(side):
     direction = 1 if side == "BUY" else -1

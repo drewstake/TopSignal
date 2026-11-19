@@ -12,15 +12,15 @@ from .topbot_depth import feed, utc
 from .topbot_audit import record, scope, client_for
 
 
-def runner_plan(now=None, *, exit_mode="trailing"):
+def runner_plan(now=None, *, exit_mode="trailing", params=None):
     from .topbot_session import flat_deadline, CLOSE_BUFFER
     now = now or datetime.now(timezone.utc)
     if exit_mode not in {"trailing", "fixed"}:
         raise ValueError("Unknown position exit mode")
     return {"status": "pending", "deadline": (flat_deadline(now)-CLOSE_BUFFER).isoformat(),
             "prepared_at": now.isoformat(), "attempts": 0, "reconciliation_cycles": 0,
-            "runner": {"version": 1, "exit_mode": exit_mode, "take_profit_points": 25 if exit_mode == "fixed" else None,
-                       "initial_stop_points": 25, "activation_points": 25,
+            "runner": {"version": 1, "exit_mode": exit_mode, "take_profit_points": (params or {}).get("take_profit_points", 25) if exit_mode == "fixed" else None,
+                       "initial_stop_points": (params or {}).get("initial_stop_points", 25), "activation_points": 25,
                        "trail_points": 25, "stats_status": "awaiting_fill"}}
 
 
@@ -142,11 +142,11 @@ def _verify_two_contract_bracket(entry, plan, stops, orders, remaining):
     entry_prices = runner["entry_fill_prices"]
     mean_price = runner["entry_price"]
     for kind, group, field, offset in (
-        ("stop", stops, "stopPrice", -25),
+        ("stop", stops, "stopPrice", -runner.get("initial_stop_points", 25)),
         ("target", [o for o in orders if o.get("account_id") == entry.account_id
                     and o.get("contract_id") == entry.contract_id and o.get("status") == 1
                     and o.get("side") == (1 if sign == 1 else 0) and o.get("order_type") == 1
-                    and str(o.get("parent_order_id")) == str(entry.provider_order_id)], "limitPrice", 25),
+                    and str(o.get("parent_order_id")) == str(entry.provider_order_id)], "limitPrice", runner.get("take_profit_points", 25)),
     ):
         ids = [str(o["order_id"]) for o in group]
         if not group or len(ids) != len(set(ids)) or sum(working_size(o) for o in group) != remaining:
@@ -211,7 +211,8 @@ def manage(db, *, entry, plan, client, stops, worker_lease_token, now, orders=No
     quote = feed.snapshot(entry.user_id, entry.contract_id)
     checked_at = utc(quote["checked_at"]) if quote.get("checked_at") else datetime.now(timezone.utc)
     # Protection verification is independent of receiving a new quote.
-    initial = runner["entry_price"] + (-25 if entry.side == "BUY" else 25)
+    sign = 1 if entry.side == "BUY" else -1
+    initial = runner["entry_price"] - sign * runner.get("initial_stop_points", 25)
     if (entry.side == "BUY" and current < initial-.001) or (entry.side == "SELL" and current > initial+.001):
         plan["runner_exit_reason"] = "protective_stop_too_wide"
         return True
@@ -227,7 +228,7 @@ def manage(db, *, entry, plan, client, stops, worker_lease_token, now, orders=No
     runner["confirmed_stop"] = current
     fixed = runner.get("exit_mode") == "fixed"
     if fixed:
-        target_price = runner["entry_price"] + (25 if entry.side == "BUY" else -25)
+        target_price = runner["entry_price"] + sign * runner.get("take_profit_points", 25)
         targets = [order for order in (orders or [])
                    if order.get("account_id") == entry.account_id and order.get("contract_id") == entry.contract_id
                    and str(order.get("parent_order_id")) == str(entry.provider_order_id)
@@ -240,7 +241,7 @@ def manage(db, *, entry, plan, client, stops, worker_lease_token, now, orders=No
             return True
         runner.update(confirmed_target=target_price, target_order_id=str(targets[0]["order_id"]),
                       trailing_active=False, desired_stop=current, management_status="Fixed stop and target",
-                      decision_reason="Keep the broker's fixed 25-point stop and 25-point target")
+                      decision_reason="Keep the broker's saved fixed stop and target")
     if not quote.get("ready") or not quote.get("observed_at") or not 0 <= (checked_at-utc(quote["observed_at"])).total_seconds() <= 2:
         runner["management_status"] = "Waiting for fresh prices; broker stop remains active"
         return False

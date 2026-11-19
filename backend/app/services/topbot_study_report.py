@@ -17,7 +17,7 @@ BASELINE_KEY = "1"  # 25-point take-profit, 25-point stop: the current fixed bra
 MIN_ENTRIES = 30
 MIN_SESSIONS = 5
 STALE_SECONDS = 30
-QUESTION = ("Would a larger fixed take-profit perform better than the current 25-point take-profit, "
+QUESTION = ("Would a larger fixed take-profit perform better than the 25-point research baseline, "
             "keeping the stop fixed at 25 points?")
 
 ATTEMPT_LABELS = {
@@ -79,7 +79,7 @@ def exit_settings(db, owner, account, items, now=None):
     if config is not None and selected(config.strategy_params):
         params = config.strategy_params or {}
         mode = exit_mode(params, now)
-        plan = runner_plan(now, exit_mode=mode)["runner"]
+        plan = runner_plan(now, exit_mode=mode, params=params)["runner"]
         future = {"exit_mode": mode, "take_profit_points": plan["take_profit_points"],
                   "initial_stop_points": plan["initial_stop_points"],
                   "trail_activation_points": plan["activation_points"] if mode == "trailing" else None,
@@ -292,14 +292,15 @@ def tp_baseline(results, items_by_id=None, *, phase="exploratory"):
         compared = []
         for r in valid:
             actual = items_by_id.get(r["entry_id"]) or {}
-            if actual.get("strategy_class") == "fixed" and actual.get("exit_reason") in {"take_profit", "initial_stop"}:
+            if (actual.get("strategy_class") == "fixed" and actual.get("initial_stop_points", 25) == 25
+                    and actual.get("take_profit_points", 25) == 25 and actual.get("exit_reason") in {"take_profit", "initial_stop"}):
                 compared.append((r["entry_id"], actual["exit_reason"], _variant(r, BASELINE_KEY).get("exit_reason")))
         agreement = {"compared": len(compared), "same_exit_reason": sum(a == b for _, a, b in compared),
                      "disagreements": [{"entry_id": i, "actual": a, "simulated": b} for i, a, b in compared if a != b][:20],
                      "basis": "Actual fixed-bracket broker exits versus the simulated 25-point baseline on the same entries"}
     return {"report_version": REPORT_VERSION, "question": QUESTION, "experiment_id": EXPERIMENT_ID, "phase": phase,
             "baseline": {"key": BASELINE_KEY, "target_points": 25, "stop_points": PROTOCOL["stop_points"],
-                         "label": "Current fixed bracket: 25-point take-profit, 25-point stop"},
+                         "label": "Research baseline: 25-point take-profit, 25-point stop"},
             "cohort": {"valid_paired_entries": len(valid), "excluded_entries": len(cohort)-len(valid), "sessions": sessions,
                        "includes_losing_trades": True},
             "series": series, "trailing_reference": trailing,

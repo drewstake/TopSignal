@@ -160,9 +160,11 @@ def dom_entry(db_session, monkeypatch, open_exchange_session, request):
         config.strategy_params = {**config.strategy_params, "fixed_bracket_session": trading_day_key(now)}
     elif getattr(request, "param", None) == "persistent_fixed":
         config.strategy_params = {**config.strategy_params, "exit_mode": "fixed"}
-    elif policy in ("following_bid", "following_ask"):
+    elif policy in ("following_bid", "following_ask", "custom_bracket"):
         config.strategy_params = {**config.strategy_params, "imbalance_direction": "following", "exit_mode": "fixed",
                                   "entry_contracts": 2, "daily_pnl_limit": 800}
+        if policy == "custom_bracket":
+            config.strategy_params.update(initial_stop_points=12.25, take_profit_points=32.5, daily_loss_limit=450)
         config.order_size = config.max_contracts = config.max_open_position = 2
         config.max_daily_loss = 800
     db_session.commit()

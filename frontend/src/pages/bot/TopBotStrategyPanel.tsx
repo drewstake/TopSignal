@@ -4,7 +4,7 @@ import type { BotActivity, BotConfig } from "../../lib/types";
 import { usePageVisibility } from "./usePageVisibility";
 import { TopBotAuditTrail } from "./TopBotAuditTrail";
 import { TopBotComparison } from "./TopBotComparison";
-import type { Inclusion } from "./imbalanceReport";
+import { savedVersionLabel, type Inclusion } from "./imbalanceReport";
 import { TopBotResearchStatus } from "./TopBotResearchStatus";
 import { TopBotExecutionEvidence, TopBotRecordingStatus, type ExecutionEvidence, type ExcursionCoverage, type RecordingEvidence } from "./TopBotExecutionEvidence";
 
@@ -89,13 +89,13 @@ export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChan
     } finally { setBusy(false); }
   }
   return <section className="topbot-panel topbot-strategy" aria-label="DOM strategy and trade statistics">
-    <div className="topbot-strategy-heading"><div><h2>{following ? "Following" : "Contrarian"} DOM <span className="topbot-muted">/ Practice API</span></h2>
+    <div className="topbot-strategy-heading"><div><h2>Trade management <span className="topbot-muted">/ Practice API</span></h2>
       <p className="topbot-muted">Up to 100 available levels per side · {Number(bot?.strategy_params?.imbalance_threshold ?? .1) * 100}% imbalance for {Number(bot?.strategy_params?.persistence_seconds ?? 30)}s · {following ? "Bid-heavy → long · Ask-heavy → short" : "Bid-heavy → short · Ask-heavy → long"}</p>
     </div><button className="topbot-run-button" disabled={busy || accountId == null || demoMode}
       onClick={() => void act()}>{busy ? "Updating…" : running ? "Stop new entries" : "Start practice bot"}</button></div>
     <p className="topbot-muted">{bot?.order_size ?? 1} MNQ · New entries: {future ? futureLabel(future) : stats ? "exit settings unavailable" : "checking exit settings…"} · All trading sessions, including overnight · Daily loss limit ${bot?.max_daily_loss ?? 500} · {bot?.strategy_params?.daily_entry_limit_enabled === false ? "Daily entry-count limit disabled" : `Up to ${bot?.max_trades_per_day ?? 4} entries/day`}</p>
     {stats?.exit_settings?.open_trades.map(trade => <p key={trade.entry_id} className="topbot-muted">{protectionLabel(trade)}</p>)}
-    <p className="topbot-muted">Daily profit target +${dailyLimit} · Daily loss stop −${dailyLimit} · Either threshold closes the TopBot position and pauses entries until the next trading session. Includes unrealized P&amp;L. Resets at 18:00 New York.</p>
+    <p className="topbot-muted">Daily profit target +${dailyLimit} · Daily loss stop −${bot?.max_daily_loss ?? dailyLimit} · Either threshold closes the TopBot position and pauses entries until the next trading session. Includes unrealized P&amp;L. Resets at 18:00 New York.</p>
     {fixed && <p className="topbot-muted">{persistentFixed ? "Fixed exits stay selected across sessions and restarts. Open trades keep their saved exit settings." : "Applies to new entries. Trailing exits resume for new entries next session; open trades keep their saved exit settings."}</p>}
     <p className="topbot-muted">Entries pause at the daily flatten cutoff (normally 16:08 New York, earlier on early closes) until the next session opens.</p>
     {stats?.depth && <p className="topbot-muted">Entry check: {stats.depth.ready
@@ -111,11 +111,11 @@ export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChan
       <div><dt>Loser hold · avg / median</dt><dd>{duration(stats?.loser_hold_mean_seconds)} / {duration(stats?.loser_hold_median_seconds)}</dd></div>
     </dl>
     {stats?.items.length ? <div className="topbot-stat-table"><table><thead><tr>
-      <th>Entry (New York)</th><th>Strategy</th><th>Side</th><th>Net / fees</th><th>Hold</th><th>Best / worst (pts)</th>
+      <th>Entry (New York)</th><th>Exit plan</th><th>Side</th><th>Net / fees</th><th>Hold</th><th>Best / worst (pts)</th>
       <th>Giveback (pts)</th><th>Time to +10 / +25 / −10</th><th>Exit / status</th><th>Evidence</th>
     </tr></thead><tbody>{stats.items.map(row => <tr key={row.entry_id}>
       <td>{row.entry_at ? new Date(row.entry_at).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "No fill"}</td>
-      <td title={row.strategy_version_id}>{row.strategy_class ?? "unknown"}<small> · {row.classification_basis?.replaceAll("_", " ") ?? "unsupported"}</small></td>
+      <td title={row.strategy_version_id && savedVersionLabel(row.strategy_version_id, versionLabels)}>{row.strategy_class ?? "unknown"}<small> · {row.classification_basis?.replaceAll("_", " ") ?? "unsupported"}</small></td>
       <td>{row.side}</td><td>{number(row.net_pnl_usd)} / {number(row.fees_usd)}</td><td>{duration(row.hold_seconds)}</td>
       <td>{number(row.mfe_points)} / {number(row.mae_points)}</td><td>{number(row.giveback_points)}</td>
       <td>{duration(row.plus_10)} / {duration(row.plus_25)} / {duration(row.minus_10)}</td>
@@ -130,6 +130,6 @@ export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChan
     <TopBotAuditTrail key={`audit:${accountId}`} accountId={accountId} demoMode={demoMode} />
     <TopBotRecordingStatus evidence={stats?.depth?.evidence} />
     {accountId != null && !demoMode && <TopBotResearchStatus key={`research:${accountId}`} accountId={accountId} />}
-    {accountId != null && !demoMode && <TopBotComparison key={`comparison:${accountId}`} accountId={accountId} inclusion={inclusion} versionLabels={versionLabels} />}
+    {accountId != null && !demoMode && <TopBotComparison key={`comparison:${accountId}`} accountId={accountId} inclusion={inclusion} />}
   </section>;
 }

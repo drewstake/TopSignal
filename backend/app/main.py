@@ -86,6 +86,7 @@ from .bot_schemas import (
     BotConfigListOut,
     BotConfigOut,
     BotConfigUpdateIn,
+    OrderflowSettingsIn,
     BotEmergencyFlattenIn,
     BotEmergencyFlattenOut,
     BotEvaluationOut,
@@ -3030,6 +3031,39 @@ def update_trading_bot(
     return serialize_bot_config(row)
 
 
+@app.patch("/api/bots/{bot_config_id}/orderflow-settings", response_model=BotConfigOut)
+def update_orderflow_settings(bot_config_id: int, payload: OrderflowSettingsIn, db: Session = Depends(get_db)):
+    from .services.bot_service import _as_utc, _require_bot_config, _require_owned_account
+    from .services.topbot_strategy import selected
+    owner = get_authenticated_user_id()
+    try:
+        row = _require_bot_config(db, user_id=owner, bot_config_id=bot_config_id, lock_for_update=True)
+        account = _require_owned_account(db, user_id=owner, account_id=row.account_id)
+        if (account.provider_simulated is not True or row.strategy_type != "topbot_adaptive"
+                or not selected(row.strategy_params) or not row.contract_id.startswith("CON.F.US.MNQ.")):
+            raise ValueError("Orderflow Imbalance settings require an MNQ practice bot")
+        if _as_utc(row.updated_at) != _as_utc(payload.expected_updated_at):
+            raise HTTPException(status_code=409, detail="Settings changed in another session. Reload the saved settings.")
+        params = {**row.strategy_params, "exit_mode": "fixed", "fixed_bracket_session": None,
+                  "entry_contracts": payload.contracts,
+                  "daily_loss_limit": payload.daily_loss_limit, "daily_pnl_limit": payload.daily_profit_target,
+                  "take_profit_points": payload.take_profit_points, "initial_stop_points": payload.stop_loss_points}
+        row = update_bot_config(db, user_id=owner, bot_config_id=bot_config_id, payload=BotConfigUpdateIn(
+            strategy_params=params, order_size=payload.contracts, max_contracts=payload.contracts,
+            max_open_position=payload.contracts, max_daily_loss=payload.daily_loss_limit))
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+    return serialize_bot_config(row)
+
+
 @app.delete("/api/bots/{bot_config_id}", status_code=204)
 def delete_trading_bot(
     bot_config_id: int,
@@ -3856,8 +3890,8 @@ def get_trading_bot_activity(
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     from .services.topbot_strategy import selected as dom_selected
-    from .services.topbot_profit_guard import public_status
-    profit_guard = (public_status(user_id, int(payload["config"].account_id), limit=payload["config"].strategy_params.get("daily_pnl_limit", 500))
+    from .services.topbot_profit_guard import configured_limits, public_status
+    profit_guard = (public_status(user_id, int(payload["config"].account_id), limit=configured_limits(payload["config"].strategy_params))
                     if payload["config"].strategy_type == "topbot_adaptive" and dom_selected(payload["config"].strategy_params) else None)
     return {
         "config": serialize_bot_config(payload["config"]),

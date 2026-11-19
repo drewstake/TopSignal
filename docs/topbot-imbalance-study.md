@@ -10,13 +10,14 @@ experiment and its validation cohort are independent of this study.
 ## What the page measures
 
 - **Bot profitability** uses confirmed practice entries and closed runner outcomes
-  scoped to the account and configuration. The default filter is fixed exits across
-  saved versions. The display can narrow to a version or include trailing exits.
+  scoped to the account and configuration. The dashboard combines saved versions
+  and exit plans under Orderflow Imbalance. The practice editor changes the size,
+  account daily limits and bracket for subsequent entries on that configuration.
   Break-even is average absolute net loss divided by the sum of average net win
   and average absolute net loss. Both win rates omit flats. Closed drawdown orders
   trades by exit time and starts the equity curve at zero. Up to 5,000 recent
   attempts are read; truncation is labeled. Fill prices already incorporate slippage.
-  Saved version menus show the earliest entry in the report for that version (New
+  Historical version labels show the earliest entry in the report for that version (New
   York time), along with the recorded direction, size, exit plan and daily limits
   when available. The version ID remains the filter key.
 - **Exit-study inclusion** uses each registered exploratory entry's actual broker

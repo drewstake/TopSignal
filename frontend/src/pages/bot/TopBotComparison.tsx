@@ -3,7 +3,7 @@ import { botsApi } from "../../lib/api";
 import type { Readiness } from "./TopBotResearchStatus";
 import { ago, span, stateLabel } from "./researchStatusFormat";
 import { InclusionPanel } from "./TopBotEdgePanel";
-import { savedVersionLabel, type Inclusion } from "./imbalanceReport";
+import type { Inclusion } from "./imbalanceReport";
 
 type Metrics = { count: number; sessions: number; wins: number; losses: number; average_win: number | null;
   average_loss: number | null; expectancy: number | null; profit_factor: number | null; interval_95: [number, number] | null };
@@ -44,8 +44,8 @@ function BaselineComparison({ data }: { data: TpBaseline }) {
   const base = data.series.find(s => s.key === "1");
   const larger = data.series.filter(s => s.versus_baseline);
   const t = data.trailing_reference;
-  return <div className="topbot-baseline" aria-label="Larger take-profit versus current 25-point take-profit">
-    <h4>Larger fixed take-profit vs current 25-point take-profit</h4>
+  return <div className="topbot-baseline" aria-label="Larger take-profit versus 25-point research baseline">
+    <h4>Larger fixed take-profit vs 25-point research baseline</h4>
     <p>{data.question}</p>
     <p className="topbot-muted">{data.cohort.valid_paired_entries} valid paired entries across {data.cohort.sessions} sessions (winners and losers) ·
       {" "}{data.cohort.excluded_entries} excluded and not pooled · a directional reading needs at least {data.minimums.entries} entries and {data.minimums.sessions} sessions.</p>
@@ -84,10 +84,9 @@ function Denominators({ r }: { r: Readiness }) {
   </div>;
 }
 
-export function TopBotComparison({ accountId, inclusion, versionLabels }: { accountId: number; inclusion?: Inclusion[]; versionLabels?: Record<string, string> }) {
+export function TopBotComparison({ accountId, inclusion }: { accountId: number; inclusion?: Inclusion[] }) {
   const [data, setData] = useState<Comparison | null>(null);
   const [error, setError] = useState(false);
-  const [version, setVersion] = useState("");
   const [strategy, setStrategy] = useState("");
   const [candidate, setCandidate] = useState("1");
   const [registering, setRegistering] = useState(false);
@@ -101,7 +100,7 @@ export function TopBotComparison({ accountId, inclusion, versionLabels }: { acco
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
       try {
-        const result = await botsApi.getTopBotComparison(accountId, { version, strategy, start, end, phase }, { signal: controller.signal });
+        const result = await botsApi.getTopBotComparison(accountId, { strategy, start, end, phase }, { signal: controller.signal });
         if (result.account_id != null && result.account_id !== accountId) throw new Error("Account mismatch");
         if (!controller.signal.aborted) { setData(result); setError(false); }
       } catch { if (!controller.signal.aborted) setError(true); }
@@ -109,7 +108,7 @@ export function TopBotComparison({ accountId, inclusion, versionLabels }: { acco
     }
     void poll();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [accountId, version, strategy, start, end, phase]);
+  }, [accountId, strategy, start, end, phase]);
   async function register() {
     setRegistering(true); setRegistrationError(null);
     try {
@@ -128,9 +127,7 @@ export function TopBotComparison({ accountId, inclusion, versionLabels }: { acco
   return <section className="topbot-comparison" aria-label="Strategy comparison research">
     <h3>Actual results &amp; exit-only research</h3>
     <div className="topbot-comparison-filters">
-      <label>Actual entry strategy <select value={strategy} onChange={e => change(setStrategy, e.target.value)}><option value="">All saved strategies</option><option value="trailing">Trailing</option><option value="fixed">Fixed</option><option value="unknown">Unknown</option></select></label>
-      <label>Strategy version <select className="topbot-version-select" value={version} onChange={e => change(setVersion, e.target.value)}><option value="">All versions</option>
-        {data?.versions.map(v => <option key={v} value={v}>{savedVersionLabel(v, versionLabels)}</option>)}{version && !data?.versions.includes(version) && <option value={version}>{savedVersionLabel(version, versionLabels)}</option>}</select></label>
+      <label>Historical exit plan <select value={strategy} onChange={e => change(setStrategy, e.target.value)}><option value="">All exit plans</option><option value="trailing">Trailing</option><option value="fixed">Fixed</option><option value="unknown">Unknown</option></select></label>
       <label>From (UTC) <input type="date" value={start} onChange={e => change(setStart, e.target.value)} /></label>
       <label>Through (UTC) <input type="date" value={end} onChange={e => change(setEnd, e.target.value)} /></label>
       <label>Units <select value={unit} onChange={e => setUnit(e.target.value as "dollars" | "r")}><option value="dollars">Dollars</option><option value="r">R</option></select></label>
@@ -149,7 +146,7 @@ export function TopBotComparison({ accountId, inclusion, versionLabels }: { acco
         {data.research_health?.account_deferred != null ? ` · this account: ${data.research_health.account_deferred} deferred, ${data.research_health.account_overdue ?? 0} overdue` : ""}
         {data.research_health?.oldest_overdue ? ` · oldest overdue entry ${data.research_health.oldest_overdue.entry_id} (${span(data.research_health.oldest_overdue.overdue_seconds)})` : ""}
         {data.research_health?.last_error_type ? ` · last reader problem: ${data.research_health.last_error_type.replaceAll("_", " ")}` : ""}.</p>
-      {phase === "exploratory" && <InclusionPanel rows={inclusion} version={version} mode={strategy} start={start} end={end} />}
+      {phase === "exploratory" && <InclusionPanel rows={inclusion} version="" mode={strategy} start={start} end={end} />}
       {data.tp_baseline && phase === "exploratory" && <BaselineComparison data={data.tp_baseline} />}
       <p className="topbot-footnote">Nine variants on 100 entries are 100 market observations. One hundred is exploratory; validate a prespecified candidate on later unseen data. No automatic promotion to live trading.</p>
       {data.selection ? <p>Prespecified candidate {data.selection.ratio}:1 · registered {new Date(data.selection.registered_at).toLocaleString()}. Validation uses later entries after registration and the first 100 observations.</p>

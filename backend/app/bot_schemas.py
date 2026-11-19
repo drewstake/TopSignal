@@ -120,6 +120,16 @@ class BotConfigCreateIn(BotConfigBase):
     enabled: bool = False
 
 
+class OrderflowSettingsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    contracts: int = Field(strict=True, ge=1, le=2)
+    daily_loss_limit: float = Field(gt=0, allow_inf_nan=False)
+    daily_profit_target: float = Field(gt=0, allow_inf_nan=False)
+    take_profit_points: float = Field(gt=0, multiple_of=.25, allow_inf_nan=False)
+    stop_loss_points: float = Field(gt=0, multiple_of=.25, allow_inf_nan=False)
+    expected_updated_at: datetime
+
+
 class BotConfigUpdateIn(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     account_id: int | None = Field(default=None, gt=0)

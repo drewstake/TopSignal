@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { performance, savedVersionLabel, type EdgeReport, type Inclusion, type ReportState, type SignalStudy } from "./imbalanceReport";
+import { performance, type EdgeReport, type Inclusion, type ReportState, type SignalStudy } from "./imbalanceReport";
 
 const money = (v: number | null) => v == null ? "—" : v.toLocaleString("en-US", { style: "currency", currency: "USD" });
 const pct = (v: number | null) => v == null ? "—" : (v*100).toFixed(1)+"%";
@@ -17,19 +17,9 @@ export function TopBotEdgePanel({ state, now }: { state: ReportState; now: numbe
 }
 
 function PerformanceView({ data, now }: { data: EdgeReport; now: number }) {
-  const [mode, setMode] = useState("fixed");
-  const [version, setVersion] = useState("");
-  const trades = data.actual.filter(t => (!mode || t.mode === mode) && (!version || t.version === version));
-  const stats = performance(trades);
-  const versions = [...new Set(data.actual.filter(t => !mode || t.mode === mode).map(t => t.version))];
+  const stats = performance(data.actual);
   const delta = stats.rate != null && stats.breakeven != null ? (stats.rate-stats.breakeven)*100 : null;
   return <>
-    <div className="topbot-comparison-filters">
-      <label>Exit plan <select value={mode} onChange={e => { setMode(e.target.value); setVersion(""); }}>
-        <option value="fixed">Fixed bracket</option><option value="trailing">Trailing stop</option><option value="">All saved plans</option></select></label>
-      <label>Saved strategy version <select className="topbot-version-select" value={version} onChange={e => setVersion(e.target.value)}>
-        <option value="">All versions</option>{versions.map(v => <option key={v} value={v}>{savedVersionLabel(v, data.version_labels)}</option>)}</select></label>
-    </div>
     <p className="topbot-muted">{stats.count} closed practice trades · {stats.sessions} trading sessions · {stats.win} wins / {stats.loss} losses / {stats.flats} flat
       {" · "}Updated {time(data.as_of)}{now-Date.parse(data.as_of)>90_000 && " · Stale report"}{data.truncated && " · Latest 5,000 attempts only"}</p>
     <dl className="topbot-levels topbot-stat-summary">
@@ -40,10 +30,10 @@ function PerformanceView({ data, now }: { data: EdgeReport; now: number }) {
       <div><dt>Gross / fees &amp; commissions</dt><dd>{money(stats.gross)} / {money(stats.costs)}</dd></div>
       <div><dt>Closed-equity max drawdown</dt><dd>{money(stats.drawdown)}</dd></div>
     </dl>
-    <p className="topbot-footnote">Break-even uses realized average wins and losses after costs. Both rates exclude flat trades. Drawdown measures peak to trough on closed trades.</p>
+    <p className="topbot-footnote">Includes trades under earlier settings and exit plans. Break-even uses realized average wins and losses after costs. Both rates exclude flat trades. Drawdown measures peak to trough on closed trades.</p>
     <details><summary>Qualification quote, pre-submit quote and entry fill</summary>
       <div className="topbot-stat-table"><table><thead><tr><th>Entry (ET)</th><th>Side</th><th>Qualification</th><th>Pre-submit</th><th>Fill</th><th>Delay (ticks)</th><th>Fill slippage (ticks)</th></tr></thead>
-        <tbody>{trades.slice(0,30).map(t => <tr key={t.id}><td>{time(t.entry)}</td><td>{t.side}</td><td>{fmt(t.qualify)}</td><td>{fmt(t.submit)}</td><td>{fmt(t.fill)}</td>
+        <tbody>{data.actual.slice(0,30).map(t => <tr key={t.id}><td>{time(t.entry)}</td><td>{t.side}</td><td>{fmt(t.qualify)}</td><td>{fmt(t.submit)}</td><td>{fmt(t.fill)}</td>
           <td>{ticks(t.qualify,t.submit,t.side)}</td><td>{ticks(t.submit,t.fill,t.side)}</td></tr>)}</tbody></table></div>
       <p className="topbot-footnote">Ask for a buy, bid for a sell. Positive ticks are adverse. Actual fills already include slippage. A dash means the relevant quote or fill is unavailable.</p>
     </details>

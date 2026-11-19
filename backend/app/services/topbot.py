@@ -112,6 +112,11 @@ def prepare_topbot(
             values.update(order_size=contracts, max_contracts=contracts, max_open_position=contracts)
         if "daily_pnl_limit" in saved:
             values["max_daily_loss"] = values["strategy_params"]["daily_pnl_limit"] = saved["daily_pnl_limit"]
+        if "daily_loss_limit" in saved:
+            values["max_daily_loss"] = values["strategy_params"]["daily_loss_limit"] = saved["daily_loss_limit"]
+        for key in ("initial_stop_points", "take_profit_points", "imbalance_threshold", "persistence_seconds"):
+            if key in saved:
+                values["strategy_params"][key] = saved[key]
         if existing.strategy_params.get("imbalance_direction") == "following":
             values["strategy_params"]["imbalance_direction"] = "following"
     values.update(

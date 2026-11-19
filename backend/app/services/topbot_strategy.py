@@ -37,15 +37,26 @@ def normalize_params(params=None):
         raise ValueError("TopBot supports one or two MNQ contracts")
     if contracts == 2:
         result["entry_contracts"] = contracts
-    limit = (params or {}).get("daily_pnl_limit", 500)
-    if type(limit) not in (float, int) or not math.isfinite(limit) or limit <= 0:
-        raise ValueError("Invalid daily P&L limit")
-    if limit != 500:
-        result["daily_pnl_limit"] = limit
+    for key in ("daily_pnl_limit", "daily_loss_limit"):
+        if key in (params or {}):
+            limit = params[key]
+            if type(limit) not in (float, int) or not math.isfinite(limit) or limit <= 0:
+                raise ValueError("Invalid daily P&L limit")
+            if key == "daily_loss_limit" or limit != 500:
+                result[key] = limit
     mode = (params or {}).get("exit_mode", "trailing")
     if mode not in ("trailing", "fixed"):
         raise ValueError("Invalid exit_mode; expected trailing or fixed")
     result["exit_mode"] = mode
+    for key in ("initial_stop_points", "take_profit_points"):
+        points = (params or {}).get(key, 25)
+        if (type(points) not in (int, float) or not 0 < points <= 2147483647 / 4
+                or int(points * 4) != points * 4):
+            raise ValueError(f"{key} must be a positive distance in MNQ quarter-point ticks")
+        if points != 25:
+            if mode != "fixed":
+                raise ValueError("Custom bracket distances require fixed exits")
+            result[key] = points
     if contracts == 2 and mode != "fixed":
         raise ValueError("Two-contract entries require fixed brackets")
     session = (params or {}).get("fixed_bracket_session")
@@ -129,12 +140,15 @@ def evaluate(candles, *, strategy_params=None, owner=None, contract_id=None, obs
     price = observation["bid"] if action == "SELL" else observation["ask"]
     at = datetime.fromisoformat(observation["episode_at"])
     contracts = params.get("entry_contracts", 1)
-    payload.update(live_routing_allowed=True, signal_category="entry", protective_stop_ticks=100,
-                   stop_loss=price + (25 if action == "SELL" else -25),
+    stop = params["initial_stop_points"]
+    sign = 1 if action == "BUY" else -1
+    payload.update(live_routing_allowed=True, signal_category="entry", protective_stop_ticks=int(stop * 4),
+                   stop_loss=price - sign * stop,
                    current_position_qty=0, target_position_qty=-contracts if action == "SELL" else contracts,
                    effective_order_size=contracts)
     if payload["exit_mode"] == "fixed":
-        payload.update(take_profit_ticks=100, take_profit=price + (-25 if action == "SELL" else 25),
+        target = params.get("take_profit_points", 25)
+        payload.update(take_profit_ticks=int(target * 4), take_profit=price + sign * target,
                        fixed_bracket_session=params["fixed_bracket_session"])
     direction = params.get("imbalance_direction", "contrarian")
     payload["imbalance_direction"] = direction

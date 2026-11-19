@@ -1095,6 +1095,9 @@ export interface BotAnalysis {
 export interface BotStrategyParams {
   imbalance_direction?: "contrarian" | "following";
   daily_pnl_limit?: number;
+  daily_loss_limit?: number;
+  take_profit_points?: number;
+  initial_stop_points?: number;
   exit_mode?: "fixed" | "trailing";
   imbalance_threshold?: number;
   persistence_seconds?: number;

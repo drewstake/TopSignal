@@ -23,7 +23,7 @@ it("separates actual strategies, shows missing coverage and all nine ratios with
   expect(screen.getByText(/0 valid shared entries.*2 excluded.*1 pending/)).toBeTruthy();
   expect(screen.getByText("3:1 · 75 pts")).toBeTruthy();
   expect(screen.getByText(/Entry 4: capture_index_gap/)).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("Actual entry strategy"), { target: { value: "fixed" } });
+  fireEvent.change(screen.getByLabelText("Historical exit plan"), { target: { value: "fixed" } });
   await waitFor(() => expect(botsApi.getTopBotComparison).toHaveBeenLastCalledWith(123, expect.objectContaining({ strategy: "fixed" }), expect.anything()));
   expect(order).not.toHaveBeenCalled();
 });
@@ -72,7 +72,7 @@ it("answers the 25-point baseline question with denominators, pending categories
       baseline_agreement: { compared: 3, same_exit_reason: 3, disagreements: [] }, minimums: { entries: 30, sessions: 5 },
       interval_methods: { pointwise: "pw", adjusted: "adj" }, caveats: ["More entries do not settle the question by themselves."] } });
   render(<TopBotComparison accountId={123} />);
-  await screen.findByLabelText("Larger take-profit versus current 25-point take-profit");
+  await screen.findByLabelText("Larger take-profit versus 25-point research baseline");
   expect(screen.getByText(/Overall usable: 3 of 20 registered filled entries \(15%\), pending included/)).toBeTruthy();
   expect(screen.getByText(/Processed coverage: 3 valid of 4 processed \(75%\)/)).toBeTruthy();
   expect(screen.getByText(/Pending 16: 3 observation window open · 9 queued · 1 replaying · 2 retrying · 1 failed/)).toBeTruthy();

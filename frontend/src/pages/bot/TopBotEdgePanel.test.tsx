@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { performance, type Actual } from "./imbalanceReport";
 import { InclusionPanel, TopBotEdgePanel } from "./TopBotEdgePanel";
@@ -10,17 +10,13 @@ const trade = (id: number, net: number, date: string): Actual => ({
 });
 
 describe("closed outcomes", () => {
-  it("filters by the saved ID when showing a descriptive version name", () => {
+  it("combines historical versions under one strategy", () => {
     const date = "2026-11-19T18:00:00Z";
     const data = { account_id: 1, config_id: 1, contract: "MNQ", started: date, as_of: date,
-      truncated: false, studies: [], coverage: [], version_labels: { v1: "Contrarian · 1 MNQ", v2: "Follow imbalance · 2 MNQ" },
-      actual: [trade(1, 10, date), { ...trade(2, 20, date), version: "v2" }] };
+      truncated: false, studies: [], coverage: [], actual: [trade(1, 10, date), { ...trade(2, 20, date), version: "v2", mode: "trailing" }] };
     render(<TopBotEdgePanel state={{ account: 1, data }} now={Date.parse(date)} />);
-    const select = screen.getByRole("combobox", { name: "Saved strategy version" });
-    const option = within(select).getByRole<HTMLOptionElement>("option", { name: "Follow imbalance · 2 MNQ" });
-    expect(option.value).toBe("v2");
-    fireEvent.change(select, { target: { value: option.value } });
-    expect(screen.getByText("Net P&L").nextElementSibling?.textContent).toBe("$20.00");
+    expect(screen.queryByRole("combobox", { name: "Saved strategy version" })).toBeNull();
+    expect(screen.getByText("Net P&L").nextElementSibling?.textContent).toBe("$30.00");
   });
   it("sorts by closing time, includes fees once and excludes flats from both win rates", () => {
     const t = (id: number, net: number) => trade(id, net, "2026-11-10T12:0"+id+":00Z");

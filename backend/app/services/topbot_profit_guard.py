@@ -31,12 +31,18 @@ def _empty(now):
 
 def _current_policy(state, limit=TARGET):
     """Retire saved break-even latches without deleting historical audit events."""
-    if type(limit) not in (int, float) or not math.isfinite(limit) or limit <= 0:
+    target, loss = limit if isinstance(limit, tuple) else (limit, limit)
+    if any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0 for v in (target, loss)):
         raise ValueError("Invalid daily P&L limit")
-    state.update(target=limit, loss_limit=limit, armed=False, arm_at=None, floor=None)
+    state.update(target=target, loss_limit=loss, armed=False, arm_at=None, floor=None)
     if state.get("trigger") == "daily_profit_breakeven_stop":
         state.update(trigger=None, triggered_at=None)
     return state
+
+
+def configured_limits(params):
+    target = params.get("daily_pnl_limit", TARGET)
+    return (target, params["daily_loss_limit"]) if "daily_loss_limit" in params else target
 
 
 def read(owner, account_id, *, limit=TARGET, now=None):

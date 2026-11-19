@@ -12,6 +12,13 @@ from test_topbot_dom import dom_entry
 NOW = datetime(2026, 11, 3, 15, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize("pnl,expected", [(450,None), (-450,"daily_loss_limit_reached"), (800,"daily_profit_target_reached")])
+def test_independent_session_limits(pnl, expected):
+    limits = guard.configured_limits({"daily_pnl_limit": 800, "daily_loss_limit": 450})
+    state = guard.observe(USER_A, 9001, pnl, now=NOW, limit=limits)
+    assert (state["target"], state["loss_limit"], state["trigger"]) == (800, 450, expected)
+
+
 @pytest.mark.parametrize("values,armed,trigger", [
     ([199.99, 0, -249], False, None),
     ([200, 100, .01], False, None),

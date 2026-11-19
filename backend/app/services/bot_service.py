@@ -11543,7 +11543,7 @@ def evaluate_risk_gates(
             and dom_selected(config.strategy_params)):
         from . import topbot_profit_guard as profit_guard
         try:
-            limit = config.strategy_params.get("daily_pnl_limit", profit_guard.TARGET)
+            limit = profit_guard.configured_limits(config.strategy_params)
             profit_state = profit_guard.read(user_id, int(config.account_id), limit=limit, now=now)
             if authoritative_entry_risk_required and not profit_state["trigger"]:
                 if (not preflight.unrealized_pnl_complete
@@ -13039,7 +13039,8 @@ def _create_order_attempt(
     from .topbot_strategy import selected as dom_selected
     if execution_mode == "live" and str(config.strategy_type) == "topbot_adaptive" and dom_selected(config.strategy_params):
         from .topbot_runner import runner_plan
-        request_payload["timeExit"] = runner_plan(exit_mode=(decision.raw_payload or {}).get("exit_mode", "trailing"))
+        request_payload["timeExit"] = runner_plan(exit_mode=(decision.raw_payload or {}).get("exit_mode", "trailing"),
+                                                  params=config.strategy_params)
         from .topbot_evidence import binding
         payload = decision.raw_payload or {}
         request_payload["entryEvidence"] = {"implementation": binding(),
@@ -13048,6 +13049,8 @@ def _create_order_attempt(
         from .topbot_study import entry_snapshot
         request_payload["strategySnapshot"] = entry_snapshot(config, account=int(config.account_id),
             contract=contract_id, side=action, quantity=order_size, plan=request_payload["timeExit"])
+        stop_points = request_payload["timeExit"]["runner"]["initial_stop_points"]
+        request_payload["strategySnapshot"].update(initial_risk_points=stop_points, initial_risk_usd=stop_points*2*order_size)
     row = BotOrderAttempt(
         user_id=user_id,
         bot_config_id=int(config.id),
@@ -13592,8 +13595,11 @@ def _strategy_protection_block(
         from .topbot_strategy import CONFIGURED, MESSAGE, selected as dom_selected
         if not CONFIGURED or not dom_selected(config.strategy_params):
             return RiskBlock(code="strategy_not_configured", message=MESSAGE, severity="critical")
-        if payload.get("live_routing_allowed") is not True or payload.get("protective_stop_ticks") != 100:
-            return RiskBlock(code="dom_signal_invalid", message="A qualifying DOM signal and 100-tick protective stop are required.")
+        if (payload.get("live_routing_allowed") is not True
+                or payload.get("protective_stop_ticks") != config.strategy_params.get("initial_stop_points", 25)*4
+                or (payload.get("exit_mode") == "fixed"
+                    and payload.get("take_profit_ticks") != config.strategy_params.get("take_profit_points", 25)*4)):
+            return RiskBlock(code="dom_signal_invalid", message="The signal must match the configured Orderflow Imbalance bracket.")
         if (not re.fullmatch(r"CON\.F\.US\.MNQ\.[A-Z]\d{2}", contract_id) or instrument_spec is None
                 or float(instrument_spec.tick_size) != .25 or float(instrument_spec.tick_value) != .5):
             return RiskBlock(code="dom_instrument_invalid", message="The strategy requires verified MNQ tick metadata.")
@@ -13703,10 +13709,12 @@ def _order_attempt_protection_block(
         )
     runner = (request.get("timeExit") or {}).get("runner") or {}
     if runner.get("exit_mode") == "fixed" and (
-            stop_bracket != {"ticks": 100, "type": 4}
-            or request.get("takeProfitBracket") != {"ticks": 100, "type": 1}):
+            stop_bracket != {"ticks": runner.get("initial_stop_points", 25)*4, "type": 4}
+            or request.get("takeProfitBracket") != {"ticks": runner.get("take_profit_points", 25)*4, "type": 1}
+            or runner.get("initial_stop_points", 25) != (config.strategy_params or {}).get("initial_stop_points", 25)
+            or runner.get("take_profit_points", 25) != (config.strategy_params or {}).get("take_profit_points", 25)):
         return RiskBlock(code="fixed_brackets_invalid",
-                         message="Fixed exits require a 100-tick stop and 100-tick take-profit bracket.", severity="critical")
+                         message="Fixed exits require the current configured stop and target on the entry order.", severity="critical")
     target_present, _ = _planned_take_profit(plan)
     if target_present and not _valid_bracket_payload(request.get("takeProfitBracket"), expected_type=1):
         return RiskBlock(

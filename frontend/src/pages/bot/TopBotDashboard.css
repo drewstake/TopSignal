@@ -124,7 +124,6 @@
 .topbot-comparison-filters { display:flex; flex-wrap:wrap; gap:12px; margin:12px 0; }
 .topbot-comparison-filters label { display:flex; flex-direction:column; gap:5px; font-size:11px; color:rgb(var(--theme-muted)); min-width:130px; max-width:100%; }
 .topbot-comparison-filters input,.topbot-comparison-filters select { max-width:240px; border:1px solid rgb(var(--theme-border)); border-radius:6px; padding:7px; background:rgb(var(--theme-surface)); color:rgb(var(--theme-text)); }
-.topbot-comparison-filters .topbot-version-select { max-width:100%; }
 .topbot-comparison details { margin-top:14px; font-size:12px; overflow-wrap:anywhere; }
 .topbot-entry-checks ul { list-style:none; padding:0; display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); gap:8px; }
 .topbot-entry-checks li { padding:10px; border:1px solid rgb(var(--theme-border)/.65); border-radius:6px; min-width:0; }

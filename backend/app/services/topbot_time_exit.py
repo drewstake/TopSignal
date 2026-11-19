@@ -93,7 +93,7 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
         from . import topbot_profit_guard
         try:
             guard = topbot_profit_guard.poll(entry.user_id, entry.account_id, entry.contract_id, client,
-                                             (config.strategy_params or {}).get("daily_pnl_limit", topbot_profit_guard.TARGET))
+                                             topbot_profit_guard.configured_limits(config.strategy_params or {}))
             if guard["trigger"]:
                 plan["profit_stop_reason"] = guard["trigger"]
                 plan["runner_exit_reason"] = guard["trigger"]

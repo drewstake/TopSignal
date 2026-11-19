@@ -31,6 +31,30 @@ def db():
     engine.dispose()
 
 
+def test_orderflow_editor_updates_only_its_practice_config_and_survives_restart(db, monkeypatch):
+    from fastapi import HTTPException
+    from app import main
+    from app.bot_schemas import OrderflowSettingsIn
+    monkeypatch.setattr(main, "get_authenticated_user_id", lambda: USER)
+    row = prepare_topbot(db, user_id=USER, account_id=101, dry_run=True, contract_id="CON.F.US.MNQ.U26")
+    db.commit()
+    settings = OrderflowSettingsIn(contracts=2, daily_profit_target=850, daily_loss_limit=425,
+                                   take_profit_points=40.5, stop_loss_points=12.25, expected_updated_at=row.updated_at)
+    with pytest.raises(HTTPException) as denied:
+        main.update_orderflow_settings(row.id, settings, db)
+    assert denied.value.status_code == 400
+    db.query(Account).filter_by(external_id="101").one().provider_simulated = True
+    db.commit()
+    result = main.update_orderflow_settings(row.id, settings, db)
+    assert result["enabled"] is False and result["max_daily_loss"] == 425
+    with pytest.raises(HTTPException) as stale:
+        main.update_orderflow_settings(row.id, settings, db)
+    assert stale.value.status_code == 409
+    restarted = prepare_topbot(db, user_id=USER, account_id=101, dry_run=True, contract_id="CON.F.US.MNQ.Z26")
+    assert restarted.strategy_params == result["strategy_params"]
+    assert restarted.order_size == 2 and restarted.max_daily_loss == 425
+
+
 def test_preset_is_mnq_only_and_reused_with_code_defaults(db):
     config = prepare_topbot(db, user_id=USER, account_id=101, dry_run=True, contract_id="CON.F.US.MNQ.U26")
     original_id = config.id
