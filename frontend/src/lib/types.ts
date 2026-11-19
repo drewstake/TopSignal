@@ -1093,6 +1093,7 @@ export interface BotAnalysis {
 }
 
 export interface BotStrategyParams {
+  imbalance_direction?: "contrarian" | "following";
   exit_mode?: "fixed" | "trailing";
   imbalance_threshold?: number;
   persistence_seconds?: number;
