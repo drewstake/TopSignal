@@ -148,7 +148,8 @@ def dom_entry(db_session, monkeypatch, open_exchange_session, request):
     # The real cutoff and overnight behavior are covered by the risk-gate tests below.
     monkeypatch.setattr("app.services.topbot_session.flat_deadline", lambda *a, **kw: now + timedelta(hours=1))
     monkeypatch.setattr("app.services.topbot_session.futures_session_is_open", lambda *a, **kw: True)
-    observed = observation(now, -.2)
+    policy = getattr(request, "param", None)
+    observed = observation(now, .2 if policy == "following_bid" else -.2)
     observed.update(bid_levels=99, ask_levels=99)
     monkeypatch.setattr(feed,"snapshot",lambda *a,**kw:observed)
     account, config = _add_account_and_config(db_session, enabled=False, execution_mode="live")
@@ -159,6 +160,8 @@ def dom_entry(db_session, monkeypatch, open_exchange_session, request):
         config.strategy_params = {**config.strategy_params, "fixed_bracket_session": trading_day_key(now)}
     elif getattr(request, "param", None) == "persistent_fixed":
         config.strategy_params = {**config.strategy_params, "exit_mode": "fixed"}
+    elif policy in ("following_bid", "following_ask"):
+        config.strategy_params = {**config.strategy_params, "imbalance_direction": "following", "exit_mode": "fixed"}
     db_session.commit()
     client = RecordingClient()
     result = bot_service.start_bot_run(db_session,user_id=USER_A,bot_config_id=config.id,client=client,

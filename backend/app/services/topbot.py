@@ -105,6 +105,8 @@ def prepare_topbot(
         values["strategy_params"]["practice_auto_resume"] = existing.strategy_params.get("practice_auto_resume") is True
         values["strategy_params"]["daily_entry_limit_enabled"] = existing.strategy_params.get("daily_entry_limit_enabled") is not False
         values["strategy_params"]["exit_mode"] = normalize_params(existing.strategy_params)["exit_mode"]
+        if existing.strategy_params.get("imbalance_direction") == "following":
+            values["strategy_params"]["imbalance_direction"] = "following"
     values.update(
         account_id=account_id, execution_mode="dry_run" if dry_run else "live",
         enabled=False, contract_id=contract_id,

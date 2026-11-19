@@ -13,7 +13,10 @@ from .topbot_strategy import qualifying_action
 from .topbot_execution_trace import delta_ms
 
 
-def replay(path, *, observation=None, threshold=None, persistence_seconds=None, allow_code_mismatch=False):
+def replay(path, *, observation=None, threshold=None, persistence_seconds=None, allow_code_mismatch=False,
+           imbalance_direction="contrarian"):
+    if imbalance_direction not in ("contrarian", "following"):
+        raise ValueError("invalid_imbalance_direction")
     if threshold is not None and not 0 <= threshold <= .9:
         raise ValueError("invalid_threshold")
     if persistence_seconds is not None and not 0 <= persistence_seconds <= 300:
@@ -51,7 +54,8 @@ def replay(path, *, observation=None, threshold=None, persistence_seconds=None, 
                 counts[transition["kind"]] += 1
                 if transition["kind"] == "episode_qualified":
                     signal = qualifying_action(state.snapshot(at), {"imbalance_threshold": state.threshold,
-                                                "persistence_seconds": state.persistence_required})
+                                                "persistence_seconds": state.persistence_required,
+                                                "imbalance_direction": imbalance_direction})
                     actions[signal] += 1
                     if len(examples) < 100: examples.append({**transition, "action": signal, "event_index": index})
             if observation is not None and index == reference.get("event_index"):
@@ -72,6 +76,7 @@ def replay(path, *, observation=None, threshold=None, persistence_seconds=None, 
                 "implementation_matches": code_matches, "recording_status": header["status"],
                 "continuous_prefix": continuous, "capture_gap_examples": gaps, "verified_through_index": last,
                 "first_received_at": first_at, "last_received_at": last_at, "counts": dict(counts),
+                "imbalance_direction": imbalance_direction,
                 "qualifying_episodes_by_action": dict(actions), "episode_examples": examples,
                 "observation_verification": matched,
                 "parameter_overrides": {"threshold": threshold, "persistence_seconds": persistence_seconds},

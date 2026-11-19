@@ -75,6 +75,7 @@ export function SignalPanel({ data, now }: { data: EdgeReport; now: number }) {
   const [source,setSource]=useState("Worker");
   const selected: SignalStudy | undefined=data.studies.find(s=>s.source===source);
   return <section className="topbot-panel" aria-label="Imbalance signal study"><h2 className="text-base font-semibold">Imbalance signal study</h2>
+    <p className="topbot-muted">This study tracks contrarian signals: bid-heavy shorts and ask-heavy longs.</p>
     <div className="topbot-comparison-filters"><label>Observation stream <select value={source} onChange={e=>setSource(e.target.value)}>
       <option>Worker</option><option>Independent</option></select></label></div>
     {selected && <>

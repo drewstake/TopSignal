@@ -11490,7 +11490,7 @@ def evaluate_risk_gates(
         signal_depth = (decision.raw_payload or {}).get("depth_entry", {}) if decision is not None else {}
         latest_candle_age_seconds = (now-utc(depth["observed_at"])).total_seconds() if depth.get("ready") else None
         params = _normalize_strategy_params("topbot_adaptive", config.strategy_params)
-        from .topbot_strategy import exit_mode
+        from .topbot_strategy import exit_mode, imbalance_action
         if decision is not None and (decision.raw_payload or {}).get("exit_mode", "trailing") != exit_mode(params, now):
             additional_blocks.append(RiskBlock(code="dom_exit_policy_changed",
                 message="The session exit settings changed; wait for a fresh entry signal."))
@@ -11506,7 +11506,7 @@ def evaluate_risk_gates(
                 failed_checks.append("imbalance_below_threshold")
             if depth.get("persistence_seconds", 0) < params["persistence_seconds"]:
                 failed_checks.append("persistence_too_short")
-            if (action == "SELL") != (depth.get("imbalance", 0) > 0):
+            if action != imbalance_action(depth.get("imbalance", 0), params):
                 failed_checks.append("direction_changed")
         if decision is not None:
             decision.raw_payload = {**(decision.raw_payload or {}), "depth_recheck": {
@@ -11523,7 +11523,7 @@ def evaluate_risk_gates(
             details = ", ".join(check.replace("_", " ") for check in failed_checks)
             if "depth_unavailable" in failed_checks:
                 details += f" ({depth.get('reason', 'No valid depth')})"
-            additional_blocks.append(RiskBlock(code="dom_signal_expired", message=f"Contrarian depth no longer qualifies; entry skipped: {details}."))
+            additional_blocks.append(RiskBlock(code="dom_signal_expired", message=f"Depth no longer qualifies; entry skipped: {details}."))
         if preflight is not None and abs(preflight.current_position_qty) > 1e-9:
             additional_blocks.append(RiskBlock(code="dom_entry_requires_flat", message="TopBot does not add to or adopt existing positions."))
         if order_size != 1 or float(config.max_contracts) != 1:
@@ -13080,7 +13080,7 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
             evidence["pre_submit"] = {"ready": False, "error_type": type(exc).__name__}
         request_payload = {**request_payload, "entryEvidence": evidence}
         order_attempt.raw_request = request_payload
-        client = client_for(client, order_attempt, reason="Confirmed contrarian DOM entry", entry_evidence=evidence,
+        client = client_for(client, order_attempt, reason="Confirmed DOM entry", entry_evidence=evidence,
                             strategy_snapshot=request_payload.get("strategySnapshot"))
     started = perf_counter()
     diagnostic_context = {

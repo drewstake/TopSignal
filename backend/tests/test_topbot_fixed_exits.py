@@ -68,6 +68,17 @@ def test_fixed_entry_routes_native_brackets_and_saves_exit_mode(dom_entry):
         assert bot_service._order_attempt_protection_block(config=result.config, order_attempt=result.order_attempt).code == "fixed_brackets_invalid"
 
 
+@pytest.mark.parametrize("dom_entry,expected", [("following_bid", "BUY"), ("following_ask", "SELL")], indirect=["dom_entry"])
+def test_following_entry_rechecks_direction_and_routes_fixed_brackets(dom_entry, expected):
+    result, client, _ = dom_entry
+    assert result.order_attempt.side == result.decision.action == expected
+    call, = client.place_order_calls
+    assert call["side"] == (0 if expected == "BUY" else 1)
+    assert call["stop_loss_bracket"] == {"ticks": 100, "type": 4}
+    assert call["take_profit_bracket"] == {"ticks": 100, "type": 1}
+    assert result.decision.raw_payload["depth_recheck"]["failed_checks"] == []
+
+
 @pytest.mark.parametrize("side", ["BUY", "SELL"])
 @pytest.mark.parametrize("fresh", [True, False])
 def test_saved_fixed_trade_never_trails_even_after_25_points(db_session, dom_entry, monkeypatch, side, fresh):

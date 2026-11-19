@@ -125,6 +125,7 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
           key={`${accountId}:${monitor.bot.id}:${monitor.bot.contract_id}`} contractId={monitor.bot.contract_id}
           threshold={Number(monitor.bot.strategy_params.imbalance_threshold) || .1}
           requiredSeconds={Number(monitor.bot.strategy_params.persistence_seconds) || 30}
+          following={monitor.bot.strategy_params.imbalance_direction === "following"}
           monitor={monitor}
           enabled={!demoMode && !pending && !unavailable && accountId != null} />} />
     {edge.data && <SignalPanel data={edge.data} now={now} />}

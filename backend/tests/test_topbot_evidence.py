@@ -107,6 +107,7 @@ def test_exact_worker_state_replay_and_episode_changes(tmp_path):
     result = replay(cap.path, observation=observation)
     assert result["observation_verification"]["verified"]
     assert result["qualifying_episodes_by_action"] == {"SELL": 1}
+    assert replay(cap.path, imbalance_direction="following")["qualifying_episodes_by_action"] == {"BUY": 1}
     assert result["recording_status"]["state"] == "closed"
     candidate = replay(cap.path, threshold=.25)
     assert candidate["qualifying_episodes_by_action"] == {}

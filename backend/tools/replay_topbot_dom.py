@@ -15,6 +15,8 @@ def main():
     replay_parser.add_argument("--observation", type=Path, help="JSON containing the saved depth_entry observation")
     replay_parser.add_argument("--threshold", type=float)
     replay_parser.add_argument("--persistence-seconds", type=float)
+    replay_parser.add_argument("--imbalance-direction", choices=("contrarian", "following"), default="contrarian",
+                               help="Entry direction for this replay of the recorded market stream")
     replay_parser.add_argument("--allow-code-mismatch", action="store_true", help="Exploration only; cannot certify original decisions")
     timeline = commands.add_parser("timeline")
     timeline.add_argument("audit", type=Path)
@@ -30,7 +32,7 @@ def main():
     if args.command == "replay":
         result = replay(args.capture, observation=json.loads(args.observation.read_text(encoding="utf-8")) if args.observation else None,
                         threshold=args.threshold, persistence_seconds=args.persistence_seconds,
-                        allow_code_mismatch=args.allow_code_mismatch)
+                        allow_code_mismatch=args.allow_code_mismatch, imbalance_direction=args.imbalance_direction)
     else:
         result = trade_timeline(args.audit, account_id=args.account, entry_id=args.entry)
     print(json.dumps(result, indent=2, allow_nan=False))

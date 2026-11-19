@@ -84,14 +84,16 @@ def test_account_and_user_isolation(db):
 
 def test_fixed_exit_preference_survives_stop_start_and_contract_roll_without_crossing_accounts(db):
     config = prepare_topbot(db, user_id=USER, account_id=101, dry_run=True, contract_id="CON.F.US.MNQ.U26")
-    config.strategy_params = {**config.strategy_params, "exit_mode": "fixed"}
+    config.strategy_params = {**config.strategy_params, "exit_mode": "fixed", "imbalance_direction": "following"}
     db.commit()
     updated = prepare_topbot(db, user_id=USER, account_id=101, dry_run=True, contract_id="CON.F.US.MNQ.Z26")
     db.commit()
     db.expire_all()
     assert db.get(BotConfig, updated.id).strategy_params["exit_mode"] == "fixed"
+    assert updated.strategy_params["imbalance_direction"] == "following"
     other = prepare_topbot(db, user_id=USER, account_id=102, dry_run=True, contract_id="CON.F.US.MNQ.Z26")
     assert other.strategy_params["exit_mode"] == "trailing"
+    assert "imbalance_direction" not in other.strategy_params
     assert updated.order_size == updated.max_contracts == 1
     assert updated.max_daily_loss == 500
 

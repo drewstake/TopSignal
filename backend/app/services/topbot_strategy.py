@@ -1,4 +1,4 @@
-"""Contrarian observed-depth entries; position management is separate."""
+"""Observed-depth entries; position management is separate."""
 from datetime import date, datetime, timezone
 import math
 
@@ -27,6 +27,11 @@ def normalize_params(params=None):
     if params and not selected(params):
         return {"revision": "custom_unconfigured"}
     result = dict(DEFAULTS)
+    direction = (params or {}).get("imbalance_direction", "contrarian")
+    if direction not in ("contrarian", "following"):
+        raise ValueError("Invalid imbalance_direction")
+    if direction == "following":
+        result["imbalance_direction"] = direction
     mode = (params or {}).get("exit_mode", "trailing")
     if mode not in ("trailing", "fixed"):
         raise ValueError("Invalid exit_mode; expected trailing or fixed")
@@ -66,6 +71,13 @@ def require_configured():
         raise ValueError(MESSAGE)
 
 
+def imbalance_action(imbalance, params):
+    if not imbalance:
+        return "HOLD"
+    buy = imbalance > 0 if params.get("imbalance_direction") == "following" else imbalance < 0
+    return "BUY" if buy else "SELL"
+
+
 def qualifying_action(observation, params):
     """Pure signal rule shared by runtime and offline worker-evidence replay."""
     imbalance = observation.get("imbalance", 0)
@@ -73,7 +85,7 @@ def qualifying_action(observation, params):
             and abs(imbalance) >= params["imbalance_threshold"] and observation.get("episode_at")
             and observation.get("persistence_seconds", 0) >= params["persistence_seconds"]):
         return "HOLD"
-    return "SELL" if imbalance > 0 else "BUY"
+    return imbalance_action(imbalance, params)
 
 
 def evaluate(candles, *, strategy_params=None, owner=None, contract_id=None, observation=None, now=None):
@@ -101,7 +113,7 @@ def evaluate(candles, *, strategy_params=None, owner=None, contract_id=None, obs
         return SignalResult("HOLD", observation.get("reason", "Waiting for depth"), None, None, payload)
     action = qualifying_action(observation, params)
     if action == "HOLD":
-        return SignalResult("HOLD", "Waiting for persistent contrarian imbalance", None, None, payload)
+        return SignalResult("HOLD", "Waiting for persistent depth imbalance", None, None, payload)
     price = observation["bid"] if action == "SELL" else observation["ask"]
     at = datetime.fromisoformat(observation["episode_at"])
     payload.update(live_routing_allowed=True, signal_category="entry", protective_stop_ticks=100,
@@ -110,5 +122,7 @@ def evaluate(candles, *, strategy_params=None, owner=None, contract_id=None, obs
     if payload["exit_mode"] == "fixed":
         payload.update(take_profit_ticks=100, take_profit=price + (-25 if action == "SELL" else 25),
                        fixed_bracket_session=params["fixed_bracket_session"])
-    return SignalResult(action, f"Contrarian {action}: {observation['bid_total']:g} bid / {observation['ask_total']:g} ask contracts",
+    direction = params.get("imbalance_direction", "contrarian")
+    payload["imbalance_direction"] = direction
+    return SignalResult(action, f"{direction.capitalize()} {action}: {observation['bid_total']:g} bid / {observation['ask_total']:g} ask contracts",
                         at, price, payload)

@@ -24,8 +24,8 @@ function resetReason(reset: NonNullable<TopBotDepthObservation["depth"]["qualifi
   return reasons[reset.reason] ?? "Depth continuity was lost";
 }
 
-export function TopBotLiveImbalance({ contractId, threshold, requiredSeconds, enabled, monitor }: {
-  contractId: string; threshold: number; requiredSeconds: number; enabled: boolean; monitor?: EntryMonitor;
+export function TopBotLiveImbalance({ contractId, threshold, requiredSeconds, enabled, monitor, following = false }: {
+  contractId: string; threshold: number; requiredSeconds: number; enabled: boolean; monitor?: EntryMonitor; following?: boolean;
 }) {
   const visible = usePageVisibility();
   const [sample, setSample] = useState<Sample | null>(null);
@@ -69,7 +69,9 @@ export function TopBotLiveImbalance({ contractId, threshold, requiredSeconds, en
   const limit = finite(observation?.threshold) && observation.threshold > 0 ? observation.threshold : threshold;
   const qualified = fresh && depth?.ready === true && hasValue && Math.abs(value) >= limit;
   const sustained = qualified && finite(depth?.persistence_seconds) ? Math.max(0, depth.persistence_seconds) : 0;
-  const side = !hasValue || value === 0 ? "Balanced" : value > 0 ? "Bid-heavy → short setup" : "Ask-heavy → long setup";
+  const bidSide = following ? "long" : "short";
+  const askSide = following ? "short" : "long";
+  const side = !hasValue || value === 0 ? "Balanced" : value > 0 ? `Bid-heavy → ${bidSide} setup` : `Ask-heavy → ${askSide} setup`;
   const state = !enabled ? "Unavailable" : !visible ? "Paused while tab is hidden" : error ? "Connection interrupted"
     : !sample ? "Connecting to worker…" : !fresh ? "Stale / unavailable" : !depth?.ready ? "Depth unavailable" : "Live";
   return <div className="topbot-live-imbalance" aria-label="Live DOM imbalance">
@@ -84,7 +86,7 @@ export function TopBotLiveImbalance({ contractId, threshold, requiredSeconds, en
       <span className="topbot-imbalance-threshold" style={{ left: `${50 + limit * 50}%` }} />
       {fresh && hasValue && <span className="topbot-imbalance-marker" style={{ left: `${50 + value * 50}%` }} />}
     </div>
-    <div className="topbot-imbalance-labels"><span>Ask-heavy / long</span><span>0%</span><span>Bid-heavy / short</span></div>
+    <div className="topbot-imbalance-labels"><span>Ask-heavy / {askSide}</span><span>0%</span><span>Bid-heavy / {bidSide}</span></div>
     <dl className="topbot-imbalance-totals">
       <div><dt>Bid contracts</dt><dd>{contracts(depth?.bid_total)}</dd><small>{depth?.bid_levels ?? 0} levels (up to 100)</small></div>
       <div><dt>Ask contracts</dt><dd>{contracts(depth?.ask_total)}</dd><small>{depth?.ask_levels ?? 0} levels (up to 100)</small></div>
