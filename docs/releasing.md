@@ -1,8 +1,10 @@
-# Ship it to peteamdpc
+# Releasing changes to peteamdpc
 
-Say **“ship it”** after describing the intended change. Keep peteamdpc open at
-`http://127.0.0.1:4173/bot`. The agent edits and runs focused tests in the local
-checkout, reviews the diff, then runs one command. Leave the local app closed.
+Describe the change you want and keep peteamdpc open at `http://127.0.0.1:4173/bot`.
+By default, the agent makes and tests the change in the local checkout, reviews
+the diff, then commits, pushes and deploys it with the command below. The agent
+tells you when the served page is verified and ready to refresh. Say “local only”
+to keep the work in the checkout, or specify where to stop. Leave the local app closed.
 
 ```powershell
 npm run release -- ship --paths frontend/src/styles/workspace.css --message "Adjust dashboard spacing"
@@ -24,8 +26,19 @@ expressions, selectors, API/authentication, orders, dependencies, release
 tooling, backend or unrecognized files use the full lane. Frontend checks still
 run on the full push CI workflow. Dashboard publication needs both frontend
 jobs and the digest-verified production artifact for that push and run attempt.
-The full lane requires all six jobs, isolated local validation and broker,
+The full lane requires every CI gate, isolated local validation and broker,
 research, migration, recorder, ACL and integrity gates.
+
+If you ask to prepare a change and hold it for “okay deploy”, the agent adds
+`--prepare-only` to the normal ship command. This pushes, tests and stages the
+exact change. On “okay deploy”, resume with `ship --commit <prepared-sha>`.
+The receipt records elapsed time from both push and the deployment request.
+
+A full release reports open research windows as soon as peteamdpc is staged.
+Keep the ship command running. If you explicitly approve cutting those windows
+short for this release, run `npm run release -- ship --approve-research-gaps <sha>`
+in another shell. That waiting attempt uses the same prepared files and still
+requires a flat broker. An ordinary deploy request waits for the windows to close.
 
 Dashboard files use immutable commit URLs. A locked pointer switch selects
 the HTML; rollback retains old asset URLs. A full release carries those URLs

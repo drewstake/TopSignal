@@ -41,6 +41,14 @@ test("classify accumulated display changes against BOTH serving revisions", () =
     const mixed = commit();
     assert.equal(classify(base, layout, mixed).lane, "full");
     assert.equal(classify(base, mixed, layout).lane, "full");
+    const recorder = "frontend/src/pages/recorders/CaptureHealth.tsx";
+    write(recorder, 'poll("/api/health"); const view = <dt>Last saved recording</dt>;');
+    const recorderBase = commit();
+    write(recorder, 'poll("/api/health"); const view = <dt>Last saved capture</dt>;');
+    const label = commit();
+    assert.equal(classify(recorderBase, recorderBase, label).lane, "dashboard");
+    write(recorder, 'poll("/api/orders"); const view = <dt>Last saved capture</dt>;');
+    assert.equal(classify(recorderBase, label, commit()).lane, "full");
     write("frontend/src/lib/api.ts", "export const base='/orders';");
     assert.equal(classify(base, layout, commit()).lane, "full");
   } finally {

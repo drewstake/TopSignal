@@ -1,10 +1,19 @@
 # Shipping changes to peteamdpc
 
-When the user says “ship it”, test and review the intended local change, then use
-`npm run release -- ship` with the exact paths or reviewed staged tree as described
-in [the runbook](docs/releasing.md). Keep unrelated work intact and the local app
-closed. Report the lane, timing and when to refresh peteamdpc. Require approval
-before the first publisher switch. A research-gap approval is release-specific.
+A request to implement a TopSignal change includes deployment to peteamdpc by
+default. Make the change in the local checkout, test it, review the diff, then use
+`npm run release -- ship` to commit, push and deploy exactly the intended change.
+Follow [the runbook](docs/releasing.md), preserve unrelated work and keep the local
+app closed. Verify the served page before telling the user to refresh peteamdpc.
+Report the release lane and timing.
+
+If the user asks to prepare and hold for “okay deploy”, push and stage with
+`--prepare-only`, then resume the prepared SHA on approval. Surface a research
+wait promptly and follow the runbook for release-specific approval.
+
+Honor a narrower request such as “local only” or “don't deploy”. Questions, plans
+and reviews call for an answer. Approval to cut research windows short applies
+only to the specific release the user approved.
 
 # Storage rules for TopSignal
 

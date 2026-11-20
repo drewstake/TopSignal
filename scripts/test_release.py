@@ -1,16 +1,18 @@
 """Executable release regressions: no broker, database or host connection."""
 import hashlib
 import base64
+import contextlib
 import importlib.util
 import json
 from pathlib import Path
 import tempfile
 import subprocess
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zipfile
 
 import release
+import ship
 from release_lib import archive_members, extract_bundle, safe_name, sha256, verify_bundle, verify_files
 
 spec = importlib.util.spec_from_file_location("release_host", Path(__file__).with_name("release-host.py"))
@@ -172,6 +174,64 @@ class ReleaseTests(unittest.TestCase):
             host.check_research_windows(observed, {"accept_research_window_gaps": "yes"})
         host.check_research_windows(observed, {"accept_research_window_gaps": True})
         host.check_research_windows({"open_research_windows": []}, {})
+
+    def test_research_approval_is_scoped_to_one_wait_and_the_exact_host_commit(self):
+        revision = "a" * 40
+        wait = ship.ResearchWait(self.root, revision, "full-1")
+        sample = {"ready": False, "research": True, "reason": "Two open research windows"}
+        wait.report(sample)
+        ship.approve_research_gaps(self.root, revision)
+        # Abandoned approval must not carry into a resumed invocation of the same SHA.
+        resumed = ship.ResearchWait(self.root, revision, "full-1")
+        self.assertFalse(resumed.consume())
+        with self.assertRaisesRegex(ValueError, "No research-window"):
+            ship.approve_research_gaps(self.root, revision)
+
+        resumed.report(sample)
+        with self.assertRaisesRegex(ValueError, "Invalid research-window"):
+            ship.approve_research_gaps(self.root, "b" * 40)
+        ship.approve_research_gaps(self.root, revision)
+        self.assertTrue(resumed.consume())
+        observed = {"open_research_windows": [{"cutoff": "tomorrow"}]}
+        with self.assertRaisesRegex(ValueError, "different release"):
+            host.check_research_windows(observed, {"git_commit": "b" * 40}, resumed.approved_commit)
+        host.check_research_windows(observed, {"git_commit": revision}, resumed.approved_commit)
+        self.assertEqual(observed["research_gap_approved_for"], revision)
+        resumed.report({"ready": False, "reason": "Broker exposure"})
+        with self.assertRaisesRegex(ValueError, "No research-window"):
+            ship.approve_research_gaps(self.root, revision)
+
+    def test_prepared_dashboard_reuses_only_exact_stage_and_still_verifies_view(self):
+        revision = "a" * 40
+        base = "b" * 40
+        files = {"index.html": "digest"}
+        config = self.root / "connection.json"
+        config.write_text(json.dumps(dict(key="fixture", host="viewer@host", repository="owner/repo",
+                                          staging_root="C:/staging")))
+        from argparse import Namespace
+        args = Namespace(host_config=config, rollback=None, prepare_only=False, install_publisher=False)
+        run = dict(url="ci", createdAt="2026-11-19T12:00:00Z", attempt=1, databaseId=3,
+                   jobs=[dict(name="Frontend quality", startedAt="2026-11-19T12:00:00Z",
+                              completedAt="2026-11-19T12:01:00Z", conclusion="success")])
+        for staged, actions in ((dict(digest="hash", files=files), ["activate"]),
+                                (dict(digest="hash", files={}), ["stage", "activate"]),
+                                (dict(digest="old", files=files), ["stage", "activate"])):
+            with self.subTest(staged=staged), contextlib.ExitStack() as stack:
+                target = Mock(staging="C:/staging")
+                target.state.return_value = dict(backend=base, active=None, publisher=True, complete=True,
+                                                 companions={}, files={}, release="C:/running")
+                target.ps.return_value = json.dumps(staged)
+                target.dashboard.return_value = {}
+                for name, value in dict(ROOT=self.root, Host=lambda _: target, git=lambda *args: revision,
+                                        select_commit=lambda *args: revision, ci_status=lambda *args: run,
+                                        ci_artifact=lambda *args: (self.bundle, "hash"), inspect_artifact=lambda *args: files,
+                                        output=lambda *args, **kwargs: b'{"lane":"dashboard","reason":"label"}').items():
+                    stack.enter_context(patch.object(ship, name, value))
+                view = stack.enter_context(patch.object(ship, "verify_page"))
+                ship.ship(args, stack)
+                self.assertEqual([c.args[0] for c in target.dashboard.call_args_list], actions)
+                view.assert_called_with(files, revision)
+                self.assertEqual(target.upload.call_count, 1 + (staged["digest"] != "hash"))
 
     def test_recording_gate_rejects_loss_restart_missing_state_and_durability_regression(self):
         first = {"1": {"state": "recording", "capture_id": "same", "durable_events": 10, "dropped_events": 0}}

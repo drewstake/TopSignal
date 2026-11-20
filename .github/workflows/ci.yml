@@ -568,9 +568,17 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  windows_compatibility:
-    name: Windows compatibility
+  windows_tests:
+    name: Windows tests (${{ matrix.group }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: bot
+            selection: bot
+          - group: remaining
+            selection: not bot
     env:
       AUTH_REQUIRED: "true"
       TOPSIGNAL_DB_SCHEMA_INIT: skip
@@ -594,30 +602,42 @@ jobs:
         timeout-minutes: 10
         # Keep every test and standard Windows paths; isolate files across four
         # processes. PostgreSQL safety tests retain their separate serial lane.
-        run: python -m pytest -q -x -n 4 --dist=loadfile -o faulthandler_timeout=60 --durations=30 --junitxml=windows-tests.xml
+        run: python -m pytest -q -x -n 4 --dist=loadfile -k "${{ matrix.selection }}" -o faulthandler_timeout=60 --durations=30 --junitxml=windows-tests.xml
 
       - name: Preserve Windows test evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: windows-test-results
+          name: windows-test-results-${{ matrix.group }}
           path: backend/windows-tests.xml
           retention-days: 14
 
       - uses: actions/setup-node@v4
+        if: matrix.group == 'bot'
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install frontend dependencies
+        if: matrix.group == 'bot'
         run: npm --prefix frontend ci --no-audit --fund=false
 
       - name: Run portable frontend dependency audit
+        if: matrix.group == 'bot'
         run: node scripts/audit-frontend.cjs
 
       - name: Windows deployment script regressions
+        if: matrix.group == 'bot'
         run: npm run test:dev-scripts
+
+  windows_compatibility:
+    name: Windows compatibility
+    needs: windows_tests
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.windows_tests.result }}" = "success"
 
   verify:
     name: verify

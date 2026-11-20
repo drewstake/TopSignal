@@ -10,6 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -237,6 +238,10 @@ class WaitForSwitch(ValueError):
     """A live position or active research window can clear without a deployment."""
 
 
+class WaitForResearch(WaitForSwitch):
+    """Only this wait can be shortened by release-specific operator approval."""
+
+
 def check_gate_snapshot(observed: dict, baseline: dict | None, require_flat: bool,
                         allow_restart_disarm: bool = False) -> None:
     if baseline and (observed["config_sha256"] != baseline["config_sha256"] or observed["runs"] != baseline["runs"]):
@@ -251,7 +256,7 @@ def check_gate_snapshot(observed: dict, baseline: dict | None, require_flat: boo
             raise WaitForSwitch("Broker exposure is active; wait without interrupting management")
 
 
-def check_research_windows(observed: dict, config: dict) -> None:
+def check_research_windows(observed: dict, config: dict, approved_commit: str | None = None) -> None:
     """A restart ends every open post-exit observation window early.
 
     The missing interval is never reconstructed, so those entries are excluded
@@ -259,10 +264,14 @@ def check_research_windows(observed: dict, config: dict) -> None:
     private host configuration explicitly accepts the loss.
     """
     windows = observed.get("open_research_windows") or []
-    if windows and config.get("accept_research_window_gaps") is not True:
+    if approved_commit is not None:
+        if not re.fullmatch(r"[0-9a-f]{40}", approved_commit) or approved_commit != config["git_commit"]:
+            raise ValueError("Research approval belongs to a different release")
+        observed["research_gap_approved_for"] = approved_commit
+    if windows and approved_commit is None and config.get("accept_research_window_gaps") is not True:
         latest = max(w["cutoff"] for w in windows)
-        raise WaitForSwitch(f"{len(windows)} post-exit research windows are open until {latest}; a restart would cut them "
-                         "short. Activate after that time or set accept_research_window_gaps in the host configuration")
+        raise WaitForResearch(f"{len(windows)} post-exit research windows are open until {latest}. "
+                              "Restarting now would cut them short.")
 
 
 def open_research_windows(db, BotOrderAttempt, now: datetime) -> list[dict]:
@@ -278,7 +287,7 @@ def open_research_windows(db, BotOrderAttempt, now: datetime) -> list[dict]:
 
 
 def gate(stage: Path, config: dict, root: Path, record: bool, require_flat: bool,
-         allow_restart_disarm: bool = False, preview: bool = False) -> dict:
+         allow_restart_disarm: bool = False, preview: bool = False, approved_commit: str | None = None) -> dict:
     # Application imports happen only inside the host gate, never at tool import time.
     sys.path.insert(0, str(root / "backend"))
     from dotenv import load_dotenv
@@ -318,7 +327,7 @@ def gate(stage: Path, config: dict, root: Path, record: bool, require_flat: bool
         research_windows = open_research_windows(db, BotOrderAttempt, datetime.now(timezone.utc)) if record else []
         db.rollback()
     if preview:
-        check_research_windows({"open_research_windows": research_windows}, config)
+        check_research_windows({"open_research_windows": research_windows}, config, approved_commit)
     observed = {"config_sha256": hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest(),
                 "configs": {row["id"]: row for row in rows},
                 "runs": runs, "unresolved_attempts": unresolved, "database_bytes": database_bytes, "accounts": []}
@@ -349,7 +358,7 @@ def gate(stage: Path, config: dict, root: Path, record: bool, require_flat: bool
     if record:
         # Only before stopping: after the switch the reader re-establishes retention itself.
         observed["open_research_windows"] = research_windows
-        check_research_windows(observed, config)
+        check_research_windows(observed, config, approved_commit)
     observed["restart_disarmed"] = bool(baseline and observed["runs"] != baseline["runs"])
     if record:
         if baseline_path.exists():
@@ -475,6 +484,7 @@ def main() -> None:
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--allow-exposure", action="store_true")
     parser.add_argument("--allow-restart-disarm", action="store_true")
+    parser.add_argument("--research-gap-commit")
     args = parser.parse_args()
     stage = args.stage.resolve()
     config = json.loads((stage / "host.json").read_text(encoding="utf-8"))
@@ -493,12 +503,13 @@ def main() -> None:
         if (stage / "broker-before.json").exists():
             raise ValueError("Prior switch crossed preflight; inspect activation.log before recovery")
         try:
-            gate(stage, config, previous, True, True, preview=True)
+            gate(stage, config, previous, True, True, preview=True, approved_commit=args.research_gap_commit)
             print(json.dumps({"ready": True}))
         except WaitForSwitch as error:
-            print(json.dumps({"ready": False, "reason": str(error)}))
+            print(json.dumps({"ready": False, "research": isinstance(error, WaitForResearch), "reason": str(error)}))
     elif args.command == "gate":
-        gate(stage, config, root, args.record, not args.allow_exposure, args.allow_restart_disarm)
+        gate(stage, config, root, args.record, not args.allow_exposure, args.allow_restart_disarm,
+             approved_commit=args.research_gap_commit)
     elif args.command == "health":
         print(json.dumps(health(config, root)))
     elif args.command == "migration-check":

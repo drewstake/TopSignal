@@ -11,6 +11,9 @@ const displayFiles = new Set([
   ...["DonutRing", "GaugeBar", "MetricCard", "MiniStatList", "SplitBar"].map(n => "frontend/src/components/metrics/" + n + ".tsx"),
   ...["CompactDashboardPerformance", "DashboardOverview", "RiskForecastChart", "DailyAccountBalanceCard"].map(n => "frontend/src/pages/dashboard/components/" + n + ".tsx"),
   "frontend/src/pages/bot/BotChartPresentation.tsx",
+  "frontend/src/pages/bot/TopBotEvaluation.tsx",
+  "frontend/src/pages/bot/TopBotTradeRecorder.tsx",
+  "frontend/src/pages/recorders/CaptureHealth.tsx",
 ]);
 const properties = new Set("color background-color border-color border-width border-radius font-size font-weight font-family line-height letter-spacing padding padding-top padding-bottom padding-left padding-right margin margin-top margin-bottom margin-left margin-right gap row-gap column-gap width height min-width max-width min-height max-height grid-template-columns grid-template-rows align-items justify-content flex-direction flex-wrap fill stroke stroke-width".split(" "));
 

@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 import zipfile
 
 from dashboard_release import commit, inspect_artifact, verify_page, write_atomic
@@ -45,7 +46,8 @@ class Timing:
     def verified(self):
         end = datetime.now(timezone.utc)
         self.data["verified"] = end.isoformat()
-        for key, label in (("push_started", "push_to_verified_seconds"), ("ship_started", "ship_to_verified_seconds")):
+        for key, label in (("push_started", "push_to_verified_seconds"), ("ship_started", "ship_to_verified_seconds"),
+                           ("deploy_requested", "deploy_to_verified_seconds")):
             if key in self.data:
                 self.data[label] = round((end - datetime.fromisoformat(self.data[key])).total_seconds(), 3)
         write_atomic(self.path, self.data)
@@ -135,6 +137,15 @@ $py=Join-Path $r 'backend\\.venv\\Scripts\\python.exe'
 & $py -B -c "import base64;exec(base64.b64decode('{code}'))" $r {ps_quote(self.staging)}
 if ($LASTEXITCODE) {{exit $LASTEXITCODE}}
 """))
+
+    def window(self, release, directory, approved_commit):
+        extra = " --research-gap-commit " + ps_quote(commit(approved_commit)) if approved_commit else ""
+        result = self.ps(self.identity + f"""
+if ($r -ine {ps_quote(release)}) {{throw 'Running release changed'}}
+& $py -B {ps_quote(directory + '/release-host.py')} window --stage {ps_quote(directory)}{extra}
+if ($LASTEXITCODE) {{exit $LASTEXITCODE}}
+""")
+        return json.loads(result.splitlines()[-1])
 
     def dashboard(self, action, state, folder, target, digest):
         directory = self.staging + "/" + folder
@@ -274,6 +285,51 @@ def select_commit(args, upstream):
     return commit(git("rev-parse", "HEAD"))
 
 
+class ResearchWait:
+    """A fresh request per ship invocation. Resuming never consumes an old approval."""
+
+    def __init__(self, folder, revision, release_id):
+        self.path = folder / "research-wait.json"
+        self.request = dict(commit=revision, release_id=release_id, attempt=uuid.uuid4().hex)
+        self.response = folder / ("approve-" + self.request["attempt"] + ".json")
+        self.approved_commit = None
+        self.close()
+
+    def close(self):
+        self.path.unlink(missing_ok=True)
+        self.response.unlink(missing_ok=True)
+
+    def report(self, sample):
+        if not sample["ready"]:
+            print(sample["reason"], flush=True)
+        if sample.get("research") and self.approved_commit is None:
+            write_atomic(self.path, self.request)
+            print("After explicit approval to cut these windows short, run: npm run release -- ship "
+                  "--approve-research-gaps " + self.request["commit"], flush=True)
+        else:
+            self.path.unlink(missing_ok=True)
+
+    def consume(self):
+        if not self.response.exists():
+            return False
+        if json.loads(self.response.read_bytes()) != self.request:
+            raise ValueError("Research approval does not match this ship invocation")
+        self.approved_commit = self.request["commit"]
+        self.close()
+        return True
+
+
+def approve_research_gaps(folder, revision):
+    path = folder / "research-wait.json"
+    if not path.is_file():
+        raise ValueError("No research-window decision pending for this commit")
+    request = json.loads(path.read_bytes())
+    if request["commit"] != revision or not re.fullmatch("[0-9a-f]{32}", request["attempt"]):
+        raise ValueError("Invalid research-window request")
+    write_atomic(folder / ("approve-" + request["attempt"] + ".json"), request)
+    print("Approval submitted for the waiting release " + request["release_id"])
+
+
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__)
     group = p.add_mutually_exclusive_group(required=True)
@@ -281,6 +337,7 @@ def main(argv):
     group.add_argument("--paths", nargs="+", help="complete reviewed tracked files, ignoring other staged changes")
     group.add_argument("--commit", help="resume the reviewed commit")
     group.add_argument("--rollback", metavar="COMMIT", help="roll back only this currently displayed dashboard")
+    group.add_argument("--approve-research-gaps", metavar="SHA", help="approve early closure for the waiting full release")
     p.add_argument("--message")
     p.add_argument("--host-config", type=Path, default=ROOT / "tmp/release-host.json")
     p.add_argument("--prepare-only", action="store_true")
@@ -288,7 +345,11 @@ def main(argv):
     args = p.parse_args(argv)
     lock_dir = ROOT / "tmp/releases/ship"
     lock_dir.mkdir(exist_ok=True, parents=True)
-    with (lock_dir / "ship.lock").open("a+b") as lock:
+    if args.approve_research_gaps:
+        revision = commit(args.approve_research_gaps)
+        approve_research_gaps(lock_dir / revision, revision)
+        return
+    with (lock_dir / "ship.lock").open("a+b") as lock, contextlib.ExitStack() as cleanup:
         if os.name == "nt":
             import msvcrt
             lock.seek(0)
@@ -296,10 +357,10 @@ def main(argv):
         else:
             import fcntl
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        ship(args)
+        ship(args, cleanup)
 
 
-def ship(args):
+def ship(args, cleanup):
     started = now()
     supplied = json.loads(args.host_config.read_bytes())
     # Only connection settings survive. Resolve the current runtime profile
@@ -341,10 +402,13 @@ def ship(args):
             if not state["dashboard_verified"]:
                 raise ValueError("Dashboard switch lacks its health receipt; inspect or roll it back")
             verify_page(state["files"], state["active"])
-            timing.verified()
+            if "verified" not in timing.data:
+                timing.verified()
             print(f"Refresh peteamdpc. Verified {revision}.")
             return
         check_companions(revision, state)
+        if not args.prepare_only:
+            timing.data["deploy_requested"] = started
         if state["publisher"]:
             classifier = output(["git", "show", state["backend"] + ":scripts/dashboard-eligibility.cjs"])
             rule = json.loads(output(["node", "-", state["backend"], state["active"] or state["backend"], revision],
@@ -395,6 +459,13 @@ if (Test-Path "$p/ready.json") {{
                     raise ValueError("Prepared host configuration differs from the requested release")
             else:
                 remote(bundle, profile_path, False)
+        if not args.prepare_only and (state["publisher"] or args.install_publisher):
+            research = ResearchWait(folder, revision, full_id)
+            cleanup.callback(research.close)
+            with timing.step("inspect full switch window while CI runs"):
+                sample = host.window(state["release"], directory, None)
+                research.report(sample)
+                sampled_at = time.monotonic()
     with timing.step("wait for exact-commit CI"):
         run = ci_status(revision, repo, fast)
         timing.data["ci"] = {k:run[k] for k in ("url", "createdAt", "attempt")}
@@ -411,12 +482,21 @@ if (Test-Path "$p/ready.json") {{
             existing = host.ps(f"""
 $p={ps_quote(directory)}
 New-Item -Force -ItemType Directory -Path $p | Out-Null
-if (Test-Path "$p/dashboard.zip") {{(Get-FileHash -LiteralPath "$p/dashboard.zip").Hash.ToLowerInvariant()}}
+$receipt=Join-Path {ps_quote(state["release"])} 'frontend/dashboard-receipts/{revision}.json'
+$hash=if (Test-Path "$p/dashboard.zip") {{(Get-FileHash -LiteralPath "$p/dashboard.zip").Hash.ToLowerInvariant()}}
+$files=if (Test-Path -LiteralPath $receipt) {{Get-Content -Raw -LiteralPath $receipt | ConvertFrom-Json}}
+@{{digest=$hash;files=$files}} | ConvertTo-Json -Compress -Depth 3
 """)
-            if existing != digest:
+            staged = json.loads(existing)
+            if staged["digest"] != digest:
                 host.upload(archive, directory)
-            host.dashboard("stage", state, name, revision, digest)
+            # Activation checks the archive, inventory and every installed byte
+            # under the publish lock. Reuse a matching stage on a held release.
+            if args.prepare_only or staged != {"digest": digest, "files": files}:
+                host.dashboard("stage", state, name, revision, digest)
     if args.prepare_only or (not state["publisher"] and not args.install_publisher):
+        timing.data["prepared_at"] = now()
+        write_atomic(timing.path, timing.data)
         print(f"Prepared {revision}. First publisher installation requires approval." if not state["publisher"]
               else f"Prepared {revision}.")
         return
@@ -447,19 +527,18 @@ if (Test-Path "$p/dashboard.zip") {{(Get-FileHash -LiteralPath "$p/dashboard.zip
                 raise
     else:
         with timing.step("wait for safe full switch"):
-            while True:
-                window = host.ps(host.identity + f"""
-if ($r -ine {ps_quote(state["release"])}) {{throw 'Running release changed'}}
-& $py -B {ps_quote(directory + '/release-host.py')} window --stage {ps_quote(directory)}
-if ($LASTEXITCODE) {{exit $LASTEXITCODE}}
-""")
-                sample = json.loads(window.splitlines()[-1])
+            while not sample["ready"] or time.monotonic() - sampled_at > 15:
+                research.consume()
+                sample = host.window(state["release"], directory, research.approved_commit)
+                research.report(sample)
                 if sample["ready"]:
                     break
-                print(sample["reason"], flush=True)
-                time.sleep(45)
+                for _ in range(45):
+                    time.sleep(1)
+                    if research.consume():
+                        break
         with timing.step("guarded full activation"):
-            remote(bundle, profile_path, True, prepared=True)
+            remote(bundle, profile_path, True, prepared=True, research_gap_commit=research.approved_commit)
         with timing.step("verify full release through viewing connection"):
             after = host.state()
             if after["backend"] != revision or after["active"] is not None or not after["complete"]:

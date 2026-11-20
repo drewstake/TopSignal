@@ -216,6 +216,11 @@ if (-not $CIReceiptHash -or (Get-FileHash -LiteralPath (Join-Path $Stage 'ci.jso
 $ci = Get-Content -LiteralPath (Join-Path $Stage 'ci.json') -Raw | ConvertFrom-Json
 $age = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [double]$ci.verified_at)
 if ($ci.commit -ne $config.git_commit -or $age -lt -30 -or $age -gt 900) { throw 'CI receipt is stale or belongs to another commit' }
+$preflightArgs = @('--previous', '--record')
+if ($ci.PSObject.Properties['research_gap_commit']) {
+    if ($ci.research_gap_commit -cne $config.git_commit) { throw 'Research approval does not match the candidate' }
+    $preflightArgs += @('--research-gap-commit', $config.git_commit)
+}
 Invoke-ReleaseTool $python $tool 'verify' $Stage
 . (Join-Path $release 'scripts\install-windows-startup-task.ps1') -FunctionsOnly
 $identity = Resolve-LocalServiceUser $task.Principal.UserId
@@ -252,7 +257,7 @@ function Assert-Sidecars {
 }
 try {
     Invoke-ReleaseSwitch -Preflight {
-        Invoke-ReleaseTool $previousPython $tool 'gate' $Stage @('--previous', '--record')
+        Invoke-ReleaseTool $previousPython $tool 'gate' $Stage $preflightArgs
         Log 'Broker flat, runner configuration recorded; requesting graceful switch.'
     } -Stop {
         Invoke-TimedReleaseStep 'graceful-stop' { Request-GracefulStop $runtime $marker $taskName }

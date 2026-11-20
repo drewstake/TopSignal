@@ -196,7 +196,8 @@ def check_ci(commit: str, repository: str) -> dict:
     return {"commit": commit, "run_id": runs[0]["databaseId"], "url": run["url"], "verified_at": time.time()}
 
 
-def remote(bundle: Path, config_path: Path, activate: bool, *, prepared: bool = False) -> None:
+def remote(bundle: Path, config_path: Path, activate: bool, *, prepared: bool = False,
+           research_gap_commit: str | None = None) -> None:
     manifest = verify_bundle(bundle)
     config = json.loads(config_path.read_text(encoding="utf-8"))
     required = {"host", "key", "staging_root", "releases_root", "previous_release", "runtime_root", "release_id", "repository", "credential_script", "bot_config_ids", "companion_files"}
@@ -217,6 +218,10 @@ def remote(bundle: Path, config_path: Path, activate: bool, *, prepared: bool = 
 
     def activate_candidate() -> None:
         ci = check_ci(manifest["git_commit"], config["repository"])
+        if research_gap_commit is not None:
+            if research_gap_commit != manifest["git_commit"]:
+                raise ValueError("Research approval belongs to a different candidate")
+            ci["research_gap_commit"] = research_gap_commit
         print(f"Exact commit CI passed: {ci['url']}", flush=True)
         receipt_dir = bundle / "bootstrap"
         receipt_dir.mkdir(exist_ok=True)
