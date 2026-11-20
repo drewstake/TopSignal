@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { Button } from "../../components/ui/Button";
+import { Icon, type IconName } from "../../components/ui/Icon";
 import { isApiError, requestJson } from "../../lib/api";
 import { useDemoMode } from "../../lib/demoMode";
 import { usePageVisibility } from "../bot/usePageVisibility";
+import "./HealthPage.css";
 
 const components = {
   api: "API",
@@ -21,10 +23,10 @@ type Report = { as_of: string; components: Partial<Record<Component, Reading>> }
 type Sample = Reading & { until?: number };
 type Samples = Partial<Record<Component, Sample>>;
 const priority = { Unhealthy: 0, Unknown: 1, Healthy: 2 };
-const tone = {
-  Unhealthy: "border-app-negative/40 bg-app-negative/10 text-app-negative",
-  Unknown: "border-app-warning/40 bg-app-warning/10 text-app-warning",
-  Healthy: "border-app-positive/40 bg-app-positive/10 text-app-positive",
+const statuses = ["Unhealthy", "Unknown", "Healthy"] as const;
+const icons: Record<Component, IconName> = {
+  api: "link", postgres: "database", worker: "bot", recorder: "recorders",
+  market: "chart", discord: "message", execution_backup: "archive", archive_backup: "cloud",
 };
 const ids = Object.keys(components) as Component[];
 const clock = new Intl.DateTimeFormat("en-US", {
@@ -127,24 +129,44 @@ export default function HealthPage() {
     else if (!visible) value = unknown("Checks pause while this tab is hidden.", value.checked_at);
     return { id, ...value };
   }).sort((a, b) => priority[a.status] - priority[b.status]);
-  return <section aria-labelledby="health-heading" className="mx-auto max-w-5xl space-y-4">
-    <header className="flex items-center justify-between gap-4">
+  return <section aria-labelledby="health-heading" className="health-dashboard">
+    <header className="health-heading">
       <div>
-        <h1 id="health-heading" className="text-2xl font-semibold">Health</h1>
-        <p className="mt-1 text-sm text-app-muted">{demo ? "Demo Mode" : "Checks refresh every 20 seconds while this tab is visible."}</p>
+        <h1 id="health-heading">Health</h1>
+        <p>{demo ? "Demo Mode" : "Checks refresh every 20 seconds while this tab is visible."}</p>
       </div>
-      {!demo && <Button variant="secondary" onClick={refresh}>Refresh</Button>}
+      {!demo && <Button variant="secondary" onClick={refresh}><Icon name="refresh" width={15} height={15} />Refresh</Button>}
     </header>
-    <ul aria-label="Component health" className="divide-y divide-app-border overflow-hidden rounded-xl border border-app-border bg-app-surface">
-      {rows.map(row => <li key={row.id} className="grid gap-2 px-4 py-4 sm:grid-cols-[8rem_1fr_auto] sm:items-start sm:gap-4 sm:px-5">
-        <span className={`w-fit rounded-full border px-2.5 py-1 text-xs font-semibold ${tone[row.status]}`}>{row.status}</span>
-        <div><h2 className="font-semibold">{components[row.id]}</h2><p className="mt-1 text-sm text-app-muted">{row.reason}</p></div>
-        <div className="text-xs text-app-muted sm:text-right">
-          <span className="mr-1 sm:mr-0 sm:block">Last check</span>
-          {row.checked_at && Number.isFinite(Date.parse(row.checked_at))
-            ? <time className="text-app-text" dateTime={row.checked_at}>{clock.format(new Date(row.checked_at))}</time>
-            : <span>Unavailable</span>}
+    <section className="health-overview" aria-label="Status overview">
+      <div className="health-ring">
+        <svg viewBox="0 0 100 100" aria-hidden="true">
+          {rows.map((row, index) => <circle key={row.id} data-status={row.status} cx="50" cy="50" r="44"
+            fill="none" strokeWidth="6" pathLength={rows.length} strokeDasharray={`0.9 ${rows.length - 0.9}`}
+            transform={`rotate(${-90 + index * 360 / rows.length} 50 50)`} />)}
+        </svg>
+        <div><strong>{rows.length}</strong><span>Monitored</span></div>
+      </div>
+      <dl className="health-counts">
+        {statuses.map(status => <div key={status} data-status={status}>
+          <dt><i aria-hidden="true" />{status}</dt>
+          <dd>{rows.filter(row => row.status === status).length}</dd>
+        </div>)}
+      </dl>
+    </section>
+    <h2 className="health-components-heading">Components</h2>
+    <ul aria-label="Component health" className="health-grid">
+      {rows.map(row => <li key={row.id} className="health-card" data-status={row.status}>
+        <div className="health-card-top">
+          <span className="health-service-icon"><Icon name={icons[row.id]} /></span>
+          <span className="health-badge"><i aria-hidden="true" />{row.status}</span>
         </div>
+        <h3>{components[row.id]}</h3>
+        <p>{row.reason}</p>
+        <dl className="health-check"><dt>Last check</dt><dd>
+          {row.checked_at && Number.isFinite(Date.parse(row.checked_at))
+            ? <time dateTime={row.checked_at}>{clock.format(new Date(row.checked_at))}</time>
+            : "Unavailable"}
+        </dd></dl>
       </li>)}
     </ul>
   </section>;
