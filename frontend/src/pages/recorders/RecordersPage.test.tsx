@@ -57,8 +57,8 @@ it("opens an old bookmark, compares prior-day signals and preserves the selected
   expect(screen.getByRole("region", { name: "Trade recorder" })).toBeTruthy();
   expect(screen.getByRole("region", { name: "Liquidity heatmap" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Live & recorded liquidity" })).toBeTruthy();
-  expect(streamProjectXMarketDepth).toHaveBeenCalledTimes(1);
-  expect(vi.mocked(requestJson).mock.calls.some(([path]) => path === "/api/accounts/2/order-book-history")).toBe(true);
+  await waitFor(() => expect(streamProjectXMarketDepth).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(vi.mocked(requestJson).mock.calls.some(([path]) => path === "/api/accounts/2/order-book-history")).toBe(true));
   expect(screen.getByText("Recording and research status")).toBeTruthy();
   await screen.findByLabelText("Select signal 51");
   fireEvent.click(screen.getByRole("button", { name: "Previous recorded day" }));
@@ -75,12 +75,12 @@ it("opens an old bookmark, compares prior-day signals and preserves the selected
   await screen.findByRole("heading", { name: "TopBot" });
   expect(router.state.location.search).toBe("?account=2");
   expect(screen.queryByRole("region", { name: "Trade recorder" })).toBeNull();
-  expect(closeDepth).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(closeDepth).toHaveBeenCalledTimes(1));
   fireEvent.change(screen.getByRole("combobox", { name: "Active Account" }), { target: { value: "1" } });
   await waitFor(() => expect(nav.getByRole("link", { name: "Recorders" }).getAttribute("href")).toBe("/recorders?account=1"));
   fireEvent.click(nav.getByRole("link", { name: "Recorders" }));
   await screen.findByRole("heading", { name: "Recorded live signal replay" });
   expect(router.state.location.search).toBe("?account=1");
-  expect(vi.mocked(requestJson).mock.calls.some(([path]) => path === "/api/accounts/1/order-book-history")).toBe(true);
+  await waitFor(() => expect(vi.mocked(requestJson).mock.calls.some(([path]) => path === "/api/accounts/1/order-book-history")).toBe(true));
   expect(screen.queryByText(/A \$97.56/)).toBeNull();
 });
