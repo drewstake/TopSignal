@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -39,6 +40,31 @@ def category(error):
     if isinstance(error, requests.HTTPError) and error.response is not None:
         return f"HTTP {error.response.status_code}"
     return "Connection or source data unavailable"
+
+
+def discord_content(event):
+    if event.kind == "move":
+        # Stored titles also supply the detailed scanner feed and search context.
+        move = re.match(
+            r"^(\S+) ([+-])(\d+\.\d+)% in (\d+) min · (\d+\.\d+)× relative volume\b",
+            event.title,
+        )
+        if move:
+            ticker, sign, percent, minutes, volume = move.groups()
+            direction, verb = ("Bullish", "rose") if sign == "+" else ("Bearish", "fell")
+            unit = "minute" if minutes == "1" else "minutes"
+            volume = volume.rstrip("0").rstrip(".")
+            return (
+                f"**{ticker} · {direction} move**\n"
+                f"Price {verb} {percent}% in {minutes} {unit} on {volume}× normal volume.\n"
+                f"{event.source} · <t:{int(event.received)}:t>"
+                + (" · Delayed alert" if event.delayed else "")
+            )
+    seen = datetime.fromtimestamp(event.received, UTC).isoformat()
+    return (
+        f"{event.tickers.strip()} · {event.source}\n{event.title}\n{event.link}\nReceived {seen}"
+        + (" · Delayed alert" if event.delayed else "")
+    )
 
 
 class Worker:
@@ -281,11 +307,7 @@ class Worker:
         if not destination:
             self.finish(job, "pending", "Notification destination not configured", 300)
             return True
-        seen = datetime.fromtimestamp(e.received, UTC).isoformat()
-        content = (
-            f"{e.tickers.strip()} · {e.source}\n{e.title}\n{e.link}\nReceived {seen}"
-            + (" · Delayed alert" if e.delayed else "")
-        )
+        content = discord_content(e)
         try:
             r = requests.post(
                 destination,

@@ -135,6 +135,42 @@ def sample(end):
     }
 
 
+@pytest.mark.parametrize(
+    ("percent", "minutes", "headline", "description"),
+    [
+        (-2.26, 1, "Bearish move", "Price fell 2.26% in 1 minute"),
+        (1.35, 5, "Bullish move", "Price rose 1.35% in 5 minutes"),
+    ],
+)
+def test_discord_price_move(
+    scanner, monkeypatch, percent, minutes, headline, description
+):
+    w, now = scanner
+    stats = dict(
+        qualifies=True,
+        start=now[0] - 60 * minutes,
+        minutes=minutes,
+        percent=percent,
+        rvol=2.4,
+        sector_percent=0.06,
+    )
+    provider = "Alpaca IEX (single exchange)"
+    with w.engine.begin() as c:
+        store.price_move(c, "AVGO", stats, now[0], Rules(), provider)
+    messages = []
+
+    def post(url, **kwargs):
+        messages.append(kwargs["json"]["content"])
+        return SimpleNamespace(status_code=204)
+
+    monkeypatch.setattr(requests, "post", post)
+    assert w.deliver()
+    assert messages == [
+        f"**AVGO · {headline}**\n{description} on 2.4× normal volume.\n"
+        f"{provider} · <t:{int(now[0])}:t>"
+    ]
+
+
 def test_detector_signed_moves_window_gaps_and_cooldown(scanner):
     w, now = scanner
     end = int(NEWS - 30)
