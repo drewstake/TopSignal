@@ -17,8 +17,9 @@ Never stash, reset, add all files, or include another local commit to ship.
 
 The command pushes to main, overlaps CI with preparation, and reports the lane
 and reason. The running task, verified source, served HTML and both deployed
-revisions determine eligibility. Reviewed metric JSX text/classes and existing
-CSS presentation values can use the dashboard lane. Changes to executable
+revisions determine eligibility. Reviewed dashboard and chart components can
+ship JSX text, classes and literal SVG paint changes. Existing CSS presentation
+values can use the same lane. Changes to executable
 expressions, selectors, API/authentication, orders, dependencies, release
 tooling, backend or unrecognized files use the full lane. Frontend checks still
 run on the full push CI workflow. Dashboard publication needs both frontend

@@ -7,6 +7,11 @@ const ts = requireFrontend("typescript");
 const postcss = requireFrontend("postcss");
 const git = (...args) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
 const displayTags = new Set("div span p h1 h2 h3 h4 section article header footer aside li ul ol dl dt dd table tr td th caption title desc svg circle path g".split(" "));
+const displayFiles = new Set([
+  ...["DonutRing", "GaugeBar", "MetricCard", "MiniStatList", "SplitBar"].map(n => "frontend/src/components/metrics/" + n + ".tsx"),
+  ...["CompactDashboardPerformance", "DashboardOverview", "RiskForecastChart", "DailyAccountBalanceCard"].map(n => "frontend/src/pages/dashboard/components/" + n + ".tsx"),
+  "frontend/src/pages/bot/BotChartPresentation.tsx",
+]);
 const properties = new Set("color background-color border-color border-width border-radius font-size font-weight font-family line-height letter-spacing padding padding-top padding-bottom padding-left padding-right margin margin-top margin-bottom margin-left margin-right gap row-gap column-gap width height min-width max-width min-height max-height grid-template-columns grid-template-rows align-items justify-content flex-direction flex-wrap fill stroke stroke-width".split(" "));
 
 function cssShape(source) {
@@ -37,6 +42,12 @@ function jsxShape(source) {
         /^[\w :./%\[\]-]+$/.test(node.initializer.text)) {
       slots.push([node.initializer.getStart(file), node.initializer.end, '"#class"']);
     }
+    if (ts.isJsxAttribute(node) && ["fill","stroke","strokeWidth"].includes(node.name.getText(file)) &&
+        ["circle","line","path","rect"].includes(node.parent.parent.tagName.getText(file)) &&
+        node.initializer && ts.isStringLiteral(node.initializer) &&
+        /^(?:#[0-9a-f]{3,8}|currentColor|none|\d+(?:\.\d+)?|rgb\(var\(--theme-[a-z-]+\)\))$/i.test(node.initializer.text)) {
+      slots.push([node.initializer.getStart(file), node.initializer.end, '"#paint"']);
+    }
     ts.forEachChild(node, visit);
   }
   visit(file);
@@ -54,7 +65,7 @@ function classify(backend, dashboard, commit) {
       const [record, name] = fields.slice(i, i + 2);
       let shape;
       if (/^frontend\/src\/(?:styles|pages|components)\/[\w/-]+\.css$/.test(name)) shape = cssShape;
-      if (/^frontend\/src\/components\/metrics\/(?:DonutRing|GaugeBar|MetricCard|MiniStatList|SplitBar)\.tsx$/.test(name)) shape = jsxShape;
+      if (displayFiles.has(name)) shape = jsxShape;
       if (!shape || !/^:100644 100644 [0-9a-f]+ [0-9a-f]+ M$/.test(record)) {
         return { lane: "full", reason: name + " is outside reviewed display slots" };
       }

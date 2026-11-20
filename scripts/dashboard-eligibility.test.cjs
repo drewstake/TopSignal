@@ -4,7 +4,12 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
-const { classify } = require("./dashboard-eligibility.cjs");
+const { classify, jsxShape } = require("./dashboard-eligibility.cjs");
+
+test("chart paint slots accept literal colors and preserve executable expressions", () => {
+  assert.equal(jsxShape('<path stroke="#fff"/>'), jsxShape('<path stroke="#abc123"/>'));
+  assert.notEqual(jsxShape('<path stroke="#fff"/>'), jsxShape('<path stroke={getPrice()}/>'));
+});
 
 test("classify accumulated display changes against BOTH serving revisions", () => {
   const original = process.cwd();

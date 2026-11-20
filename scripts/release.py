@@ -85,7 +85,8 @@ def validate(output: Path, workers: int, resume: Path | None = None) -> dict:
     commands = [
         ("backend", [sys.executable, "-m", "pytest", "-q", "-n", str(workers), "--dist=loadfile",
                      "-o", "faulthandler_timeout=60", f"--junitxml={output / 'backend.xml'}"], ROOT / "backend"),
-        ("frontend", [NPM, "--prefix", "frontend", "test"], ROOT),
+        # Bound Vitest as well as pytest when running both suites together.
+        ("frontend", [NPM, "--prefix", "frontend", "test", "--", f"--maxWorkers={workers}"], ROOT),
         ("lint", [NPM, "--prefix", "frontend", "run", "lint", "--", "--max-warnings=0"], ROOT),
         ("scripts", [NPM, "run", "test:dev-scripts"], ROOT),
         ("root-audit", [NPM, "audit"], ROOT),
