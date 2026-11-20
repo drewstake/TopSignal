@@ -601,10 +601,16 @@ def worker_health(require_enabled: bool = False):
     a disabled or crashed recurring worker cannot look healthy.
     """
 
+    payload = _worker_health_snapshot(require_enabled)
+    if not payload["healthy"]:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
+
+
+def _worker_health_snapshot(require_enabled: bool = False):
     runtime = _bot_worker_runtime
     if runtime is None:
-        payload = {"status": "not_started", "enabled": False, "healthy": False}
-        return JSONResponse(status_code=503, content=payload)
+        return {"status": "not_started", "enabled": False, "healthy": False}
 
     snapshot = runtime.snapshot()
     enabled = bool(runtime.settings.enabled)
@@ -612,14 +618,11 @@ def worker_health(require_enabled: bool = False):
         (enabled and runtime.task_healthy())
         or (not enabled and not require_enabled)
     )
-    payload = {
+    return {
         "status": str(snapshot.state),
         "enabled": enabled,
         "healthy": healthy,
     }
-    if not healthy:
-        return JSONResponse(status_code=503, content=payload)
-    return payload
 
 
 class _ReadinessFailure(RuntimeError):
@@ -3190,6 +3193,13 @@ def register_topbot_candidate(account_id: int, ratio: float = Query(), db: Sessi
         return selection(user_id, account_id, ratio=ratio)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/system/health")
+def get_system_health(response: Response, db: Session = Depends(get_db)):
+    from .services.system_health import report
+    response.headers["Cache-Control"] = "no-store"
+    return report(db, _worker_health_snapshot())
 
 
 @app.get("/api/recording/health")

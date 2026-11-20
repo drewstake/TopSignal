@@ -24,6 +24,7 @@ from .probabilistic_shadow import cache_root
 from .trading_day import as_utc, futures_session_is_open, trading_day_bounds_utc, trading_day_date
 
 VERSION = 1
+BACKUP_FRESH_SECONDS = 36 * 3600
 MINUTE = timedelta(minutes=1)
 CALENDAR = 'topsignal-cme-equity-' + hashlib.sha256(Path(__file__).with_name('trading_day.py').read_bytes()).hexdigest()[:16]
 logger = logging.getLogger(__name__)
@@ -573,17 +574,18 @@ def recover_decision_commits(session_factory, owner):
 def backup_status(root=None):
     """The off-device backup receipt published by the backup job; small file read only."""
     receipt = (Path(root) if root else cache_root()) / 'market-archive' / 'backup-status.json'
-    if not receipt.is_file():
-        return {'status': 'never_verified', 'stale': True}
     try:
-        backup = json.loads(receipt.read_text(encoding='utf-8-sig'))
+        with receipt.open('rb') as stream:
+            backup = json.loads(stream.read(65537))
         result = {key: backup.get(key) for key in (
             'status', 'last_attempt_at', 'last_verified_at', 'last_restore_at',
             'verified_files', 'verified_bytes', 'destination', 'schedule', 'last_failure', 'publish_failure')}
         age = (datetime.now(timezone.utc)-datetime.fromisoformat(backup['last_verified_at'])).total_seconds() if backup.get('last_verified_at') else None
-        result.update(age_seconds=age, stale=age is None or age > 36*3600,
+        result.update(age_seconds=age, stale=age is None or age > BACKUP_FRESH_SECONDS,
                       restore_verified=bool(backup.get('restore', {}).get('verified')))
         return result
+    except FileNotFoundError:
+        return {'status': 'never_verified', 'stale': True}
     except Exception as exc:
         return {'status': 'unreadable', 'error': type(exc).__name__, 'stale': True}
 

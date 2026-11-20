@@ -52,7 +52,7 @@ it("opens an old bookmark, compares prior-day signals and preserves the selected
   await screen.findByRole("heading", { name: "Recorded live signal replay" });
   expect(router.state.location.pathname).toBe("/recorders");
   const nav = within(screen.getByRole("navigation", { name: "Main navigation" }));
-  expect(nav.getAllByRole("link").map(l => l.textContent).slice(-3)).toEqual(["Scanner", "Recorders", "Appearance"]);
+  expect(nav.getAllByRole("link").map(l => l.textContent).slice(-4)).toEqual(["Scanner", "Recorders", "Health", "Appearance"]);
   expect(nav.getByRole("link", { name: "Recorders" }).getAttribute("aria-current")).toBe("page");
   expect(screen.queryByRole("region", { name: "Trade recorder" })).toBeNull();
   expect(streamProjectXMarketDepth).not.toHaveBeenCalled();
@@ -88,4 +88,8 @@ it("opens an old bookmark, compares prior-day signals and preserves the selected
   fireEvent.click(screen.getByRole("button", { name: "Recorded liquidity" }));
   await waitFor(() => expect(vi.mocked(requestJson).mock.calls.some(([path]) => path === "/api/accounts/1/order-book-history")).toBe(true));
   expect(screen.queryByText(/A \$97.56/)).toBeNull();
+  fireEvent.click(nav.getByRole("link", { name: "Health" }));
+  expect(await screen.findByRole("heading", { name: "Health" })).toBeTruthy();
+  expect(nav.getByRole("link", { name: "Health" }).getAttribute("aria-current")).toBe("page");
+  expect(screen.getByRole("heading", { name: "Discord reader" })).toBeTruthy();
 });

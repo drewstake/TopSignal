@@ -6,6 +6,7 @@ import { AccountAccess } from "./AccountAccess";
 import { ScannerAlerts } from "../pages/scanner/ScannerAlerts";
 
 const ScannerPage = lazy(() => import("../pages/scanner/ScannerPage").then(m => ({ default: m.ScannerPage })));
+const HealthPage = lazy(() => import("../pages/health/HealthPage"));
 const RecordersPage = lazy(() => import("../pages/recorders/RecordersPage").then(m => ({ default: m.RecordersPage })));
 
 const DashboardPage = lazy(() =>
@@ -73,6 +74,11 @@ export const router = createBrowserRouter([
       {
         path: "scanner",
         element: <ScannerPage />,
+        errorElement: <RouteErrorPage />,
+      },
+      {
+        path: "health",
+        element: <HealthPage />,
         errorElement: <RouteErrorPage />,
       },
       {

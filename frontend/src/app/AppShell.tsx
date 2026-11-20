@@ -84,6 +84,7 @@ const WORKSPACE_PAGE_LABELS: ReadonlyArray<readonly [string, string]> = [
   ["/bot", "Bot"],
   ["/scanner", "Scanner"],
   ["/recorders", "Recorders"],
+  ["/health", "Health"],
   ["/appearance", "Appearance"],
 ];
 
@@ -533,6 +534,7 @@ export function AppShell() {
               { label: "Bot", to: `/bot${accountSuffix}` },
               { label: "Scanner", to: "/scanner" },
               { label: "Recorders", to: `/recorders${accountSuffix}` },
+              { label: "Health", to: "/health" },
               { label: "Appearance", to: `/appearance${accountSuffix}` },
             ]}
           />
@@ -724,7 +726,7 @@ export function AppShell() {
         ) : null}
         <ScannerAlerts />
         <Suspense fallback={<AppShellRouteFallback />}>
-          {unavailableAccountLink && location.pathname !== "/scanner" ? accountsLoading ? <AppShellRouteFallback /> : (
+          {unavailableAccountLink && !["/scanner", "/health"].includes(location.pathname) ? accountsLoading ? <AppShellRouteFallback /> : (
             <div className="space-y-3 rounded-xl border border-app-warning/40 p-6" role="alert">
               <h1 className="text-lg font-semibold">Account link unavailable</h1>
               <p>{accountsError
