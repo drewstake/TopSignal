@@ -570,30 +570,31 @@ def test_writer_rechecks_runner_connection_after_queued_stale_state(local,monkey
         assert not engine.connected["user"]
 
 
-def test_busy_writer_retries_same_batch_without_losing_or_duplicating_observations(local):
-    import threading
+def test_busy_writer_retries_same_batch_without_losing_or_duplicating_observations(local, monkeypatch):
     from app.services.trade_progress_recorder import AccountRecorder
     engine = ready()
     engine.position(pos(), T)
     engine.fill(dict(id=91, accountId=1, contractId=C, creationTimestamp=iso(T),
                      size=1, price=100, profitAndLoss=0), T)
-    # A separate connection (like a maintenance process) owns the real SQLite
-    # write lock longer than the existing one-second busy timeout.
+    # Release the competing transaction when SQLite actually returns BUSY.
+    # A fixed sleep can elapse before the first write starts on a busy runner.
     with store.connect(write=True):
         pass
-    locked = threading.Event()
-    def competing_writer():
-        with sqlite3.connect(store.location()) as db:
-            db.execute('BEGIN IMMEDIATE')
-            locked.set()
-            threading.Event().wait(1.3)
-    thread = threading.Thread(target=competing_writer)
-    thread.start()
-    assert locked.wait(2)
     worker = AccountRecorder('owner', 1, {'MNQ': 2}, lambda: None)
-    worker.flush(engine)
-    thread.join(3)
-    assert not thread.is_alive()
+    flush = engine.flush
+    with sqlite3.connect(store.location()) as competing:
+        competing.execute('BEGIN IMMEDIATE')
+
+        def flush_while_locked():
+            try:
+                return flush()
+            except sqlite3.OperationalError as exc:
+                if store.is_busy(exc):
+                    competing.rollback()
+                raise
+
+        monkeypatch.setattr(engine, "flush", flush_while_locked)
+        worker.flush(engine)
     assert worker.metrics['commit_busy_retries'] >= 1
     assert worker.metrics['discarded_after_write_failure'] == 0
     with store.connect() as db:

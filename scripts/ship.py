@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 
 from dashboard_release import commit, inspect_artifact, verify_page, write_atomic
 from release import ROOT, NPM, ps_quote, remote
@@ -40,6 +41,14 @@ class Timing:
         folder.mkdir(exist_ok=True, parents=True)
         self.path = folder / "timing.json"
         self.data = json.loads(self.path.read_bytes()) if self.path.exists() else {"started": now(), "steps": []}
+
+    def verified(self):
+        end = datetime.now(timezone.utc)
+        self.data["verified"] = end.isoformat()
+        for key, label in (("push_started", "push_to_verified_seconds"), ("ship_started", "ship_to_verified_seconds")):
+            if key in self.data:
+                self.data[label] = round((end - datetime.fromisoformat(self.data[key])).total_seconds(), 3)
+        write_atomic(self.path, self.data)
 
     @contextlib.contextmanager
     def step(self, name):
@@ -217,6 +226,9 @@ def clean_package(folder, revision):
             cmd[-1] = str(attempt)
             subprocess.run(cmd, cwd=checkout, env=env, check=True)
     else:
+        partials = sorted(folder.glob("package-*-validation/partial.json"), key=lambda p: p.stat().st_mtime)
+        if partials and partials[-1].stat().st_mtime >= dependency_marker.stat().st_mtime:
+            cmd += ["--resume-tests", str(partials[-1])]
         subprocess.run(cmd, cwd=checkout, env=env, check=True)
     attempt.rename(bundle)
     return bundle
@@ -226,6 +238,21 @@ def check_companions(revision, state):
     for name, expected in state["companions"].items():
         if companion_digest(name, output(["git", "show", revision + ":" + name])) != expected:
             raise ValueError(f"Independent helper differs on peteamdpc: {name}. Its reviewed rollout is required.")
+
+
+def install_view(bundle):
+    # Run only the tested viewer and installer from the approved full bundle.
+    manifest = verify_bundle(bundle)
+    with tempfile.TemporaryDirectory(prefix="ts-view-") as directory, zipfile.ZipFile(bundle / "source.zip") as source:
+        root = Path(directory)
+        for name in ("scripts/install-dashboard-view.ps1", "backend/tools/serve_imbalance_dashboard.py"):
+            path = root / name
+            path.parent.mkdir(parents=True)
+            path.write_bytes(source.read(name))
+            if sha256(path) != manifest["source_sha256"][name]:
+                raise ValueError("Viewing handoff source differs from the full candidate")
+        subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-File",
+                        str(root / "scripts/install-dashboard-view.ps1")], check=True)
 
 
 def select_commit(args, upstream):
@@ -289,7 +316,10 @@ def ship(args):
             host.dashboard("rollback", state, "dashboard-" + args.rollback, state["previous"], "-")
         with timing.step("verify rollback through viewing connection"):
             after = host.state()
+            if after["release"] != state["release"] or after["active"] != state["previous"]:
+                raise ValueError("Dashboard changed during rollback verification")
             verify_page(after["files"], after["active"])
+        print(f"Refresh peteamdpc. Verified rollback to {after['active'] or after['backend']}.")
         return
     git("fetch", "origin", "main")
     upstream = git("rev-parse", "origin/main")
@@ -311,7 +341,7 @@ def ship(args):
             if not state["dashboard_verified"]:
                 raise ValueError("Dashboard switch lacks its health receipt; inspect or roll it back")
             verify_page(state["files"], state["active"])
-            timing.data["verified"] = now()
+            timing.verified()
             print(f"Refresh peteamdpc. Verified {revision}.")
             return
         check_companions(revision, state)
@@ -326,12 +356,25 @@ def ship(args):
     fast = rule["lane"] == "dashboard"
     repo = config["repository"]
     # Re-key full preparation whenever the serving baseline changes.
-    full_id = f"ship-{revision[:12]}-{Path(state['release']).name[-12:]}-{(state['active'] or 'base')[:12]}"
-    directory = host.staging + "/" + full_id
     if not fast:
         with timing.step("validate and package full release"):
             bundle = clean_package(folder, revision)
         with timing.step("stage full release"):
+            prefix = f"ship-{revision[:12]}-{Path(state['release']).name[-12:]}-{(state['active'] or 'base')[:12]}"
+            # An interrupted extraction has no integrity receipt. Preserve its
+            # evidence and use a fresh directory for the already verified bundle.
+            full_id = host.ps(f"""
+$id={ps_quote(prefix)}
+$n=1
+while ((Test-Path (Join-Path {ps_quote(state['config']['releases_root'])} $id)) -and
+       !(Test-Path (Join-Path {ps_quote(host.staging)} "$id/prepared.json"))) {{
+    $n++; $id={ps_quote(prefix)} + "-r$n"
+}}
+$id
+""")
+            if not re.fullmatch(re.escape(prefix) + r"(?:-r[0-9]+)?", full_id):
+                raise ValueError("Unexpected full candidate directory")
+            directory = host.staging + "/" + full_id
             profile = dict(config, **{k:v for k,v in state["config"].items() if k not in config},
                            previous_release=state["release"], expected_dashboard=state["active"], release_id=full_id)
             profile_path = folder / (full_id + ".json")
@@ -356,6 +399,9 @@ if (Test-Path "$p/ready.json") {{
         run = ci_status(revision, repo, fast)
         timing.data["ci"] = {k:run[k] for k in ("url", "createdAt", "attempt")}
         timing.data["ci"]["jobs"] = [{k:j[k] for k in ("name","startedAt","completedAt","conclusion")} for j in run["jobs"]]
+        completed = max(j["completedAt"] for j in run["jobs"] if not fast or j["name"] in {"Frontend quality", "Frontend tests"})
+        timing.data["ci"]["gate_seconds"] = (datetime.fromisoformat(completed.replace("Z","+00:00"))
+                                             - datetime.fromisoformat(run["createdAt"].replace("Z","+00:00"))).total_seconds()
     if fast:
         name = "dashboard-" + revision
         directory = host.staging + "/" + name
@@ -375,7 +421,14 @@ if (Test-Path "$p/dashboard.zip") {{(Get-FileHash -LiteralPath "$p/dashboard.zip
               else f"Prepared {revision}.")
         return
     with timing.step("verify viewing connection before activation"):
-        verify_page(state["files"], state["active"])
+        try:
+            verify_page(state["files"], state["active"])
+        except (ValueError, OSError):
+            if state["publisher"] or not args.install_publisher:
+                raise
+            verify_page(state["files"], state["active"], port=4176)
+            install_view(bundle)
+            verify_page(state["files"], state["active"])
     if fast:
         with timing.step("activate dashboard"):
             ci_path = folder / "dashboard-ci.json"
@@ -412,6 +465,5 @@ if ($LASTEXITCODE) {{exit $LASTEXITCODE}}
             if after["backend"] != revision or after["active"] is not None or not after["complete"]:
                 raise ValueError("Unexpected serving identity after full switch")
             verify_page(after["files"], None)
-    timing.data["verified"] = now()
-    write_atomic(timing.path, timing.data)
+    timing.verified()
     print(f"Refresh peteamdpc. Verified {revision}. Timing: {timing.path}")

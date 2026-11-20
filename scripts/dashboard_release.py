@@ -37,7 +37,15 @@ def write_atomic(path, data):
         file.flush()
         os.fsync(file.fileno())
     try:
-        os.replace(file.name, path)
+        # Windows readers can hold the previous JSON open for a few milliseconds.
+        for attempt in range(20):
+            try:
+                os.replace(file.name, path)
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.025)
     finally:
         Path(file.name).unlink(missing_ok=True)
 

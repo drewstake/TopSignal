@@ -72,7 +72,7 @@ def run_logged(name: str, command: list[str], output: Path, env: dict, cwd: Path
     return row
 
 
-def validate(output: Path, workers: int) -> dict:
+def validate(output: Path, workers: int, resume: Path | None = None) -> dict:
     check_output(output)
     output.mkdir(parents=True, exist_ok=False)
     before = input_fingerprint()
@@ -93,12 +93,35 @@ def validate(output: Path, workers: int) -> dict:
     ]
     # Build exactly the loopback production configuration; no second build at packaging.
     build_env = dict(os.environ, VITE_API_BASE_URL="http://127.0.0.1:8000", VITE_DEMO_MODE="false", VITE_LOCAL_AUTH_ENABLED="true")
+    revision = capture(["git", "rev-parse", "HEAD"])
+    cached = {}
+    if resume:
+        previous = json.loads(resume.read_bytes())
+        if (previous["input_sha256"] == before and previous["git_commit"] == revision
+                and previous["python"] == sys.executable and previous["workers"] == workers):
+            cached = {r["name"]: r for r in previous["steps"] if r["exit_code"] == 0}
+    # Audits and production output are inexpensive and time/input sensitive.
+    # Reuse only completed test lanes from the same intact private checkout.
+    commands.append(("production-build", [NPM, "--prefix", "frontend", "run", "build"], ROOT))
+    rows, errors = [], []
     with ThreadPoolExecutor(max_workers=4) as pool:
-        jobs = [pool.submit(run_logged, name, command, output, env, cwd) for name, command, cwd in commands]
-        jobs.append(pool.submit(run_logged, "production-build", [NPM, "--prefix", "frontend", "run", "build"], output, build_env))
-        rows = [job.result() for job in jobs]
+        jobs = []
+        for name, command, cwd in commands:
+            if name in cached and name in {"backend", "frontend", "lint", "scripts"}:
+                rows.append(dict(cached[name], reused_from=str(resume)))
+                continue
+            jobs.append(pool.submit(run_logged, name, command, output, build_env if name == "production-build" else env, cwd))
+        for job in jobs:
+            try:
+                rows.append(job.result())
+            except (OSError, RuntimeError) as error:
+                errors.append(str(error))
     if input_fingerprint() != before:
         raise RuntimeError("Source/build configuration changed during validation; rerun on stable inputs")
+    if errors:
+        (output / "partial.json").write_text(json.dumps(dict(input_sha256=before, git_commit=revision,
+            python=sys.executable, workers=workers, steps=rows)), encoding="utf-8")
+        raise RuntimeError("\n".join(errors))
     dist = {p.relative_to(ROOT).as_posix(): sha256(p) for p in (ROOT / "frontend/dist").rglob("*") if p.is_file()}
     result = {"version": 1, "validated": True, "input_sha256": before,
               "git_commit": capture(["git", "rev-parse", "HEAD"]), "steps": rows, "dist_sha256": dist}
@@ -106,14 +129,14 @@ def validate(output: Path, workers: int) -> dict:
     return result
 
 
-def package(output: Path, receipt: Path | None, workers: int) -> None:
+def package(output: Path, receipt: Path | None, workers: int, resume: Path | None = None) -> None:
     check_output(output)
     if capture(["git", "status", "--porcelain"]):
         raise RuntimeError("Commit the complete reviewed source before packaging; working tree is dirty")
     if receipt:
         validation = json.loads(receipt.read_text(encoding="utf-8"))
     else:
-        validation = validate(output.with_name(output.name + "-validation"), workers)
+        validation = validate(output.with_name(output.name + "-validation"), workers, resume)
     expected_steps = {"backend", "frontend", "lint", "scripts", "root-audit", "frontend-audit", "production-build"}
     if (not validation.get("validated") or validation.get("input_sha256") != input_fingerprint()
             or validation.get("git_commit") != capture(["git", "rev-parse", "HEAD"])
@@ -253,6 +276,7 @@ def main() -> None:
     parser.add_argument("command", choices=["validate", "package", "verify", "stage", "deploy", "activate"])
     parser.add_argument("--output", type=Path)
     parser.add_argument("--receipt", type=Path)
+    parser.add_argument("--resume-tests", type=Path)
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--host-config", type=Path)
     parser.add_argument("--workers", type=int, default=4)
@@ -265,7 +289,7 @@ def main() -> None:
         if args.command == "validate":
             validate(args.output.resolve(), args.workers)
         else:
-            package(args.output.resolve(), args.receipt, args.workers)
+            package(args.output.resolve(), args.receipt, args.workers, args.resume_tests)
     else:
         if not args.bundle:
             parser.error("--bundle is required")

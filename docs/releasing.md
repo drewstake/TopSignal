@@ -45,10 +45,9 @@ through verified viewing bytes. Record actual wall time and CI job timestamps.
 **One-time installation.** Prepare with `ship --commit <sha> --prepare-only`.
 Ask before the first production switch. On this PC, port 4173 has a separate
 Study View and 4176 is the SSH forward to peteamdpc. After approval, run
-`scripts/install-dashboard-view.ps1` from the reviewed candidate to hand off
-static requests and retain cached assets for existing tabs. Then run
-`npm run release -- ship --commit <sha> --install-publisher`. The viewing
-handoff supports `-WhatIf` and restores the prior viewer on failure.
+`npm run release -- ship --commit <sha> --install-publisher`. If needed, it
+hands static requests to peteamdpc and retains old assets for existing tabs.
+The viewing handoff restores the prior viewer on failure.
 
 ## Connection
 

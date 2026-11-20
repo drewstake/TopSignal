@@ -301,6 +301,26 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "dirty"):
                 release.package(self.root / "dirty", receipt, 4)
 
+    def test_resume_only_successful_tests_for_unchanged_inputs(self):
+        calls = []
+        def lane(name, *args):
+            calls.append(name)
+            if name == "frontend" and calls.count(name) == 1:
+                raise RuntimeError("injected frontend failure")
+            return {"name": name, "seconds": 1, "exit_code": 0}
+        first = self.root / "first"
+        with patch.object(release, "check_output"), patch.object(release, "run_logged", side_effect=lane), patch.object(release, "ROOT", self.root), \
+             patch.object(release, "capture", return_value="a"*40), patch.object(release, "input_fingerprint", return_value="same"):
+            with self.assertRaisesRegex(RuntimeError, "injected frontend"):
+                release.validate(first, 4)
+            release.validate(self.root / "retry", 4, first / "partial.json")
+            self.assertEqual(calls.count("backend"), 1)
+            self.assertEqual(calls.count("frontend"), 2)
+            self.assertEqual(calls.count("production-build"), 2)
+            with patch.object(release, "input_fingerprint", return_value="changed"):
+                release.validate(self.root / "other", 4, first / "partial.json")
+            self.assertEqual(calls.count("backend"), 2)
+
     def test_host_prepares_private_owned_environment_preserves_assets_and_rechecks_every_file(self):
         previous = self.root / "previous"
         candidate = self.root / "candidate"
