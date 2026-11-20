@@ -17,7 +17,8 @@ service identity.
 1. Finish reviewing the complete source and commit it. A package requires a clean
    working tree. A `validate` run can be used before committing; its receipt is
    reusable only if both the input fingerprint and commit still match.
-2. Validate and package once:
+2. When the reviewed commit is ready to push, push it to start GitHub CI.
+   Immediately validate and package that same commit locally while CI runs:
 
    ```powershell
    npm run release -- package --output tmp/releases/candidate-001
@@ -40,7 +41,8 @@ service identity.
    Any changed tracked/untracked source, frontend environment/build input, commit,
    missing validation lane, or changed built asset invalidates the receipt.
    Outputs must be outside the repository or in a Git-ignored folder.
-3. Push the reviewed commit normally. Prepare the candidate while CI runs:
+3. As soon as the package succeeds, prepare the candidate. The current release
+   continues serving the dashboard during preparation:
 
    ```powershell
    npm run release -- stage --bundle tmp/releases/candidate-001 --host-config tmp/release-host.json

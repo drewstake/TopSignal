@@ -17,16 +17,23 @@ CONTRACT = "CON.F.US.MNQ.Z26"
 START = datetime(2026, 11, 11, 14, tzinfo=timezone.utc)
 
 
+class ReplayFixtureCapture(Capture):
+    # The fixture pauses after each group to create distinct durable replay
+    # checkpoints. Commit a full group as soon as its last event arrives.
+    MAX_BATCH_EVENTS = 97
+
+
 def _flush(cap, timeout=10):
     deadline = time.monotonic()+timeout
     while cap.durable_index < cap.index and time.monotonic() < deadline:
         time.sleep(.005)
+    assert cap.durable_index == cap.index
 
 
 def market_capture(root, *, seed=7, minutes=12, holes=True, owner=OWNER):
     """A recorded stream with every condition the reader treats specially."""
     rng = random.Random(seed)
-    cap = Capture(owner, CONTRACT, root=root, free_floor=0)
+    cap = ReplayFixtureCapture(owner, CONTRACT, root=root, free_floor=0)
     at, seq, mid = START, 0, 20000.
     times = []
     end = START+timedelta(minutes=minutes)
@@ -60,10 +67,11 @@ def market_capture(root, *, seed=7, minutes=12, holes=True, owner=OWNER):
         cap.append(event, at, [])
         times.append(at)
         group += 1
-        if group % 97 == 0:
+        if group % cap.MAX_BATCH_EVENTS == 0:
             _flush(cap)
     _flush(cap)
     cap.close()
+    assert cap.durable_events == len(times)
     return cap, times
 
 

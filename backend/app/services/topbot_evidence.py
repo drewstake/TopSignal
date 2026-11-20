@@ -251,6 +251,8 @@ def normalized(event):
 
 class Capture:
     """One writer per feed. Producers only encode/enqueue; SQLite never holds the book lock."""
+    MAX_BATCH_EVENTS = 2048
+
     def __init__(self, owner, contract, *, root=None, queue_size=4096, budget=DEFAULT_BUDGET,
                  free_floor=FREE_FLOOR):
         if root is None:
@@ -510,7 +512,7 @@ class Capture:
                     # Amortize FULL-sync disk commits when the feed arrives in bursts.
                     # Keep the same byte and collection-time bounds; a small batch
                     # count otherwise caps throughput below the incoming event rate.
-                    while len(batch) < 2048 and batch_bytes < 4*1024**2 and monotonic() < until:
+                    while len(batch) < self.MAX_BATCH_EVENTS and batch_bytes < 4*1024**2 and monotonic() < until:
                         try:
                             item = self.queue.get(timeout=max(.001, until-monotonic()))
                             batch.append(item)
