@@ -16,7 +16,7 @@ import sys
 import time
 from urllib.request import Request, build_opener, ProxyHandler
 
-from release_lib import extract_bundle, is_link, safe_name, sha256, verify_files, verify_bundle
+from release_lib import companion_digest, extract_bundle, is_link, safe_name, sha256, verify_files, verify_bundle
 
 urlopen = build_opener(ProxyHandler({})).open
 
@@ -203,7 +203,7 @@ def check_companions(config: dict, candidate: Path) -> None:
     # unannounced file overwrite during an application release.
     for source, target in config["companion_files"].items():
         safe_name(source)
-        if sha256(candidate / source) != sha256(Path(target)):
+        if companion_digest(source, (candidate / source).read_bytes()) != companion_digest(source, Path(target).read_bytes()):
             raise ValueError(f"Independent helper differs: {source}; complete its reviewed rollout before application activation")
 
 
@@ -233,6 +233,10 @@ def expected_restart_disarm(observed: dict, baseline: dict) -> bool:
     return True
 
 
+class WaitForSwitch(ValueError):
+    """A live position or active research window can clear without a deployment."""
+
+
 def check_gate_snapshot(observed: dict, baseline: dict | None, require_flat: bool,
                         allow_restart_disarm: bool = False) -> None:
     if baseline and (observed["config_sha256"] != baseline["config_sha256"] or observed["runs"] != baseline["runs"]):
@@ -244,7 +248,7 @@ def check_gate_snapshot(observed: dict, baseline: dict | None, require_flat: boo
         if account["simulated"] is not True or account["can_trade"] is not True:
             raise ValueError("Account eligibility is not verified")
         if require_flat and (account["positions"] or account["orders"]):
-            raise ValueError("Broker exposure is active; wait without interrupting management")
+            raise WaitForSwitch("Broker exposure is active; wait without interrupting management")
 
 
 def check_research_windows(observed: dict, config: dict) -> None:
@@ -257,7 +261,7 @@ def check_research_windows(observed: dict, config: dict) -> None:
     windows = observed.get("open_research_windows") or []
     if windows and config.get("accept_research_window_gaps") is not True:
         latest = max(w["cutoff"] for w in windows)
-        raise ValueError(f"{len(windows)} post-exit research windows are open until {latest}; a restart would cut them "
+        raise WaitForSwitch(f"{len(windows)} post-exit research windows are open until {latest}; a restart would cut them "
                          "short. Activate after that time or set accept_research_window_gaps in the host configuration")
 
 
@@ -274,7 +278,7 @@ def open_research_windows(db, BotOrderAttempt, now: datetime) -> list[dict]:
 
 
 def gate(stage: Path, config: dict, root: Path, record: bool, require_flat: bool,
-         allow_restart_disarm: bool = False) -> dict:
+         allow_restart_disarm: bool = False, preview: bool = False) -> dict:
     # Application imports happen only inside the host gate, never at tool import time.
     sys.path.insert(0, str(root / "backend"))
     from dotenv import load_dotenv
@@ -313,6 +317,8 @@ def gate(stage: Path, config: dict, root: Path, record: bool, require_flat: bool
         database_bytes = db.execute(text("select pg_database_size(current_database())")).scalar()
         research_windows = open_research_windows(db, BotOrderAttempt, datetime.now(timezone.utc)) if record else []
         db.rollback()
+    if preview:
+        check_research_windows({"open_research_windows": research_windows}, config)
     observed = {"config_sha256": hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest(),
                 "configs": {row["id"]: row for row in rows},
                 "runs": runs, "unresolved_attempts": unresolved, "database_bytes": database_bytes, "accounts": []}
@@ -338,6 +344,8 @@ def gate(stage: Path, config: dict, root: Path, record: bool, require_flat: bool
     baseline_path = stage / "broker-before.json"
     baseline = None if record else json.loads(baseline_path.read_text(encoding="utf-8"))
     check_gate_snapshot(observed, baseline, require_flat, allow_restart_disarm)
+    if preview:
+        return observed
     if record:
         # Only before stopping: after the switch the reader re-establishes retention itself.
         observed["open_research_windows"] = research_windows
@@ -360,7 +368,13 @@ def health(config: dict, root: Path) -> dict:
             body = response.read()
             if response.status != 200:
                 raise ValueError("Release health probe failed")
-            if path.endswith(":4173/") and body != (root / "frontend/dist/index.html").read_bytes():
+            index = root / "frontend/dist/index.html"
+            pointer = root / "frontend/dashboard.json"
+            if pointer.exists():
+                active = json.loads(pointer.read_bytes())["active"]
+                if active:
+                    index = index.parent / "dashboard-builds" / safe_name(active) / "index.html"
+            if path.endswith(":4173/") and body != index.read_bytes():
                 raise ValueError("Served frontend does not match candidate")
             result[path] = response.status
     return result
@@ -455,7 +469,7 @@ def migration_check(root: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["prepare", "verify", "gate", "health", "recording", "migration-check"])
+    parser.add_argument("command", choices=["prepare", "verify", "gate", "window", "health", "recording", "migration-check"])
     parser.add_argument("--stage", required=True, type=Path)
     parser.add_argument("--previous", action="store_true")
     parser.add_argument("--record", action="store_true")
@@ -475,6 +489,14 @@ def main() -> None:
         prepare(stage, config, candidate, previous)
     elif args.command == "verify":
         verify(stage, candidate, previous)
+    elif args.command == "window":
+        if (stage / "broker-before.json").exists():
+            raise ValueError("Prior switch crossed preflight; inspect activation.log before recovery")
+        try:
+            gate(stage, config, previous, True, True, preview=True)
+            print(json.dumps({"ready": True}))
+        except WaitForSwitch as error:
+            print(json.dumps({"ready": False, "reason": str(error)}))
     elif args.command == "gate":
         gate(stage, config, root, args.record, not args.allow_exposure, args.allow_restart_disarm)
     elif args.command == "health":

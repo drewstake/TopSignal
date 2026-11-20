@@ -19,6 +19,16 @@ ROUTE = re.compile(r"/api/accounts/([1-9][0-9]{0,17})/topbot/edge")
 PUBLIC_HOST = "127.0.0.1:4173"
 
 
+def dashboard_response(path, method, port=4176):
+    # Pass only the static request path. The existing forwarding process owns
+    # the SSH connection. Study API requests retain their separate owner check.
+    path = urlsplit(path).path
+    if not path.startswith("/") or path.startswith("//"):
+        raise ValueError("Invalid dashboard path")
+    req = request.Request(f"http://127.0.0.1:{port}" + path, method=method, headers={"Host": PUBLIC_HOST})
+    return request.build_opener(request.ProxyHandler({}), NoRedirect()).open(req, timeout=8)
+
+
 class ViewingCopy:
     """Fetch only an authorized account's compact report over the existing private file-transfer connection."""
 
@@ -100,6 +110,26 @@ def serve(config):
     class Handler(static.TopSignalFrontendHandler):
         def _host_is_allowed(self):
             return self.headers.get("Host", "").lower() in {self.allowed_host, PUBLIC_HOST}
+
+        def send_head(self):
+            if not config.get("viewing_pc"):
+                return super().send_head()
+            try:
+                response = dashboard_response(self.path, self.command)
+            except error.HTTPError as exc:
+                exc.close()
+                if exc.code == 404 and re.fullmatch(r"/assets/[\w.-]+", urlsplit(self.path).path):
+                    return super().send_head()  # Lazy imports from the former viewing copy.
+                self.send_error(exc.code)
+                return None
+            except (ValueError, OSError):
+                self.send_error(503)
+                return None
+            self.send_response(response.status)
+            self.send_header("Content-Type", response.headers["Content-Type"])
+            self.send_header("Content-Length", response.headers["Content-Length"])
+            self.end_headers()
+            return response
 
         def do_GET(self):
             path = urlsplit(self.path).path

@@ -1,3 +1,11 @@
+# Shipping changes to peteamdpc
+
+When the user says “ship it”, test and review the intended local change, then use
+`npm run release -- ship` with the exact paths or reviewed staged tree as described
+in [the runbook](docs/releasing.md). Keep unrelated work intact and the local app
+closed. Report the lane, timing and when to refresh peteamdpc. Require approval
+before the first publisher switch. A research-gap approval is release-specific.
+
 # Storage rules for TopSignal
 
 Current architecture: see the [November 13 maintenance receipt](docs/audits/2026-11-13/storage-maintenance.md).

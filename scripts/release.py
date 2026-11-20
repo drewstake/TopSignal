@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -90,10 +91,12 @@ def validate(output: Path, workers: int) -> dict:
         ("root-audit", [NPM, "audit"], ROOT),
         ("frontend-audit", ["node", "scripts/audit-frontend.cjs"], ROOT),
     ]
-    rows = [run_logged(name, command, output, env, cwd) for name, command, cwd in commands]
     # Build exactly the loopback production configuration; no second build at packaging.
     build_env = dict(os.environ, VITE_API_BASE_URL="http://127.0.0.1:8000", VITE_DEMO_MODE="false", VITE_LOCAL_AUTH_ENABLED="true")
-    rows.append(run_logged("production-build", [NPM, "--prefix", "frontend", "run", "build"], output, build_env))
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        jobs = [pool.submit(run_logged, name, command, output, env, cwd) for name, command, cwd in commands]
+        jobs.append(pool.submit(run_logged, "production-build", [NPM, "--prefix", "frontend", "run", "build"], output, build_env))
+        rows = [job.result() for job in jobs]
     if input_fingerprint() != before:
         raise RuntimeError("Source/build configuration changed during validation; rerun on stable inputs")
     dist = {p.relative_to(ROOT).as_posix(): sha256(p) for p in (ROOT / "frontend/dist").rglob("*") if p.is_file()}
@@ -242,6 +245,10 @@ Set-Acl -LiteralPath $path -AclObject $acl
 
 
 def main() -> None:
+    if sys.argv[1:2] == ["ship"]:
+        from ship import main as ship
+        ship(sys.argv[2:])
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["validate", "package", "verify", "stage", "deploy", "activate"])
     parser.add_argument("--output", type=Path)

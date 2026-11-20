@@ -15,7 +15,7 @@ export async function checkRouteLoad(message: string, signal: AbortSignal): Prom
     if (match) {
       const asset = new URL(match[0]);
       // Error text is untrusted. Never probe an external URL or authenticated API.
-      if (asset.origin === window.location.origin && asset.pathname.startsWith("/assets/") && /\.(js|css)$/.test(asset.pathname)) {
+      if (asset.origin === window.location.origin && /^\/(?:dashboard-builds\/[0-9a-f]{40}\/)?assets\/[\w.-]+\.(js|css)$/.test(asset.pathname)) {
         asset.search = "";
         asset.hash = "";
         const result = await fetch(asset, { method: "HEAD", cache: "no-store", signal, credentials: "omit", redirect: "error" });

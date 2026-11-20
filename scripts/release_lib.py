@@ -22,6 +22,15 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def companion_digest(name: str, data: bytes) -> str:
+    # Existing Windows helper installations include LF, CRLF and mixed Python
+    # files. Python normalizes these line endings on input. Every other byte,
+    # including trailing whitespace and the final newline, remains significant.
+    if name.endswith(".py"):
+        data = data.replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
 def safe_name(name: str) -> str:
     path = PurePosixPath(name)
     if (not name or any(char in name for char in '\\:<>"|?*') or path.is_absolute()

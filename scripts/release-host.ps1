@@ -146,6 +146,10 @@ function Invoke-ReleaseSwitch(
 if ($FunctionsOnly) { return }
 if (-not $Stage) { throw 'Stage is required' }
 $Stage = (Resolve-Path -LiteralPath $Stage).Path
+# Shared with the dashboard publisher. An interrupted process releases the
+# handle automatically. Test task identity and both baselines under this lock.
+$guard = [IO.File]::Open((Join-Path (Split-Path $Stage) 'publish.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+try {
 $config = Get-Content -LiteralPath (Join-Path $Stage 'host.json') -Raw | ConvertFrom-Json
 $previous = (Resolve-Path -LiteralPath $config.previous_release).Path
 $release = Assert-ChildPath $config.releases_root (Join-Path $config.releases_root $config.release_id)
@@ -160,6 +164,11 @@ $task = Get-ScheduledTask -TaskName $taskName
  $expectedTaskRelease = if ($Phase -eq 'Verify') { $release } else { $previous }
 if ($task.Actions.Count -ne 1 -or -not $task.Actions[0].Arguments.Contains((Join-Path $expectedTaskRelease 'scripts\run-production.ps1'))) {
     throw 'Scheduled task no longer points to the expected previous release'
+}
+if ($Phase -ne 'Verify' -and $config.PSObject.Properties['expected_dashboard']) {
+    $pointer = Join-Path $previous 'frontend\dashboard.json'
+    $active = if (Test-Path $pointer) { (Get-Content -Raw -LiteralPath $pointer | ConvertFrom-Json).active }
+    if ($active -ne $config.expected_dashboard) { throw 'Dashboard changed since full release classification' }
 }
 $currentManifestHash = (Get-FileHash -LiteralPath (Join-Path $Stage 'manifest.json')).Hash.ToLowerInvariant()
 if ($currentManifestHash -ne $config.manifest_sha256) { throw 'Manifest checksum mismatch' }
@@ -275,3 +284,4 @@ try {
     Export-ScheduledTask -TaskName $taskName | Set-Content -LiteralPath (Join-Path $Stage 'task-after.xml')
     Log 'Release complete.'
 } finally { $credential = $null }
+} finally { $guard.Dispose() }

@@ -57,6 +57,14 @@ def preserve_assets(directory: Path, previous: Path) -> dict:
     for src, dst in plan:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dst)
+    # Versioned URLs from an already-open dashboard survive the next full
+    # release. Each directory is immutable and contains only public assets.
+    versions = previous / "dashboard-builds"
+    if versions.exists():
+        if any(p.is_symlink() or getattr(p.lstat(), "st_file_attributes", 0) & 0x400
+               for p in (versions, *versions.rglob("*"))):
+            raise ValueError("Linked dashboard build")
+        shutil.copytree(versions, directory / "dashboard-builds")
     result = {"current_assets": sorted(current), "previous_assets": sorted(set(names)), "copied_bytes": total}
     (directory / MANIFEST).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result

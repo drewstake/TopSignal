@@ -1,113 +1,65 @@
-# Releasing TopSignal
+# Ship it to peteamdpc
 
-Use `npm run release -- ...` from the development checkout. This replaces the
-per-release scripts previously written under ignored audit folders. It does not
-commit or push code, enable trading, change strategy settings, or delete data.
+Say **“ship it”** after describing the intended change. Keep peteamdpc open at
+`http://127.0.0.1:4173/bot`. The agent edits and runs focused tests in the local
+checkout, reviews the diff, then runs one command. Leave the local app closed.
 
-Install development dependencies with `npm ci`, `npm --prefix frontend ci` and
-`backend/.venv/Scripts/python -m pip install -r backend/requirements-test.txt`.
-The command uses that virtual environment. Git, Node/npm, OpenSSH and authenticated
-GitHub CLI (`gh`) must be available. The production host remains the existing
-private Windows device; the remote SSH identity needs its existing administrative
-deployment permissions, while the scheduled application stays under the limited
-service identity.
-
-## Routine release
-
-1. Finish reviewing the complete source and commit it. A package requires a clean
-   working tree. A `validate` run can be used before committing; its receipt is
-   reusable only if both the input fingerprint and commit still match.
-2. When the reviewed commit is ready to push, push it to start GitHub CI.
-   Immediately validate and package that same commit locally while CI runs:
-
-   ```powershell
-   npm run release -- package --output tmp/releases/candidate-001
-   ```
-
-   This runs every offline backend test with four workers, the complete frontend
-   suite, lint, deployment regressions, dependency audits, and the production
-   loopback build. It stores timed logs and `validation.json` alongside the bundle
-   in `candidate-001-validation`. PostgreSQL migration/concurrency tests still run
-   in their existing GitHub CI lane. No test selection or changed-file heuristic
-   is used. Packaging uses the built assets without rebuilding them.
-
-   To separate validation and packaging on the same committed source:
-
-   ```powershell
-   npm run release -- validate --output tmp/releases/check-001
-   npm run release -- package --receipt tmp/releases/check-001/validation.json --output tmp/releases/candidate-001
-   ```
-
-   Any changed tracked/untracked source, frontend environment/build input, commit,
-   missing validation lane, or changed built asset invalidates the receipt.
-   Outputs must be outside the repository or in a Git-ignored folder.
-3. As soon as the package succeeds, prepare the candidate. The current release
-   continues serving the dashboard during preparation:
-
-   ```powershell
-   npm run release -- stage --bundle tmp/releases/candidate-001 --host-config tmp/release-host.json
-   ```
-
-4. Once CI succeeds, activate the same bundle:
-
-   ```powershell
-   npm run release -- activate --bundle tmp/releases/candidate-001 --host-config tmp/release-host.json
-   ```
-
-   `activate` requires a completed preparation receipt, revalidates the candidate,
-   and checks the newest `ci.yml` run for the exact
-   commit, and requires all six existing CI job names, including `verify`, to
-   succeed. If CI is unfinished or failed, preparation is retained and the
-   running release is unchanged. Run the same command after CI passes. The host
-   also requires the fresh checksum-bound CI receipt passed by this command.
-
-   `deploy` combines staging and activation when a candidate has not already
-   been staged. Use `activate` after `stage` to avoid duplicating preparation.
-
-`npm run release -- verify --bundle ...` verifies a local package without
-connecting to production. Never overwrite a failed candidate: preserve its logs,
-correct the issue, and use a new release ID/output directory. Fully prepared
-candidates can be reused with exactly the same host configuration and manifest.
-
-## Private host configuration
-
-Create `tmp/release-host.json` using the actual running release, configuration IDs,
-existing credential helper and SSH identity. This is a template; do not assume
-the example release name or bot ID is still current.
-
-```json
-{
-  "host": "kaitl@100.99.71.73",
-  "key": "C:/Users/drews/.ssh/peteamdpc_ed25519",
-  "repository": "drewstake/TopSignal",
-  "staging_root": "C:/ProgramData/TopSignal/staging",
-  "releases_root": "C:/ProgramData/TopSignal/releases",
-  "previous_release": "C:/ProgramData/TopSignal/releases/REPLACE_WITH_RUNNING_RELEASE",
-  "release_id": "REPLACE_WITH_NEW_RELEASE_ID",
-  "runtime_root": "C:/ProgramData/TopSignal/runtime",
-  "credential_script": "C:/ProgramData/TopSignal/tools/paper-v2r1-17/read-service-credential-v2.ps1",
-  "bot_config_ids": [39],
-  "companion_files": {
-    "backend/tools/backup_market_cache.py": "C:/ProgramData/TopSignal/tools/depth-recorder-v1/backup_market_cache.py"
-  }
-}
+```powershell
+npm run release -- ship --paths frontend/src/styles/workspace.css --message "Adjust dashboard spacing"
 ```
 
-For the reviewed local-only transition, the private host config can include
-`"retire_cloud_configuration": true`. It removes only obsolete cloud/Journal
-bindings from the **new** candidate before its integrity receipt, verifies the
-existing local-authority/trusted-device profile, and preserves all other values.
-It does not retire database mirroring, revoke credentials or restart helpers.
-Follow [the separate storage transition](supabase-retirement.md), including its
-post-activation graceful stop and recovery/authority gates.
+Use exact tracked paths for whole-file edits. For partial files or new files,
+stage only reviewed hunks, inspect `git diff --cached`, then use
+`--staged (git write-tree) --message "..."`. If unrelated hunks are already
+staged in the same file, apply the intended patch in a separate clean worktree,
+commit there, and pass its SHA with `--commit` from the original checkout.
+Never stash, reset, add all files, or include another local commit to ship.
 
-The credential helper must return only a `PSCredential` for the existing limited
-service identity. No password or broker credential belongs in this JSON. Host-key
-checking remains mandatory. The current command supports the existing task name
-`TopSignal Personal Device` and loopback ports 8000/4173. Enabled/running bots
-outside the declared IDs block activation. Independent scheduled helpers must
-be listed in `companion_files` and match their candidate source; tool changes
-need their own reviewed lifecycle rollout before this application release.
+The command pushes to main, overlaps CI with preparation, and reports the lane
+and reason. The running task, verified source, served HTML and both deployed
+revisions determine eligibility. Reviewed metric JSX text/classes and existing
+CSS presentation values can use the dashboard lane. Changes to executable
+expressions, selectors, API/authentication, orders, dependencies, release
+tooling, backend or unrecognized files use the full lane. Frontend checks still
+run on the full push CI workflow. Dashboard publication needs both frontend
+jobs and the digest-verified production artifact for that push and run attempt.
+The full lane requires all six jobs, isolated local validation and broker,
+research, migration, recorder, ACL and integrity gates.
+
+Dashboard files use immutable commit URLs. A locked pointer switch selects
+the HTML; rollback retains old asset URLs. A full release carries those URLs
+forward and starts with its own dashboard. Full preparation and safe-window
+polling leave trading and recording active. Research gaps always require a
+fresh, separate decision. Refresh peteamdpc only after the command verifies
+the page and every candidate asset through the viewing connection.
+
+**Recovery.** Rerun `npm run release -- ship --commit <sha>`. It reuses the
+verified build and matching prepared release. The failing step and phase times
+are in `tmp/releases/ship/<sha>/timing.json`; full test logs sit alongside it.
+An interrupted full switch requires inspection of the task, STOP ownership and
+activation.log before another switch. For a dashboard rollback run
+`npm run release -- ship --rollback <currently-displayed-dashboard-sha>`.
+The target for the first real dashboard shipment is 2–3 minutes from push
+through verified viewing bytes. Record actual wall time and CI job timestamps.
+
+**One-time installation.** Prepare with `ship --commit <sha> --prepare-only`.
+Ask before the first production switch. On this PC, port 4173 has a separate
+Study View and 4176 is the SSH forward to peteamdpc. After approval, run
+`scripts/install-dashboard-view.ps1` from the reviewed candidate to hand off
+static requests and retain cached assets for existing tabs. Then run
+`npm run release -- ship --commit <sha> --install-publisher`. The viewing
+handoff supports `-WhatIf` and restores the prior viewer on failure.
+
+## Connection
+
+Install local dependencies with `npm ci`, `npm --prefix frontend ci` and the
+backend test requirements in `backend/.venv`. Use authenticated Git, gh and
+OpenSSH. The private `tmp/release-host.json` needs only `host`, `key`,
+`repository` and `staging_root`. The command reads the running task's
+protected release profile on peteamdpc, including the complete companion list.
+Historical research-gap and storage-transition approvals are never inherited.
+The lower-level validate/package/stage/activate commands remain available for
+diagnosis and separately reviewed transitions.
 
 ## Preserved gates and recovery
 

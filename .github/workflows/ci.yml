@@ -549,12 +549,24 @@ jobs:
         run: npm run test:dev-scripts
 
       - name: Frontend production build
-        run: npm --prefix frontend run build
+        env:
+          VITE_API_BASE_URL: http://127.0.0.1:8000
+          VITE_DEMO_MODE: "false"
+          VITE_LOCAL_AUTH_ENABLED: "true"
+        run: npm --prefix frontend run build -- --base=/dashboard-builds/${{ github.sha }}/
 
       - name: Dependency audits
         run: |
           npm audit
           node scripts/audit-frontend.cjs
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: dashboard-${{ github.sha }}-${{ github.run_attempt }}
+          path: frontend/dist/
+          if-no-files-found: error
+          retention-days: 14
 
   windows_compatibility:
     name: Windows compatibility

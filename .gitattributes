@@ -1,2 +1,4 @@
 db/migrations/*.sql text eol=lf
 db/schema.sql text eol=lf
+backend/tools/*.py text eol=lf
+backend/app/services/*.py text eol=lf

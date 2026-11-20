@@ -8,9 +8,11 @@ read-only to the service identity.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import re
 import threading
 from pathlib import Path
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -86,6 +88,22 @@ class TopSignalFrontendHandler(SimpleHTTPRequestHandler):
         return candidate
 
     def send_head(self):  # type: ignore[no-untyped-def]
+        path = self._request_path()
+        if path.startswith("/dashboard-builds/") and not re.fullmatch(
+            r"/dashboard-builds/[a-f0-9]{40}/(?:assets/[\w.-]+|index\.html|topsignal\.svg)", path
+        ):
+            self.send_error(404)
+            return None
+        if path == "/index.html" or "." not in Path(path).name and not path.startswith(("/assets/", "/dashboard-builds/")):
+            try:
+                active = json.loads((Path(self.directory).parent / "dashboard.json").read_bytes())["active"]
+            except FileNotFoundError:
+                active = None
+            if active is not None:
+                if not re.fullmatch("[0-9a-f]{40}", active):
+                    self.send_error(503)
+                    return None
+                self.path = "/dashboard-builds/" + active + "/index.html"
         candidate = self._safe_candidate()
         if candidate is None:
             self.send_error(404)
