@@ -55,7 +55,8 @@ it("shows green only for a confirmed running bot and healthy worker", async () =
   expect(screen.queryByRole("heading", { name: "Recorded live signal replay" })).toBeNull();
   await waitFor(() => expect(botStatus().title).toBe("Dry Run active"));
   expect(botStatus().querySelector(".bg-emerald-400")).not.toBeNull();
-  expect(within(screen.getByRole("region", { name: "What TopBot sees" })).getByText("Liquidity history for 1")).toBeTruthy();
+  expect(screen.queryByText("Liquidity history for 1")).toBeNull();
+  expect(screen.queryByText("Liquidity heatmap")).toBeNull();
 });
 
 it("shows red when there is no configured TopBot", async () => {

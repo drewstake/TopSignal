@@ -1,4 +1,4 @@
-# Bot-page liquidity heatmap
+# Liquidity heatmap in Recorders
 
 The [November 13 audit](audits/2026-11-13/peteamdpc-health.md) verified this feature
 in release `20261112-auto-signin-87`, a running deriver and current-session SQLite
@@ -8,12 +8,10 @@ segments and data about 40 seconds old. Catch-up does not erase historical
 source/quality gaps. The lower [Liquidity before the move chart](order-book-history.md)
 uses a separate totals reader that can time out even when heatmap derivation is current.
 
-The Liquidity heatmap on the Bot page shows observed resting depth (heat), best
+The Liquidity heatmap on the Recorders page shows observed resting depth (heat), best
 bid/ask, and executed prints for the selected MNQ contract across the **current
-New York trading session** (6 p.m. to 5 p.m.). It is display-only: it never
-connects or disconnects the shared depth stream, changes ladder filters, or calls
-bot execution APIs. Strategy, signals, risk settings, the fixed SL/TP brackets and
-the one-second trade recorder are unchanged.
+New York trading session** (6 p.m. to 5 p.m.). The heatmap and the liquidity history chart share one live depth subscription
+and server clock while viewing Recorders. Durable recording runs on the host.
 
 ## Data sources
 

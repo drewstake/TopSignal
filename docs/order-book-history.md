@@ -1,4 +1,4 @@
-# Recorded liquidity in Bot
+# Recorded liquidity in Recorders
 
 At the [November 13 audit](audits/2026-11-13/peteamdpc-health.md), live depth and
 independent raw/totals recording advanced while this chart displayed `Failed to
@@ -8,8 +8,9 @@ A blank chart cannot by itself establish missing provider data. Browser live
 samples exist only while the tab is visible; durable history comes from the host.
 
 The standalone Order book history tab was retired on November 10, 2026.
-The shared history chart remains embedded in Bot's “What TopBot sees” panel,
-alongside live depth. Its account-scoped history API and local recording tools
+Open **Recorders** and scroll to **Live & recorded liquidity**. Its
+**Liquidity before the move** chart combines recorded depth with live updates.
+Its account-scoped history API and local recording tools
 remain in use. Simulation, Liquidity research, and Event study pages and their
 dedicated research job API were also removed. Stored recordings, saved research
 artifacts, and audit evidence were not deleted.
@@ -19,7 +20,7 @@ chart to zoom; click a moment or use the focused chart's arrow keys to inspect a
 sample. **Inspect preceding 5 minutes** loads five minutes before and one minute
 after that sample. CSV export contains only the visible window.
 
-On the Bot page, long sessions load from newest to oldest. The chart shows the
+On the Recorders page, long sessions load from newest to oldest. The chart shows the
 start of the loaded range while it retrieves earlier recordings. Overlapping
 requests preserve continuity at the joins. Once the session is loaded, routine
 refreshes fetch the recent window. The live chart uses the heatmap's server

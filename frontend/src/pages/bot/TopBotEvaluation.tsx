@@ -5,11 +5,10 @@ import { buildMarketContext, candleEndMs, type BotMarketSnapshot } from "./botMa
 import { buildMarketExplanation } from "./botMarketExplanation";
 import { decisionIsStale, latestDecision, priceLabel, recordedEvents, timeLabel } from "./topBotPresentation";
 
-export function TopBotThinking({ activity, status, snapshot, now, error, strategyUnconfigured = false, liveImbalance, liquidityHistory }: {
+export function TopBotThinking({ activity, status, snapshot, now, error, strategyUnconfigured = false, liveImbalance }: {
   activity: BotActivity | null; status: MonitorStatus; snapshot: BotMarketSnapshot | null; now: number; error: string | null;
   strategyUnconfigured?: boolean;
   liveImbalance?: ReactNode;
-  liquidityHistory?: ReactNode;
 }) {
   const decision = latestDecision(activity);
   const context = useMemo(() => buildMarketContext(snapshot, now), [snapshot, now]);
@@ -20,7 +19,6 @@ export function TopBotThinking({ activity, status, snapshot, now, error, strateg
   return <section className="topbot-panel topbot-thinking" aria-label="What TopBot sees">
     <div className="topbot-section-heading"><h2>What TopBot sees</h2></div>
     {liveImbalance}
-    {liquidityHistory}
     <div className="topbot-context-divider"><span>RECORDED RATIONALE</span></div>
     <div className="topbot-thinking-state"><span className={`topbot-dot topbot-dot-${status.color}`} /><strong>{state}</strong></div>
     <p className="topbot-main-reason">{strategyUnconfigured ? "No strategy configured. Ready for your entry, exit, and risk rules." : decision?.reason ?? "No bot evaluation has been recorded for this account yet."}</p>

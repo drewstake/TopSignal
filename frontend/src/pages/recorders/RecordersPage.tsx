@@ -7,6 +7,7 @@ import { TopBotComparison } from "../bot/TopBotComparison";
 import { SignalPanel } from "../bot/TopBotEdgePanel";
 import { TopBotResearchStatus } from "../bot/TopBotResearchStatus";
 import { TopBotTradeRecorder } from "../bot/TopBotTradeRecorder";
+import { RecordedLiquidity } from "./RecordedLiquidity";
 import { RecordedSignalReplay } from "./RecordedSignalReplay";
 import "../bot/TopBotDashboard.css";
 
@@ -29,6 +30,7 @@ function AccountRecordings({ accountId }: { accountId: number }) {
   return <>
     <TopBotTradeRecorder accountId={accountId} />
     <RecordedSignalReplay accountId={accountId} />
+    <RecordedLiquidity accountId={accountId} recordedContract={report.data?.contract} />
     <TopBotResearchStatus accountId={accountId} />
     {report.message && <p role="status">{report.message}</p>}
     {report.data && <SignalPanel data={report.data} now={report.checkedAt ?? Date.parse(report.data.as_of)} />}

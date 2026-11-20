@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 import { router as appRouter } from "../../app/routes";
-import { requestJson } from "../../lib/api";
+import { requestJson, streamProjectXMarketDepth } from "../../lib/api";
 
 vi.mock("../../lib/appShellApi", () => {
   const accounts = async () => [1, 2].map(id => ({
@@ -11,7 +11,11 @@ vi.mock("../../lib/appShellApi", () => {
   }));
   return { getSelectableAccountsLocalFirst: accounts, getSelectableAccounts: accounts, refreshTrades: vi.fn() };
 });
-vi.mock("../../lib/api", async original => ({ ...await original<typeof import("../../lib/api")>(), requestJson: vi.fn() }));
+vi.mock("../../lib/api", async original => ({ ...await original<typeof import("../../lib/api")>(), requestJson: vi.fn(),
+  streamProjectXMarketDepth: vi.fn(), streamProjectXMarketTrades: () => () => {} }));
+vi.mock("../bot/useProjectXChartConnection", () => ({ useProjectXChartConnection: () => ({
+  connection: { scope: "owner", market: { contract_id: "CON.F.US.MNQ.Z26", tick_size: 0.25, symbol: "MNQ" } },
+}) }));
 vi.mock("../bot/BotPage", () => ({ BotPage: () => <h1>TopBot</h1> }));
 vi.mock("../scanner/ScannerAlerts", () => ({ ScannerAlerts: () => null }));
 vi.mock("../bot/TopBotComparison", () => ({ TopBotComparison: () => <section>Exit comparison</section> }));
@@ -22,6 +26,8 @@ afterEach(() => { cleanup(); vi.resetAllMocks(); window.localStorage.clear(); })
 it("opens an old bookmark, compares prior-day signals and preserves the selected account going both ways", async () => {
   Element.prototype.scrollIntoView = vi.fn();
   const calls: number[] = [];
+  const closeDepth = vi.fn();
+  vi.mocked(streamProjectXMarketDepth).mockReturnValue(closeDepth);
   vi.mocked(requestJson).mockImplementation(async (path, options) => {
     const query = options?.query ?? {};
     if (path === "/api/accounts/2/recorded-signals") {
@@ -49,6 +55,10 @@ it("opens an old bookmark, compares prior-day signals and preserves the selected
   expect(nav.getAllByRole("link").map(l => l.textContent).slice(-3)).toEqual(["Scanner", "Recorders", "Appearance"]);
   expect(nav.getByRole("link", { name: "Recorders" }).getAttribute("aria-current")).toBe("page");
   expect(screen.getByRole("region", { name: "Trade recorder" })).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Liquidity heatmap" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Live & recorded liquidity" })).toBeTruthy();
+  expect(streamProjectXMarketDepth).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(requestJson).mock.calls.some(([path]) => path === "/api/accounts/2/order-book-history")).toBe(true);
   expect(screen.getByText("Recording and research status")).toBeTruthy();
   await screen.findByLabelText("Select signal 51");
   fireEvent.click(screen.getByRole("button", { name: "Previous recorded day" }));
@@ -65,10 +75,12 @@ it("opens an old bookmark, compares prior-day signals and preserves the selected
   await screen.findByRole("heading", { name: "TopBot" });
   expect(router.state.location.search).toBe("?account=2");
   expect(screen.queryByRole("region", { name: "Trade recorder" })).toBeNull();
+  expect(closeDepth).toHaveBeenCalledTimes(1);
   fireEvent.change(screen.getByRole("combobox", { name: "Active Account" }), { target: { value: "1" } });
   await waitFor(() => expect(nav.getByRole("link", { name: "Recorders" }).getAttribute("href")).toBe("/recorders?account=1"));
   fireEvent.click(nav.getByRole("link", { name: "Recorders" }));
   await screen.findByRole("heading", { name: "Recorded live signal replay" });
   expect(router.state.location.search).toBe("?account=1");
+  expect(vi.mocked(requestJson).mock.calls.some(([path]) => path === "/api/accounts/1/order-book-history")).toBe(true);
   expect(screen.queryByText(/A \$97.56/)).toBeNull();
 });

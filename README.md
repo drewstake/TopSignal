@@ -95,7 +95,7 @@ In **Appearance**, preview a palette and adjust the scale of the whole workspace
 
 ### Run and monitor TopBot
 
-In **Bot**, follow the MNQ chart, order book, liquidity heatmap and strategy decisions for the selected account. By default, TopBot’s `dom_contrarian_v1` preset looks for a 10% imbalance in resting bids and asks sustained for 30 seconds, then trades against the heavier side if risk checks pass. On an eligible practice account, you can start the bot, select fixed or trailing exits, or choose **Stop new entries** to leave protection active on an open position. [Practice strategy](docs/topbot-contrarian.md) · [Exit settings](docs/topbot-fixed-session-exits.md)
+In **Bot**, follow the MNQ chart, order book and strategy decisions for the selected account. By default, TopBot’s `dom_contrarian_v1` preset looks for a 10% imbalance in resting bids and asks sustained for 30 seconds, then trades against the heavier side if risk checks pass. On an eligible practice account, you can start the bot, select fixed or trailing exits, or choose **Stop new entries** to leave protection active on an open position. [Practice strategy](docs/topbot-contrarian.md) · [Exit settings](docs/topbot-fixed-session-exits.md)
 
 ![TopBot’s five-minute MNQ candlestick and volume chart beside the order book of resting bids and asks](docs/screenshots/bot-2026-11-18.png)
 
@@ -111,7 +111,7 @@ In **Recorders**, select a capture date and one or more recorded worker signals.
 
 ### Review independent recordings
 
-The host’s standalone depth recorder captures MNQ order-book updates, quotes and market trades so you can inspect past liquidity in Bot. A separate API-managed recorder samples open positions on enrolled ProjectX accounts about once a second, including manual trades. Both collect independently of bot arming, account selection, the browser and the viewing PC. Open **Recorders** to check capture status and review trade paths. [Recorded liquidity in Bot](docs/order-book-history.md) · [Depth recording](docs/topbot-depth-recording.md) · [Trade-progress recording](docs/trade-progress-recording.md)
+The host’s standalone depth recorder captures MNQ order-book updates, quotes and market trades for the **Liquidity heatmap** and **Live & recorded liquidity** panels in **Recorders**. Use **Liquidity before the move** to inspect the book around a selected moment. A separate API-managed recorder samples open positions on enrolled ProjectX accounts about once a second, including manual trades. Both collect independently of bot arming, account selection, the browser and the viewing PC. Open **Recorders** to check capture status and review trade paths. [Recorded liquidity](docs/order-book-history.md) · [Depth recording](docs/topbot-depth-recording.md) · [Trade-progress recording](docs/trade-progress-recording.md)
 
 ### Review forward simulations
 

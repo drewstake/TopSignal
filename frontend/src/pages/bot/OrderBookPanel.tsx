@@ -1,7 +1,6 @@
 import {
   memo,
   useCallback,
-  useEffect,
   useMemo,
   useState,
   useSyncExternalStore,
@@ -17,8 +16,8 @@ import {
   type OrderBookLevelView,
   type OrderBookSide,
 } from "./orderBook";
-import { connectOrderBookPanelStream, type MarketDepthStreamFactory } from "./orderBookPanelStream";
-import { useStreamVisibility } from "./useStreamVisibility";
+import type { MarketDepthStreamFactory } from "./orderBookPanelStream";
+import { useOrderBookStream } from "./useOrderBookStream";
 
 const priceFormatter = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 2,
@@ -41,24 +40,11 @@ export function OrderBookPanel({
   streamFactory = streamProjectXMarketDepth,
   sharedStore,
 }: OrderBookPanelProps) {
-  // Brief tab switches keep the book subscribed instead of rebuilding it.
-  const pageVisible = useStreamVisibility();
   const normalizedContractId = normalizeOrderBookContractId(contractId);
   const liveContractId = demoMode ? null : normalizedContractId;
   const store = useMemo(() => sharedStore ?? new OrderBookStore(liveContractId, "all"), [liveContractId, sharedStore]);
 
-  useEffect(() => {
-    if (demoMode || !pageVisible || !normalizedContractId) {
-      return undefined;
-    }
-    const close = connectOrderBookPanelStream({ contractId: normalizedContractId, store, streamFactory });
-    return () => {
-      close();
-      store.cancelPendingPresentation();
-      // A new subscription must establish a fresh snapshot before accepting deltas.
-      store.setConnectionState({ contract_id: normalizedContractId, state: "disconnected" });
-    };
-  }, [demoMode, pageVisible, normalizedContractId, store, streamFactory]);
+  useOrderBookStream(liveContractId, store, streamFactory);
 
   const displaySymbol = symbol?.trim();
   const displayMarket =

@@ -9,7 +9,6 @@ import { BotSignalChart } from "./BotSignalChart";
 import { ProjectXSignalChart } from "./ProjectXSignalChart";
 import { OrderBookPanel } from "./OrderBookPanel";
 import { OrderBookStore } from "./orderBook";
-import { LiquidityHeatmapPanel } from "./LiquidityHeatmapPanel";
 import { TopBotBiasStrip } from "./TopBotBiasStrip";
 import { SessionOrderFlowPanel } from "./SessionOrderFlowPanel";
 import { TopBotActivity, TopBotEvaluation, TopBotThinking } from "./TopBotEvaluation";
@@ -19,8 +18,6 @@ import { TopBotEdgePanel } from "./TopBotEdgePanel";
 import { OrderflowSettings } from "./OrderflowSettings";
 import { useImbalanceReport } from "./imbalanceReport";
 import { TopBotLiveImbalance } from "./TopBotLiveImbalance";
-import { HistoryView } from "./history/BotLiquidityHistory";
-import { ServerClock } from "./heatmapClock";
 import { useTopBotMonitor } from "./useTopBotMonitor";
 import { usePageVisibility } from "./usePageVisibility";
 import { timeLabel } from "./topBotPresentation";
@@ -62,7 +59,6 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
   accountId: number | null; pending: boolean; unavailable: boolean; demoMode: boolean;
 }) {
   const [refreshToken, setRefreshToken] = useState(0);
-  const [depthClock] = useState(() => new ServerClock());
   const monitor = useTopBotMonitor(accountId, pending, unavailable, demoMode, refreshToken);
   const reportAccount = demoMode || pending || unavailable ? null : accountId;
   const edge = useImbalanceReport(reportAccount);
@@ -113,15 +109,7 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
       </section>
       <aside className="topbot-book-shell"><Depth key={`${monitor.scope}:${depthContract}`} contractId={depthContract} symbol={market?.symbol} demoMode={demoMode} sharedStore={depthStore} /></aside>
     </div>
-    <LiquidityHeatmapPanel key={`${accountId}:${monitor.scope}:${depthContract}`} store={depthStore} contractId={depthContract} clock={depthClock}
-      symbol={market?.symbol} tickSize={resolvedMarket?.contract_id === depthContract ? resolvedMarket?.tick_size : null} demoMode={demoMode}
-      accountId={demoMode || pending || unavailable ? null : accountId} />
-      <TopBotThinking activity={strategyActivity} status={monitor.status} snapshot={matchingSnapshot} now={now} error={monitor.error} strategyUnconfigured={strategyUnconfigured}
-        liquidityHistory={!demoMode && !pending && !unavailable && accountId != null && (
-          <div className="mt-4 space-y-4" aria-label="Recorded liquidity history">
-            <HistoryView key={`${accountId}:${monitor.scope}`} accountId={accountId} compact liveStore={depthStore} clock={depthClock} />
-          </div>
-        )}
+    <TopBotThinking activity={strategyActivity} status={monitor.status} snapshot={matchingSnapshot} now={now} error={monitor.error} strategyUnconfigured={strategyUnconfigured}
         liveImbalance={monitor.bot?.strategy_params?.revision === "dom_contrarian_v1" && <TopBotLiveImbalance
           key={`${accountId}:${monitor.bot.id}:${monitor.bot.contract_id}`} contractId={monitor.bot.contract_id}
           threshold={Number(monitor.bot.strategy_params.imbalance_threshold) || .1}
