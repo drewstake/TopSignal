@@ -73,9 +73,10 @@ it("keeps a reset strategy inactive even if an old running record remains", asyn
   vi.mocked(botsApi.getActivity).mockResolvedValue({ ...activity, config: resetBot });
   render(<MemoryRouter><BotPage /></MemoryRouter>);
   await waitFor(() => expect(botStatus().title).toBe("Inactive · strategy not configured"));
-  expect(screen.getByText("NO STRATEGY")).not.toBeNull();
+  expect(screen.getByText("Waiting for entry, exit and risk rules.")).toBeTruthy();
   expect(screen.getByText("Chart")).not.toBeNull();
-  expect(screen.getByText("Order book")).not.toBeNull();
+  await userEvent.click(screen.getByText("Order flow", { selector: "summary" }));
+  expect(await screen.findByText("Order book")).toBeTruthy();
   expect(botsApi.getRuntimeStatus).not.toHaveBeenCalled();
 });
 

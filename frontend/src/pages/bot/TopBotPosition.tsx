@@ -27,10 +27,11 @@ export function TopBotPosition({ accountId, contractId, demoMode }: { accountId:
     return () => { stopped = true; clearTimeout(timer); controller?.abort(); };
   }, [accountId, contractId, demoMode, visible]);
   const positions = data?.value.positions.filter(position => position.contract_id === contractId);
-  return <div className="topbot-position" aria-label="Account position">
-    <span className="topbot-eyebrow">ACCOUNT EXPOSURE</span>
-    <strong>{demoMode || !accountId ? "Not available" : failed ? "Status unavailable" : !positions ? "Checking position…" : !positions.length ? "Flat on this instrument" : positions.map(position => `${position.type === 1 ? "Long" : position.type === 2 ? "Short" : "Position"} ${position.size} @ ${priceLabel(position.average_price)}`).join(" · ")}</strong>
-    <span title={data ? timeLabel(data.at) : undefined}>{data ? `Checked ${timeLabel(data.at)}` : "Awaiting broker snapshot"}</span>
-    <small>Account-wide; not necessarily opened by TopBot.</small>
+  return <div aria-label="Account position">
+    <dt>Position{contractId && ` · ${contractId.split(".").slice(-2).join(" ")}`}</dt>
+    <dd title={data ? `Account position checked ${timeLabel(data.at)}` : undefined}>
+      {demoMode || !accountId || !contractId ? "Unavailable" : failed ? "Status unknown" : !positions ? "Checking…" : !positions.length ? "Flat" :
+        positions.map(position => `${position.type === 1 ? "Long" : position.type === 2 ? "Short" : "Position"} ${position.size} @ ${priceLabel(position.average_price)}`).join(" · ")}
+    </dd>
   </div>;
 }

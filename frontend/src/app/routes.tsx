@@ -82,7 +82,11 @@ export const router = createBrowserRouter([
       },
       {
         path: "backtesting",
-        loader: ({ request }) => redirect(`/recorders${new URL(request.url).search}`),
+        loader: ({ request }) => {
+          const query = new URL(request.url).searchParams;
+          query.set("view", "signals");
+          return redirect(`/recorders?${query}`);
+        },
       },
       {
         path: "logs",

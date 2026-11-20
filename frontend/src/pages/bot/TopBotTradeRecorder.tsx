@@ -8,12 +8,12 @@ import { usePageVisibility } from "./usePageVisibility";
 
 const POLL_MS = 30_000;
 
-export function TopBotTradeRecorder({ accountId }: { accountId: number }) {
-  return <AccountRecorder key={accountId} accountId={accountId} />;
+export function TopBotTradeRecorder({ accountId, initiallyExpanded = false }: { accountId: number; initiallyExpanded?: boolean }) {
+  return <AccountRecorder key={accountId} accountId={accountId} initiallyExpanded={initiallyExpanded} />;
 }
 
-function AccountRecorder({ accountId }: { accountId: number }) {
-  const [expanded, setExpanded] = useState(false);
+function AccountRecorder({ accountId, initiallyExpanded }: { accountId: number; initiallyExpanded: boolean }) {
+  const [expanded, setExpanded] = useState(initiallyExpanded);
   const [trades, setTrades] = useState<AccountTrade[] | null>(null);
   const [error, setError] = useState(false);
   const [revision, setRevision] = useState(0);
@@ -49,7 +49,6 @@ function AccountRecorder({ accountId }: { accountId: number }) {
     <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
       <div>
         <h2 className="text-sm font-semibold">Trade recorder · 1 second</h2>
-        <p className="mt-1 text-xs text-app-muted">When enabled, records points up or down during your TopBot and manual trades, even with this page closed.</p>
       </div>
       <Button size="sm" variant="ghost" aria-expanded={expanded} aria-controls="topbot-recorded-trades"
         onClick={() => { setExpanded(value => !value); setTrades(null); setError(false); }}>
@@ -59,7 +58,7 @@ function AccountRecorder({ accountId }: { accountId: number }) {
     <ProgressRecorderStatus account={accountId} />
     {expanded && <div id="topbot-recorded-trades" className="mt-4 space-y-3">
       <div className="flex flex-wrap justify-between gap-2 text-xs text-app-muted">
-        <p>Recent trades · select a trade to see its recorded points over time.</p>
+        <p>Recent trades</p>
         <Link to={`/trades?account=${accountId}`} className="text-app-accent hover:underline">All trades</Link>
       </div>
       {error && trades !== null && <p role="status" className="text-xs text-amber-200">Refresh failed. Showing trades from {updatedAt ? new Date(updatedAt).toLocaleTimeString("en-US", { timeZone: "America/New_York" }) : "the last successful read"} ET.</p>}
@@ -67,7 +66,7 @@ function AccountRecorder({ accountId }: { accountId: number }) {
         <p>Recent trades are unavailable.</p>
         <Button size="sm" variant="ghost" onClick={() => { setError(false); setRevision(value => value + 1); }}>Retry</Button>
       </div> : trades === null ? <p role="status" className="text-sm text-app-muted">Loading recent trades…</p>
-        : trades.length === 0 ? <p className="text-sm text-app-muted">No recent trades for this account. Recorded paths become available as trades appear here.</p>
+        : trades.length === 0 ? <p className="text-sm text-app-muted">No recent trades for this account.</p>
         : <ul className="divide-y divide-app-border">
           {trades.map(trade => <li key={trade.id} className="flex flex-wrap items-center justify-between gap-3 py-2 text-xs">
             <div><strong>{trade.symbol}</strong> · {trade.side} · {trade.size} contract{trade.size === 1 ? "" : "s"}
@@ -79,7 +78,7 @@ function AccountRecorder({ accountId }: { accountId: number }) {
               onClick={() => setReviewTrade(trade)}>Review path</Button>
           </li>)}
         </ul>}
-      <p className="text-xs text-app-muted">Refreshes every 30 s while open{updatedAt ? ` · updated ${new Date(updatedAt).toLocaleTimeString("en-US", { timeZone: "America/New_York" })} ET` : ""}. Trades from before recording was enabled may have no path. Missing observations are shown as gaps. These paths cover each position from entry to exit only; post-exit market data for the exit study is recorded separately.</p>
+      <p className="text-xs text-app-muted">Refreshes every 30 s while open{updatedAt ? ` · updated ${new Date(updatedAt).toLocaleTimeString("en-US", { timeZone: "America/New_York" })} ET` : ""}. Trades from before recording was enabled may have no path. Missing observations are shown as gaps.</p>
     </div>}
     {reviewTrade && <TradeProgressReview key={reviewTrade.id} trade={reviewTrade} onClose={() => setReviewTrade(null)} />}
   </section>;

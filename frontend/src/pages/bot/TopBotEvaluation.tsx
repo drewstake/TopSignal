@@ -1,29 +1,16 @@
 import { useMemo, type ReactNode } from "react";
 import type { BotActivity } from "../../lib/types";
-import type { MonitorStatus } from "./useTopBotMonitor";
 import { buildMarketContext, candleEndMs, type BotMarketSnapshot } from "./botMarketContext";
 import { buildMarketExplanation } from "./botMarketExplanation";
 import { decisionIsStale, latestDecision, priceLabel, recordedEvents, timeLabel } from "./topBotPresentation";
 
-export function TopBotThinking({ activity, status, snapshot, now, error, strategyUnconfigured = false, liveImbalance }: {
-  activity: BotActivity | null; status: MonitorStatus; snapshot: BotMarketSnapshot | null; now: number; error: string | null;
-  strategyUnconfigured?: boolean;
-  liveImbalance?: ReactNode;
+export function TopBotThinking({ snapshot, now, liveImbalance }: {
+  snapshot: BotMarketSnapshot | null; now: number; liveImbalance?: ReactNode;
 }) {
-  const decision = latestDecision(activity);
   const context = useMemo(() => buildMarketContext(snapshot, now), [snapshot, now]);
   const explanation = context && context.provenance.closedCandleCount >= 25 ? buildMarketExplanation(context) : null;
-  const stale = decision && activity ? decisionIsStale(decision, activity, now) : false;
-  const state = status.color !== "green" ? status.color === "red" ? "Inactive" : "Status uncertain"
-    : !decision || stale ? "Waiting for an update" : decision.action === "HOLD" ? "Waiting for a setup" : "Signal recorded";
-  return <section className="topbot-panel topbot-thinking" aria-label="What TopBot sees">
-    <div className="topbot-section-heading"><h2>What TopBot sees</h2></div>
+  return <section className="topbot-panel" aria-label="Chart context">
     {liveImbalance}
-    <div className="topbot-context-divider"><span>RECORDED RATIONALE</span></div>
-    <div className="topbot-thinking-state"><span className={`topbot-dot topbot-dot-${status.color}`} /><strong>{state}</strong></div>
-    <p className="topbot-main-reason">{strategyUnconfigured ? "No strategy configured. Ready for your entry, exit, and risk rules." : decision?.reason ?? "No bot evaluation has been recorded for this account yet."}</p>
-    <p className="topbot-muted">{decision ? `${stale || error ? "Stale record" : "Last decision"} · ${timeLabel(decision.created_at)}` : "Market data remains available while TopBot is inactive."}</p>
-    {error && <p className="topbot-warning">{error}</p>}
     <div className="topbot-context-divider"><span>LIVE CHART CONTEXT</span><span>{context?.provenance.isStale ? "Stale candles" : "Completed candles"}</span></div>
     {explanation ? <>
       <h3>{explanation.headline}</h3><p className="topbot-muted">{explanation.summary}</p>

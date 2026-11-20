@@ -42,16 +42,40 @@ function protectionLabel(trade: OpenTradeProtection) {
 const duration = (value: number | null | undefined) => value == null ? "—" : `${(value / 60).toFixed(1)}m`;
 const number = (value: number | undefined) => value == null ? "—" : value.toFixed(2);
 
-export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChanged, versionLabels }: {
+type RunProps = {
   accountId: number | null; bot: BotConfig | null; activity: BotActivity | null;
-  demoMode: boolean; onChanged: () => void; versionLabels?: Record<string, string>;
+  demoMode: boolean; onChanged: () => void;
+};
+
+export function BotRunControl({ accountId, bot, activity, demoMode, onChanged }: RunProps) {
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const running = Boolean(bot?.enabled && activity?.runs.some(r => r.status === "running"));
+  async function act() {
+    if (accountId == null || busy || demoMode) return;
+    setBusy(true); setActionError(null);
+    try {
+      if (running && bot) await botsApi.stop(bot.id);
+      else await botsApi.startTopBot(accountId, false);
+      onChanged();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Practice action failed");
+    } finally { setBusy(false); }
+  }
+  return <div className="flex flex-wrap items-center gap-2">
+    <button className="topbot-run-button" disabled={busy || accountId == null || demoMode}
+      title={running ? "Stopping entries keeps protection and position management active." : undefined}
+      onClick={() => void act()}>{busy ? "Updating…" : running ? "Stop new entries" : "Start practice bot"}</button>
+    {actionError && <p role="alert" className="text-sm text-app-negative">{actionError}</p>}
+  </div>;
+}
+
+export function TopBotStrategyPanel({ accountId, bot, demoMode, versionLabels }: {
+  accountId: number | null; bot: BotConfig | null; demoMode: boolean; versionLabels?: Record<string, string>;
 }) {
   const [stats, setStats] = useState<TopBotStatistics | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const visible = usePageVisibility();
-  const running = Boolean(bot?.enabled && activity?.runs.some(r => r.status === "running"));
   const future = stats?.exit_settings?.future_entries ?? null;
   const fixed = future?.exit_mode === "fixed";
   const persistentFixed = Boolean(future?.persistent);
@@ -75,22 +99,10 @@ export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChan
     void poll();
     return () => { controller.abort(); clearTimeout(timer); };
   }, [accountId, demoMode, visible]);
-  async function act() {
-    if (accountId == null || busy || demoMode) return;
-    setBusy(true); setActionError(null);
-    try {
-      if (running && bot) await botsApi.stop(bot.id);
-      else await botsApi.startTopBot(accountId, false);
-      onChanged();
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Practice action failed");
-    } finally { setBusy(false); }
-  }
   return <section className="topbot-panel topbot-strategy" aria-label="DOM strategy and trade statistics">
     <div className="topbot-strategy-heading"><div><h2>Trade management <span className="topbot-muted">/ Practice API</span></h2>
       <p className="topbot-muted">Up to 100 available levels per side · {Number(bot?.strategy_params?.imbalance_threshold ?? .1) * 100}% imbalance for {Number(bot?.strategy_params?.persistence_seconds ?? 30)}s · {following ? "Bid-heavy → long · Ask-heavy → short" : "Bid-heavy → short · Ask-heavy → long"}</p>
-    </div><button className="topbot-run-button" disabled={busy || accountId == null || demoMode}
-      onClick={() => void act()}>{busy ? "Updating…" : running ? "Stop new entries" : "Start practice bot"}</button></div>
+    </div></div>
     <p className="topbot-muted">{bot?.order_size ?? 1} MNQ · New entries: {future ? futureLabel(future) : stats ? "exit settings unavailable" : "checking exit settings…"} · All trading sessions, including overnight · Daily loss limit ${bot?.max_daily_loss ?? 500} · {bot?.strategy_params?.daily_entry_limit_enabled === false ? "Daily entry-count limit disabled" : `Up to ${bot?.max_trades_per_day ?? 4} entries/day`}</p>
     {stats?.exit_settings?.open_trades.map(trade => <p key={trade.entry_id} className="topbot-muted">{protectionLabel(trade)}</p>)}
     <p className="topbot-muted">Daily profit target +${dailyLimit} · Daily loss stop −${bot?.max_daily_loss ?? dailyLimit} · Either threshold closes the TopBot position and pauses entries until the next trading session. Includes unrealized P&amp;L. Resets at 18:00 New York.</p>
@@ -100,7 +112,6 @@ export function TopBotStrategyPanel({ accountId, bot, activity, demoMode, onChan
       ? `${stats.depth.bid_total} bid / ${stats.depth.ask_total} ask · ${((stats.depth.imbalance ?? 0) * 100).toFixed(1)}% imbalance · ${(stats.depth.persistence_seconds ?? 0).toFixed(0)}s sustained`
       : stats.depth.reason}</p>}
     <p className="topbot-footnote">Stopping entries keeps protection and position management active. {fixed ? "The fixed stop and target stay at the broker if the worker disconnects." : "The broker stop stays in place if the worker disconnects; trailing resumes with the worker."}</p>
-    {actionError && <p role="alert" className="topbot-risk-list">{actionError}</p>}
     {error && <p aria-live="polite" className="topbot-muted">{error}</p>}
     <dl className="topbot-levels topbot-stat-summary">
       <div><dt>Closed / wins / losses</dt><dd>{stats ? `${stats.closed_trades} / ${stats.wins} / ${stats.losses}` : "—"}</dd></div>

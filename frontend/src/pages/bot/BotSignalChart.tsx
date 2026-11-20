@@ -3378,7 +3378,8 @@ export function BotSignalChart({ monitorOnly = false, bot: savedBot, market, dem
             ) : null}
           </div>
         </div>
-        <div className="mt-3 flex flex-col gap-2 rounded-lg border border-app-border/80 bg-app-bg/40 p-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+      </CardHeader>
+        <div className={`${monitorOnly ? "max-sm:order-last" : ""} mb-2 flex flex-col gap-2 rounded-lg border border-app-border/80 bg-app-bg/40 p-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between`}>
           <div className="flex flex-wrap items-center gap-2">
             <div className="inline-flex min-h-11 overflow-hidden rounded-md border border-app-border-strong/70 bg-app-surface/95 shadow-[0_10px_24px_-22px_rgb(var(--theme-shadow-color)/0.55)] sm:min-h-9" aria-label="Chart timeframe">
               {BOT_CHART_TIMEFRAMES.map((option) => {
@@ -3511,7 +3512,6 @@ export function BotSignalChart({ monitorOnly = false, bot: savedBot, market, dem
             </Button>
           </div>
         </div>
-      </CardHeader>
       <CardContent className="flex min-h-0 flex-col">
         {!monitorOnly && <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-app-border bg-app-bg/35 px-3 py-2 text-xs text-app-muted">
           {showAverageLayers ? (
