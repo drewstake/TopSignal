@@ -292,13 +292,11 @@
   scroll-margin-block-start: calc(var(--app-header-height, 0px) + 8px);
 }
 .method-details { color: rgb(var(--theme-muted)); font-size: 13px; }
-.method-details summary, .scanner-health summary { cursor: pointer; }
+.method-details summary { cursor: pointer; }
 .method-details summary { color: rgb(var(--theme-accent)); width: fit-content; padding-block: 5px; }
 .method-details p { margin-block: 4px; }
 
 .scanner-feed { container-type: inline-size; border: 1px solid var(--sd-hairline); border-radius: 8px; background: rgb(var(--theme-surface)); }
-.scanner-health { max-width: 100%; color: rgb(var(--theme-text-soft)); }
-.scanner-health[open] { flex-basis: 100%; padding: 12px 16px; border-block: 1px solid var(--sd-hairline); }
 .scanner-columns, .scanner-row {
   display: grid;
   grid-template-columns: 11rem 5rem minmax(0, 1fr) minmax(7rem, .32fr) 1rem;

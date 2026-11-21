@@ -477,6 +477,10 @@ export function BotSignalChart({ monitorOnly = false, bot: savedBot, market, dem
   const candleTail = useMemo(() => prepareLiveCandlesticks(marketDataMatchesContext ? candles : []), [candles, marketDataMatchesContext]);
   const chartCandles = useMemo(() => candleTail(marketDataMatchesContext ? liveCandle : null), [candleTail, liveCandle, marketDataMatchesContext]);
   const [signalMode, setSignalMode] = useState<"all" | "live" | "dry_run">("all");
+  const [showExecutions, setShowExecutions] = useState(() => {
+    try { return localStorage.getItem("topsignal.chart.showExecutions") !== "false"; }
+    catch { return true; }
+  });
   const [signalRun, setSignalRun] = useState("all");
   const [signalHistory, setSignalHistory] = useState<{ key: string; activity: BotActivity | null; error?: boolean } | null>(null);
   const historyStart = marketDataMatchesContext ? candles[0]?.timestamp : undefined;
@@ -546,8 +550,8 @@ export function BotSignalChart({ monitorOnly = false, bot: savedBot, market, dem
     () =>
       buildSignalMarkers({
         candles: closedChartCandles,
-        orderAttempts: chartActivity?.order_attempts.filter(attempt => attempt.contract_id === bot?.contract_id &&
-          (signalRun === "all" || attempt.bot_run_id === Number(signalRun)) && (signalMode === "all" || attempt.execution_mode === signalMode)),
+        orderAttempts: showExecutions ? chartActivity?.order_attempts.filter(attempt => attempt.contract_id === bot?.contract_id &&
+          (signalRun === "all" || attempt.bot_run_id === Number(signalRun)) && (signalMode === "all" || attempt.execution_mode === signalMode)) : undefined,
         activityDecisions:
           chartActivity &&
           bot &&
@@ -574,7 +578,7 @@ export function BotSignalChart({ monitorOnly = false, bot: savedBot, market, dem
         timeframeUnit: chartTimeframe.unit,
         timeframeUnitNumber: chartTimeframe.unitNumber,
       }),
-    [chartActivity, bot, savedBot, chartTimeframe, closedChartCandles, lastEvaluation, signalMode, signalRun],
+    [chartActivity, bot, savedBot, chartTimeframe, closedChartCandles, lastEvaluation, signalMode, signalRun, showExecutions],
   );
   const visibleSignalMarkers = useMemo(
     () =>
@@ -3307,6 +3311,14 @@ export function BotSignalChart({ monitorOnly = false, bot: savedBot, market, dem
             <CardTitle>Signal Chart</CardTitle>
             {!monitorOnly && <CardDescription className="mt-1">{subtitle}</CardDescription>}
             {savedBot && <div className="mt-2 flex flex-wrap gap-2 text-xs text-app-muted">
+              <label className="inline-flex items-center gap-1.5">
+                <input type="checkbox" checked={showExecutions} onChange={event => {
+                  const checked = event.currentTarget.checked;
+                  setShowExecutions(checked);
+                  try { localStorage.setItem("topsignal.chart.showExecutions", String(checked)); } catch { /* Session preference still applies. */ }
+                }} />
+                Show executions
+              </label>
               <label>Signals <select aria-label="Signal execution mode" value={signalMode} onChange={e => setSignalMode(e.target.value as typeof signalMode)} className="rounded border border-app-border bg-app-surface p-1">
                 <option value="all">All modes</option><option value="dry_run">Dry Run</option><option value="live">Practice Live</option>
               </select></label>

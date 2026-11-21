@@ -529,7 +529,6 @@ export function AppShell() {
             items={[
               { label: "Dashboard", to: buildAccountAwarePath(location.pathname === "/" ? "/" : "/dashboard", selectedAccountId) },
               { label: "Accounts", to: `/accounts${accountSuffix}` },
-              { label: "Trades", to: `/trades${accountSuffix}` },
               { label: "Expenses", to: `/expenses${accountSuffix}` },
               { label: "Bot", to: `/bot${accountSuffix}` },
               { label: "Scanner", to: "/scanner" },

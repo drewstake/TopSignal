@@ -1,6 +1,6 @@
 import { formatProfitFactor } from "../../utils/profitFactor";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useOutletContext, useSearchParams } from "react-router-dom";
+import { Link, useOutletContext, useSearchParams } from "react-router-dom";
 
 import type { CopyFullStatsMetrics } from "../../components/dashboard/CopyFullStatsButton";
 import { DemoModeNotice } from "../../components/demo/DemoModeNotice";
@@ -25,6 +25,7 @@ import { Skeleton } from "../../components/ui/Skeleton";
 import { Toggle } from "../../components/ui/Toggle";
 import {
   ACCOUNT_QUERY_PARAM,
+  buildAccountAwarePath,
   parseAccountId,
   readStoredAccountId,
   readStoredMainAccountId,
@@ -3341,7 +3342,10 @@ export function DashboardPage() {
     <div className="dashboard-surface space-y-5 pb-8">
       <div className="dashboard-page-heading">
         <h1>Trading Dashboard</h1>
-        <span className="dashboard-range-label"><Icon name="calendar" />{compactMode.enabled ? compactRangeLabel : metricsRange === "ALL" ? "All time" : fullStatsRangeLabel}</span>
+        <div className="flex flex-wrap items-center gap-3">
+          {selectedAccountId !== null && <Link className="text-sm font-semibold text-app-accent hover:underline" to={buildAccountAwarePath("/trades", selectedAccountId)}>Trade history</Link>}
+          <span className="dashboard-range-label"><Icon name="calendar" />{compactMode.enabled ? compactRangeLabel : metricsRange === "ALL" ? "All time" : fullStatsRangeLabel}</span>
+        </div>
       </div>
       <DemoModeNotice compact>
         <p>

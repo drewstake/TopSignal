@@ -149,7 +149,7 @@
 .topbot-baseline { margin:14px 0; padding-top:10px; border-top:1px solid rgb(var(--theme-border)/.7); }
 .topbot-baseline h4 { font-size:13px; font-weight:600; margin-bottom:4px; }
 
-.glance-panel, .glance-disclosure {
+.glance-panel {
   border: 1px solid rgb(var(--theme-border));
   border-radius: 7px;
   background: rgb(var(--theme-surface));
@@ -168,8 +168,6 @@
 }
 .glance-warning, .capture-problems { padding: 8px 20px; border-top: 1px solid rgb(var(--theme-border)); font-size: 14px; }
 .glance-warning { color: rgb(var(--theme-warning)); }
-.glance-disclosure > summary { cursor: pointer; font-weight: 600; padding: 14px 18px; }
-.glance-disclosure[open] > :not(summary) { margin: 0 10px 10px; }
 .recorder-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .recorder-views { display: flex; gap: 6px; flex-wrap: wrap; }
 .recorder-views button { border: 1px solid rgb(var(--theme-border)); border-radius: 7px; padding: 8px 12px; font-size: 14px; }
@@ -204,8 +202,10 @@
   border-radius: 7px;
   background: rgb(var(--theme-surface));
 }
-.bot-inspection .glance-disclosure { border: 0; border-radius: 0; background: transparent; }
-.bot-inspection .glance-disclosure + .glance-disclosure { border-top: 1px solid var(--sd-hairline); }
+.bot-inspection > section { min-width: 0; padding: 12px; }
+.bot-inspection > section + section { border-top: 1px solid var(--sd-hairline); }
+.bot-inspection > section > h2 { margin: 2px 4px 12px; font-size: 18px; font-weight: 650; }
+.bot-inspection > section > * + * { margin-top: 10px; }
 .capture-study { padding: 8px 16px; border-top: 1px solid var(--sd-hairline); font-size: 13px; }
 .recordings-workspace .recorder-views { gap: 0; padding: 0 6px; border-bottom: 1px solid var(--sd-hairline); }
 .recorder-views button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; }

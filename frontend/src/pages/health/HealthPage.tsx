@@ -4,7 +4,10 @@ import { Icon, type IconName } from "../../components/ui/Icon";
 import { isApiError, requestJson } from "../../lib/api";
 import { useDemoMode } from "../../lib/demoMode";
 import { usePageVisibility } from "../bot/usePageVisibility";
+import { easternTime, type Snapshot } from "../scanner/types";
 import "./HealthPage.css";
+
+type ScannerHealth = Omit<Snapshot, "events">;
 
 const components = {
   api: "API",
@@ -54,6 +57,8 @@ function readComponents(report: Report, started: number): Samples {
 }
 
 function useHealthSamples(live: boolean) {
+  const [scanner, setScanner] = useState<ScannerHealth | null>(null);
+  const [scannerFailed, setScannerFailed] = useState(false);
   const [samples, setSamples] = useState<Samples>({});
   const [refresh, setRefresh] = useState(0);
   const visible = usePageVisibility();
@@ -111,18 +116,24 @@ function useHealthSamples(live: boolean) {
           return next;
         });
       });
-      await Promise.all([liveness, host]);
+      const sources = requestJson<ScannerHealth>("/api/scanner/health", { signal }).then(data => {
+        if (controller.signal.aborted) return;
+        if (!Array.isArray(data?.sources) || typeof data.worker !== "string") { setScannerFailed(true); return; }
+        setScanner(data);
+        setScannerFailed(false);
+      }).catch(() => { if (!controller.signal.aborted) setScannerFailed(true); });
+      await Promise.all([liveness, host, sources]);
       if (!controller.signal.aborted) timer = setTimeout(poll, 20_000);
     }
     void poll();
     return () => { controller.abort(); clearTimeout(timer); };
   }, [live, visible, refresh]);
-  return { samples, visible, refresh: () => setRefresh(value => value + 1) };
+  return { samples, scanner, scannerFailed, visible, refresh: () => setRefresh(value => value + 1) };
 }
 
 export default function HealthPage() {
   const { enabled: demo } = useDemoMode();
-  const { samples, visible, refresh } = useHealthSamples(!demo);
+  const { samples, scanner, scannerFailed, visible, refresh } = useHealthSamples(!demo);
   const rows = ids.map(id => {
     let value = samples[id] ?? unknown("Waiting for the first check.");
     if (demo) value = unknown("Live health checks are paused in Demo Mode.");
@@ -169,5 +180,36 @@ export default function HealthPage() {
         </dd></dl>
       </li>)}
     </ul>
+    <ScannerSources report={scanner} failed={scannerFailed} demo={demo} visible={visible} />
+  </section>;
+}
+
+function ScannerSources({ report, failed, demo, visible }: {
+  report: ScannerHealth | null; failed: boolean; demo: boolean; visible: boolean;
+}) {
+  const worker = report?.sources.find(source => source.name === "Scanner worker");
+  const sources = report?.sources.filter(source => source.name !== "Scanner worker") ?? [];
+  return <section aria-labelledby="scanner-health-heading">
+    <h2 id="scanner-health-heading" className="health-components-heading">Scanner source health</h2>
+    {demo ? <p>Live scanner checks are paused in Demo Mode.</p> : <>
+      {failed && <p role="status" className="text-app-warning">Scanner health unavailable.{report && " Showing the last report."}</p>}
+      {!visible && <p className="text-app-muted">Checks paused while this tab is hidden.</p>}
+      {report ? <>
+        <p className={report.worker === "Running" ? "text-app-muted" : "text-app-warning"}>
+          {failed || !visible ? "Last reported worker state" : "Scanner worker"} · {report.worker}
+          {worker && <> · Last worker success {worker.success ? easternTime(worker.success) : "never"}</>}
+        </p>
+        <dl className="mt-2 divide-y divide-app-border border-y border-app-border">
+          {sources.map(source => <div key={source.name}
+            className="grid gap-1 py-2 sm:grid-cols-3 sm:gap-3">
+            <dt className="font-semibold">{source.name}</dt>
+            <dd className={/^(Healthy$|Live\b)/i.test(source.status) ? "text-app-text-soft" : "text-app-warning"}>{source.status}</dd>
+            <dd className="text-app-muted">Last success · {source.success ? easternTime(source.success) : "Never"}</dd>
+          </div>)}
+        </dl>
+        {!sources.length && <p>No sources reported.</p>}
+        {report.spend && <p className="mt-2 text-sm text-app-muted">AI spend and open reservations · ${(report.spend.micro_usd / 1e6).toFixed(4)} · Cycle starting {report.spend.cycle}</p>}
+      </> : !failed && <p role="status">Checking scanner sources…</p>}
+    </>}
   </section>;
 }

@@ -7,6 +7,8 @@ import HealthPage from "./HealthPage";
 vi.mock("../../lib/api", async original => ({ ...await original<typeof import("../../lib/api")>(), requestJson: vi.fn() }));
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.resetAllMocks(); localStorage.clear(); });
 
+const scanner = { worker: "Running", sources: [{ name: "Equity prices", status: "Delayed", success: 1795161600 }],
+  spend: { cycle: "2026-11", micro_usd: 2500 } };
 const sample = "2026-11-20T08:00:00Z";
 const report = {
   as_of: sample, components: {
@@ -23,9 +25,12 @@ function count(status: string) {
 }
 
 it("keeps every component visible and puts confirmed failures ahead of unknown and healthy checks", async () => {
-  vi.mocked(requestJson).mockImplementation(async path => path === "/health" ? { status: "ok" } : report);
+  vi.mocked(requestJson).mockImplementation(async path => path === "/health" ? { status: "ok" } : path === "/api/scanner/health" ? scanner : report);
   render(<HealthPage />);
   await screen.findByText("The reader is retrying.");
+  expect(await screen.findByText("Equity prices")).toBeTruthy();
+  expect(screen.getByText("Delayed")).toBeTruthy();
+  expect(screen.getByText(/\$0.0025/)).toBeTruthy();
   const rows = screen.getAllByRole("listitem");
   expect(rows).toHaveLength(8);
   expect([count("Unhealthy"), count("Unknown"), count("Healthy")]).toEqual(["1", "5", "2"]);
@@ -40,13 +45,15 @@ it("keeps every component visible and puts confirmed failures ahead of unknown a
   });
   fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
   await waitFor(() => expect(row("API").getByText("Unhealthy")).toBeTruthy());
+  expect(screen.getByText(/Scanner health unavailable/)).toBeTruthy();
+  expect(screen.getByText("Equity prices")).toBeTruthy();
   expect(row("PostgreSQL").getByText("Unknown")).toBeTruthy();
   expect(row("PostgreSQL").getByText(/Nov 20/).getAttribute("datetime")).toBe(sample);
 });
 
 it("expires an individual observation while a healthy API is still current", async () => {
   vi.useFakeTimers();
-  vi.mocked(requestJson).mockImplementation(async path => path === "/health" ? { status: "ok" } : {
+  vi.mocked(requestJson).mockImplementation(async path => path === "/health" ? { status: "ok" } : path === "/api/scanner/health" ? scanner : {
     ...report, components: { postgres: { ...report.components.postgres, expires_at: "2026-11-20T08:00:02Z" } },
   });
   await act(async () => { render(<HealthPage />); });

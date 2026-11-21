@@ -75,7 +75,9 @@ it("keeps a reset strategy inactive even if an old running record remains", asyn
   await waitFor(() => expect(botStatus().title).toBe("Inactive · strategy not configured"));
   expect(screen.getByText("Waiting for entry, exit and risk rules.")).toBeTruthy();
   expect(screen.getByText("Chart")).not.toBeNull();
-  await userEvent.click(screen.getByText("Order flow", { selector: "summary" }));
+  for (const name of ["Order flow", "Strategy settings", "Evaluation history"]) {
+    expect(screen.getByRole("region", { name }).closest("details")).toBeNull();
+  }
   expect(await screen.findByText("Order book")).toBeTruthy();
   expect(botsApi.getRuntimeStatus).not.toHaveBeenCalled();
 });

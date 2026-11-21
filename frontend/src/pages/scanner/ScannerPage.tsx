@@ -65,21 +65,8 @@ function Feed() {
     void refresh();
     return () => { controller.abort(); clearTimeout(timer); };
   }, []);
-  const sources = data?.sources.filter(s => s.name !== "Scanner worker") ?? [];
-  const issues = sources.filter(s => !/^(Healthy$|Live\b)/i.test(s.status));
-  const offline = data && data.worker !== "Running";
-  const sourceSummary = issues.length === 1 ? `${issues[0].name} · ${issues[0].status}`
-    : issues.length ? `${issues.length} sources need attention` : sources.length ? `${sources.length} healthy` : "No sources reported";
   return <section className="space-y-3 text-app-text">
-    <header className="page-bar"><h1 className="text-2xl font-semibold">Scanner</h1>
-      {data && <details className="scanner-health text-sm">
-        <summary className="cursor-pointer">Source health · <span className={offline || issues.length || error ? "text-app-warning" : "text-app-muted"}>
-          {error ? "Last known" : data.worker} · {sourceSummary}</span></summary>
-        <dl className="mt-3 divide-y divide-app-border">{data.sources.map(s => <div key={s.name} className="flex flex-wrap justify-between gap-2 py-2">
-          <dt>{s.name}</dt><dd className="text-app-muted">{s.status} · Last success {s.success ? easternTime(s.success) : "never"}</dd>
-        </div>)}</dl>
-        {data.spend && <p>AI spend and open reservations · ${(data.spend.micro_usd / 1e6).toFixed(4)} · Cycle starting {data.spend.cycle}</p>}
-      </details>}</header>
+    <h1 className="text-2xl font-semibold">Scanner</h1>
     {error && <p role="alert" className="rounded-lg border border-app-negative/60 bg-app-negative/10 px-4 py-3 font-semibold text-app-negative">Feed unavailable · {data ? "Showing the last received events." : "Retrying…"}</p>}
     {data ? <>
       <div className="scanner-feed">

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import type { AppShellOutletContext } from "../../app/AppShell";
 import { useDemoMode } from "../../lib/demoMode";
@@ -30,13 +30,6 @@ const SignalChart = memo(BotSignalChart);
 const MarketChart = memo(ProjectXSignalChart);
 const Depth = memo(OrderBookPanel);
 const dotColors = { green: "bg-emerald-400", yellow: "bg-amber-400", red: "bg-red-400" };
-
-function BotDetails({ title, children }: { title: string; children: ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return <details className="glance-disclosure" onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>{title}</summary>{open && children}
-  </details>;
-}
 
 export function BotPage() {
   const { accounts, accountsLoading, accountsError, selectedAccountId } = useOutletContext<AppShellOutletContext>();
@@ -139,7 +132,8 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
       <TopBotActivity activity={monitor.activity} />
     </div>
     <div className="bot-inspection">
-      <BotDetails title="Order flow">
+      <section aria-labelledby="bot-order-flow">
+        <h2 id="bot-order-flow">Order flow</h2>
         <aside className="topbot-book-shell"><Depth key={`${monitor.scope}:${depthContract}`} contractId={depthContract} symbol={market?.symbol} demoMode={demoMode} sharedStore={depthStore} /></aside>
         <SessionOrderFlowPanel accountId={accountId} contractId={market?.contract_id ?? null} scope={monitor.scope}
           enabled={!demoMode && !pending && !unavailable} />
@@ -152,16 +146,18 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
             following={monitor.bot.strategy_params.imbalance_direction === "following"}
             monitor={monitor}
             enabled={!demoMode && !pending && !unavailable && accountId != null} />} />
-      </BotDetails>
-      <BotDetails title="Strategy settings">
+      </section>
+      <section aria-labelledby="bot-strategy-settings">
+        <h2 id="bot-strategy-settings">Strategy settings</h2>
         {reportAccount != null && monitor.bot?.account_id === reportAccount && monitor.bot.strategy_params?.revision === "dom_contrarian_v1" &&
           <OrderflowSettings key={monitor.bot.id} bot={monitor.bot} onChanged={onChanged} />}
         <TopBotStrategyPanel accountId={accountId} bot={monitor.bot} versionLabels={edge.data?.version_labels} demoMode={demoMode || pending || unavailable} />
-      </BotDetails>
-      <BotDetails title="Evaluation history">
+      </section>
+      <section aria-labelledby="bot-evaluation-history">
+        <h2 id="bot-evaluation-history">Evaluation history</h2>
         <TopBotEvaluation activity={strategyActivity} now={now} failed={Boolean(monitor.error)} strategyUnconfigured={strategyUnconfigured} />
         {reportAccount != null && <TopBotEdgePanel state={edge} now={now} />}
-      </BotDetails>
+      </section>
     </div>
   </div>;
 }

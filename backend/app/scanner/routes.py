@@ -27,12 +27,9 @@ def connection(session):
     return c
 
 
-@router.get("")
-def scanner_feed(session=Depends(get_db)):
-    c = connection(session)
+def source_health(c):
     if c is None:
         return {
-            "events": [],
             "sources": [],
             "worker": "Scanner worker not configured",
             "spend": None,
@@ -64,11 +61,21 @@ def scanner_feed(session=Depends(get_db)):
         .first()
     )
     return {
-        "events": db.feed(c),
         "sources": sources,
         "worker": "Running" if alive else "Scanner worker offline",
         "spend": dict(budget) if budget else None,
     }
+
+
+@router.get("/health")
+def scanner_health(session=Depends(get_db)):
+    return source_health(connection(session))
+
+
+@router.get("")
+def scanner_feed(session=Depends(get_db)):
+    c = connection(session)
+    return {**source_health(c), "events": db.feed(c) if c is not None else []}
 
 
 @router.get("/alerts")
