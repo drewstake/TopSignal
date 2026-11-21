@@ -49,8 +49,11 @@ def test_bot_view_waits_for_tunnel_then_serves_current_dashboard(monkeypatch):
         with dashboard_response(page, "GET", port) as response:
             body = response.read()
             assert response.status == 200
-            assert b"Connecting to peteamdpc" in body and b'http-equiv="refresh" content="3"' in body
+            assert b"Connecting to peteamdpc" in body and b'src="/topsignal-view/bot-retry.js"' in body
             assert int(response.headers["Content-Length"]) == len(body)
+        with dashboard_response("/topsignal-view/bot-retry.js", "GET", port) as response:
+            assert response.headers["Content-Type"].startswith("text/javascript")
+            assert b"window.location.reload()" in response.read()
         with dashboard_response("/bot/", "HEAD", port) as response:
             assert response.status == 200 and response.read() == b""
             assert int(response.headers["Content-Length"]) == len(body)
