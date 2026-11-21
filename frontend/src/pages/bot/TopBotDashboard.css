@@ -186,9 +186,6 @@
   grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
-@media (min-width: 1240px) {
-  .bot-live-workspace { grid-template-columns: minmax(0, 1fr) minmax(240px, 26%); align-items: start; }
-}
 .bot-live-workspace .topbot-panel { padding: 14px 16px; }
 .bot-live-workspace .topbot-section-heading { align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin-bottom: 8px; }
 .bot-live-workspace .topbot-event-heading { flex-wrap: wrap; }
