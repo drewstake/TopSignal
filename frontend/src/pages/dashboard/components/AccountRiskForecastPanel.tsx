@@ -139,11 +139,12 @@ function ForecastForm({ accountId }: { accountId: number }) {
       <div className="rounded-xl border border-app-warning/30 bg-app-warning/5 p-3">
         <p className="text-sm font-medium text-app-text">Estimate limits</p>
         <p className="mt-1 text-xs text-app-muted">Closed-trade simulations can miss intratrade breaches. A zero simulated rate does not mean zero risk. Existing trading controls remain authoritative.</p>
-        <details className="mt-2 text-xs text-app-muted"><summary className="cursor-pointer">Sample warnings and method</summary>
-          <ul className="mt-3 list-disc space-y-2 pl-4">{result.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul>
+        <div className="mt-3 space-y-2 border-t border-app-warning/25 pt-3 text-xs text-app-muted">
+          <h4 className="font-medium text-app-text">Sample warnings and method</h4>
+          {result.warnings.length > 0 && <ul className="list-disc space-y-2 pl-4">{result.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul>}
           {scenario && <p className="mt-3">Account-breach Monte Carlo interval (95%): <SimulationInterval value={scenario.account_breach}/>. This measures simulation sampling noise only, not confidence in future results.</p>}
           <p className="mt-3">{result.paths.toLocaleString()} paths · {result.block_days}-day blocks · reproducible sample {result.input_fingerprint.slice(0, 12)} · {result.version}</p>
-        </details>
+        </div>
       </div>
     </div>}
   </div>;

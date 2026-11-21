@@ -1188,12 +1188,6 @@ html {
   letter-spacing: -0.03em;
 }
 
-.app-workspace .dashboard-section-title > span {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.04em;
-}
-
 .app-workspace .dashboard-analytics-grid {
   gap: 14px;
 }
@@ -1225,12 +1219,6 @@ html {
 
 .app-workspace .analytics-metric > p:nth-of-type(2) {
   font-size: 12.5px;
-}
-
-.app-workspace .metric-details > summary {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  word-spacing: -0.15em;
 }
 
 .app-workspace .metric-details-content dl > div {

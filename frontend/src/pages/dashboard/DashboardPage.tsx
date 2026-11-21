@@ -3737,7 +3737,7 @@ export function DashboardPage() {
           onResetUncopyEvents={handleResetUncopyEvents}
         />
       ) : null}
-      <div className="dashboard-section-title"><div><p className="dashboard-eyebrow">BEYOND THE NUMBERS</p><h2>Performance insights</h2></div><span>Open a card to dig deeper <Icon name="chevron" /></span></div>
+      <div className="dashboard-section-title"><h2>Performance insights</h2></div>
       <MasonryGrid className="dashboard-analytics-grid">
         {summaryLoading ? (
           Array.from({ length: 8 }).map((_, index) => (
