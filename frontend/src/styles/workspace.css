@@ -164,10 +164,6 @@
 .recent-empty-description { display: block; margin-bottom: 28px; font-size: 11px; }
 .workspace-brand:focus-visible, .workspace-primary-link:focus-visible, .workspace-text-link:focus-visible { outline: 2px solid rgb(var(--theme-accent)); outline-offset: 4px; }
 
-@media (min-width: 1024px) {
-  .app-workspace .workspace-main:has(.dashboard-analytics-grid) { max-width: none; margin-left: var(--workspace-sidebar-width); }
-}
-
 @media (min-width: 1925px) {
   .app-workspace .workspace-main { margin-left: calc(var(--workspace-sidebar-width) + (100vw - var(--workspace-sidebar-width) - 1700px) / 2); }
 }
