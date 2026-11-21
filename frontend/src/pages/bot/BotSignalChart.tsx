@@ -547,11 +547,12 @@ export function BotSignalChart({ monitorOnly = false, bot: savedBot, market, dem
     [displayedLiquidityLevels, visibleChartLayers.buyLiquidity, visibleChartLayers.sellLiquidity],
   );
   const signalMarkers = useMemo(
-    () =>
-      buildSignalMarkers({
+    () => {
+      if (!showExecutions) return [];
+      return buildSignalMarkers({
         candles: closedChartCandles,
-        orderAttempts: showExecutions ? chartActivity?.order_attempts.filter(attempt => attempt.contract_id === bot?.contract_id &&
-          (signalRun === "all" || attempt.bot_run_id === Number(signalRun)) && (signalMode === "all" || attempt.execution_mode === signalMode)) : undefined,
+        orderAttempts: chartActivity?.order_attempts.filter(attempt => attempt.contract_id === bot?.contract_id &&
+          (signalRun === "all" || attempt.bot_run_id === Number(signalRun)) && (signalMode === "all" || attempt.execution_mode === signalMode)),
         activityDecisions:
           chartActivity &&
           bot &&
@@ -577,7 +578,8 @@ export function BotSignalChart({ monitorOnly = false, bot: savedBot, market, dem
             : null,
         timeframeUnit: chartTimeframe.unit,
         timeframeUnitNumber: chartTimeframe.unitNumber,
-      }),
+      });
+    },
     [chartActivity, bot, savedBot, chartTimeframe, closedChartCandles, lastEvaluation, signalMode, signalRun, showExecutions],
   );
   const visibleSignalMarkers = useMemo(
@@ -3326,7 +3328,7 @@ export function BotSignalChart({ monitorOnly = false, bot: savedBot, market, dem
                 <option value="all">All runs</option>{activity?.runs.map(run => <option key={run.id} value={run.id}>Run {run.id}</option>)}
               </select></label>
               <details className="method-details"><summary>Details</summary>
-                <p>Arrows mark model decisions, circles mark blocked decisions, and squares mark observed fills.</p>
+                <p>Show executions controls all trade markers. Arrows mark model decisions, circles mark blocked decisions, and squares mark observed fills.</p>
               </details>
               {signalHistory?.key === signalHistoryKey && signalHistory.error && <span>Signal history unavailable; showing recent activity.</span>}
               {chartActivity && chartActivity.decisions.length >= 2000 && <span>Showing the latest 2,000 decisions in the loaded range.</span>}

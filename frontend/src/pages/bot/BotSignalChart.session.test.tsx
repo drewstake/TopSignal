@@ -108,15 +108,17 @@ it("loads bounded signal history for the chart range and selected execution mode
   expect(api.botsApi.getActivity).toHaveBeenLastCalledWith(1, 2000, expect.anything(), expect.objectContaining({execution_mode: "live"}));
 });
 
-it("hides observed fills while keeping decision markers and restores the saved display choice", async () => {
+it("hides BUY, SELL, blocked and fill markers and remembers the choice after remounting", async () => {
   const timestamp = "2026-09-04T20:55:00Z";
   vi.mocked(api.botsApi.getCandles).mockResolvedValue([{ id: 1, contract_id: bot.contract_id, symbol: bot.symbol,
     unit: "minute", unit_number: 5, timestamp, open: 100, high: 101, low: 99, close: 100, volume: 10,
     is_partial: false, live: false, fetched_at: timestamp }]);
   const scope = { bot_config_id: bot.id, bot_run_id: 4, account_id: bot.account_id, contract_id: bot.contract_id, created_at: timestamp };
+  const decision = { ...scope, symbol: bot.symbol, decision_type: "signal", reason: "Entry",
+    candle_timestamp: timestamp, price: 100, quantity: 1 };
   vi.mocked(api.botsApi.getActivity).mockResolvedValue({ config: bot, runs: [], risk_events: [],
-    decisions: [{ ...scope, id: 1, symbol: bot.symbol, decision_type: "signal", action: "BUY", reason: "Entry",
-      candle_timestamp: timestamp, price: 100, quantity: 1 }],
+    decisions: [{ ...decision, id: 1, action: "BUY" }, { ...decision, id: 2, action: "SELL" },
+      { ...decision, id: 3, action: "SELL", decision_type: "risk_reject" }],
     order_attempts: [{ ...scope, id: 2, bot_decision_id: 1, side: "BUY", order_type: "market", size: 1, status: "submitted",
       execution_mode: "live", provider_order_id: "p2", rejection_reason: null, updated_at: timestamp,
       execution_observations: [{ kind: "fill", id: 3, timestamp, price: 100 }] }],
@@ -124,16 +126,18 @@ it("hides observed fills while keeping decision markers and restores the saved d
   const view = mount();
   await settle();
   const shapes = () => setMarkers.mock.lastCall?.[0].map((marker: { shape: string }) => marker.shape);
-  expect(shapes()).toEqual(["arrowUp", "square"]);
+  const allShapes = ["arrowUp", "arrowDown", "circle", "square"];
+  expect(shapes()).toEqual(allShapes);
   fireEvent.click(screen.getByRole("checkbox", { name: "Show executions" }));
-  expect(shapes()).toEqual(["arrowUp"]);
+  expect(shapes()).toEqual([]);
   view.unmount();
   mount();
   await settle();
   const toggle = screen.getByRole("checkbox", { name: "Show executions" }) as HTMLInputElement;
   expect(toggle.checked).toBe(false);
+  expect(shapes()).toEqual([]);
   fireEvent.click(toggle);
-  expect(shapes()).toEqual(["arrowUp", "square"]);
+  expect(shapes()).toEqual(allShapes);
 });
 
 it("keeps demo history and snapshot time anchored when the real date advances", async () => {
