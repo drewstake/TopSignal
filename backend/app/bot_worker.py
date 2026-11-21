@@ -1292,6 +1292,8 @@ class BotWorkerRuntime:
         return True
 
     def _log_health(self) -> None:
+        # Recording has its own 15-second, single-flight background check.
+        self._log_recording_health()
         # Changes are immediate; a steady worker emits at most once a minute.
         # Both paths (including standby/error) retain evidence across restarts.
         with self._state_lock:
@@ -1307,7 +1309,6 @@ class BotWorkerRuntime:
         diagnostic_event(logger, "bot_worker_state_changed" if changed else "bot_worker_heartbeat",
                          level=logging.WARNING if snapshot.last_error_code or snapshot.unresolved_live_submissions else logging.INFO,
                          worker_id=self.owner_id, **asdict(snapshot))
-        self._log_recording_health()
 
     def _log_recording_health(self) -> None:
         """Recording is reported apart from trading: once a minute, sooner on change.

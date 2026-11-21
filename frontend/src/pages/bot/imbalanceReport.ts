@@ -7,7 +7,7 @@ export type Actual = { id: number; side: string; mode: string; version: string; 
 export type Inclusion = { id: number; mode: string; version: string; date: string; outcome: string; status: string; reasons: string[] };
 type Horizon = { seconds: number; valid: number; all_mean: number | null; pairs: number; signal: number | null;
   baseline: number | null; difference: number | null };
-type Episode = { id: number; episode: string; at: string; side: number; bid: number | null; ask: number | null;
+type Episode = { id: number; episode: string; at: string; side: number | null; heavy?: number; order_side?: number | null; bid: number | null; ask: number | null;
   control: number | null; disposition: string; reason: string | null; rule: string;
   moves: Record<string,{ points: number | null; reason: string | null }> };
 export type SignalStudy = { source: string; total: number; matched: number; filled: number; horizons: Horizon[];

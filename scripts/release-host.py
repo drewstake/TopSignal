@@ -389,12 +389,29 @@ def health(config: dict, root: Path) -> dict:
     return result
 
 
-def recording(account_ids: list[int]) -> dict:
+def local_headers() -> dict:
     origin = "http://127.0.0.1:4173"
     base = "http://127.0.0.1:8000"
     headers = {"Origin": origin, "X-TopSignal-Local-Access": "device", "Content-Type": "application/json"}
     with urlopen(Request(base + "/auth/local/device", data=b"{}", headers=headers), timeout=15) as response:
         headers["Authorization"] = "Bearer " + json.load(response)["access_token"]
+    return headers
+
+
+def study_freshness(configs):
+    url = "http://127.0.0.1:8000/api/recording/health"
+    with urlopen(Request(url, headers=local_headers()), timeout=15) as response:
+        studies = json.load(response).get("independent_studies", [])
+    if not studies or any(str(s.get("account")) != configs.get(str(s.get("config")), {}).get("account_id")
+                          or not s.get("contract_id") or not s.get("last_raw_at") or not s.get("helper_fresh")
+                          or s.get("state") not in {"processing", "scheduled_closure"} for s in studies):
+        raise ValueError("Independent study freshness unavailable or stalled")
+    return studies
+
+
+def recording(account_ids: list[int]) -> dict:
+    base = "http://127.0.0.1:8000"
+    headers = local_headers()
     readings = {}
     for account in account_ids:
         with urlopen(Request(base + f"/api/accounts/{int(account)}/topbot/statistics", headers=headers), timeout=15) as response:
@@ -463,7 +480,8 @@ def monitor_recording(stage: Path) -> None:
         if accounts:
             samples.append(recording(accounts))
             check_recording(samples[0], samples[-1])
-    write_json(stage / "recording-verification.json", {"samples": samples, "active_accounts": accounts,
+    studies = study_freshness(latest["configs"])
+    write_json(stage / "recording-verification.json", {"study_freshness": studies, "samples": samples, "active_accounts": accounts,
                "independent_samples": independent, "verified": True})
 
 

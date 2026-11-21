@@ -158,6 +158,18 @@ def capacity(folder):
         raise ValueError("Research storage limit reached")
 
 
+def independent_boundary(db, obs):
+    # A busy worker cursor can keep the second WAL writer out even during cleanup.
+    # Retry on the next connection. Pending marks never cross the subscription boundary.
+    from imbalance_study import HORIZONS
+    with db:
+        db.execute("INSERT OR IGNORE INTO gaps VALUES(?,?,?,?)",
+                   (obs.source, obs.capture, time.time(), "independent stream boundary"))
+        for horizon in HORIZONS:
+            db.execute("""INSERT OR IGNORE INTO marks SELECT id,?,NULL,NULL,'independent stream boundary'
+                       FROM anchors WHERE source=? AND capture=?""", (horizon, obs.source, obs.capture))
+
+
 def continuous(cfg, dsn, folder, start):
     """Independent normalized market-only subscription, even while the bot is disarmed."""
     from app.services.topbot_depth import DepthState
@@ -165,11 +177,20 @@ def continuous(cfg, dsn, folder, start):
 
     api = LocalAPI(cfg["account"], cfg["config"])
     with closing(open_store(folder / "study.sqlite3")) as db:
+        status_path = folder / "independent.json"
+        previous = read_json(status_path) if status_path.exists() else {}
+        contract, through = previous.get("contract"), previous.get("through")
+        pending_boundary = None
         while True:
             obs = None
             try:
                 capacity(folder)
-                owner, contract, threshold, persist = scope(dsn, cfg)
+                if pending_boundary:
+                    independent_boundary(db, pending_boundary)
+                    pending_boundary = None
+                owner, current_contract, threshold, persist = scope(dsn, cfg)
+                if current_contract != contract:
+                    contract, through = current_contract, None
                 if sha256(owner.encode()).hexdigest() != folder.parent.name:
                     raise ValueError("Owner changed")
                 api.authenticate()
@@ -181,7 +202,8 @@ def continuous(cfg, dsn, folder, start):
                 state.persistence_required = persist
                 capture = uuid4().hex
                 obs = Observations(db, "Independent", capture, contract, start)
-                check = time.monotonic() + 30
+                check = 0
+                candidate = through
                 with api.opener.open(req, timeout=24) as stream:
                     kind = None
                     while True:
@@ -197,9 +219,12 @@ def continuous(cfg, dsn, folder, start):
                             obs.observe(
                                 now.timestamp(), state.snapshot(now), state.transitions, threshold, persist
                             )
+                            if state.last_at and event["data"].get("contract_id") == contract:
+                                candidate = max(candidate or 0, state.last_at.timestamp())
                             kind = None
                         if db.in_transaction:
                             db.commit()
+                        through = candidate  # All corresponding observations have committed.
                         if time.monotonic() >= check:
                             db.commit()
                             capacity(folder)
@@ -211,18 +236,18 @@ def continuous(cfg, dsn, folder, start):
                             check = time.monotonic() + 30
                             publish(
                                 folder / "independent.json",
-                                {"at": iso(time.time()), "through": obs.last, "state": "listening"},
+                                {"at": iso(time.time()), "contract": contract, "through": through, "state": "listening"},
                             )
             except Exception as exc:  # noqa: BLE001 - isolate and report feed failures before reconnecting
                 db.rollback()
                 publish(
                     folder / "independent.json",
-                    {"at": iso(time.time()), "state": "waiting", "error": type(exc).__name__},
+                    {"at": iso(time.time()), "state": "waiting", "contract": contract, "through": through,
+                     "error": getattr(exc, "sqlite_errorname", type(exc).__name__)},
                 )
             finally:
                 if obs:
-                    with db:
-                        obs.gap(time.time(), "independent stream boundary")
+                    pending_boundary = obs
                 api.close()
             time.sleep(3)
 
@@ -249,18 +274,25 @@ def run(cfg):
                        FROM anchors WHERE source='Independent'""",
                 (horizon,),
             )
-    threading.Thread(target=continuous, args=(cfg, dsn, folder, start), daemon=True).start()
+    independent = None
+    registered = None
     refresh = report_at = 0
     paths = []
     while True:
         stage = "worker evidence"
         try:
+            if independent is None or not independent.is_alive():
+                independent = threading.Thread(target=continuous, args=(cfg, dsn, folder, start), daemon=True)
+                independent.start()
             now = time.monotonic()
             capacity(folder)
             if now >= refresh:
                 current_owner, contract, threshold, persist = scope(dsn, cfg)
                 if owner != current_owner:
                     raise ValueError("Owner changed")
+                if registered != contract:
+                    publish(folder / "scope.json", {"account": cfg["account"], "config": cfg["config"], "contract": contract})
+                    registered = contract
                 paths = captures(cache, owner, contract, start)
                 refresh = now + 12
             active = 0

@@ -65,7 +65,7 @@ export function SignalPanel({ data, now }: { data: EdgeReport; now: number }) {
   const [source,setSource]=useState("Worker");
   const selected: SignalStudy | undefined=data.studies.find(s=>s.source===source);
   return <section className="topbot-panel" aria-label="Imbalance signal study"><h2 className="text-base font-semibold">Imbalance signal study</h2>
-    <p className="topbot-muted">This study tracks contrarian signals: bid-heavy shorts and ask-heavy longs.</p>
+    <p className="topbot-muted">Worker order direction follows the saved strategy version. Independent observations use a contrarian reference for price comparisons.</p>
     <div className="topbot-comparison-filters"><label>Observation stream <select value={source} onChange={e=>setSource(e.target.value)}>
       <option>Worker</option><option>Independent</option></select></label></div>
     {selected && <>
@@ -79,8 +79,8 @@ export function SignalPanel({ data, now }: { data: EdgeReport; now: number }) {
       <p className="topbot-footnote">Buy at the ask and mark at the bid, or sell at the bid and mark at the ask. Values are points before fees. Controls use the same observed contract, rule, New York hour, spread and preceding 60-second move (2-point bands). Each control is below threshold, at least five minutes earlier and used once. The difference averages complete pairs only.</p>
       <details><summary>Recent qualifying episodes, skipped signals and coverage</summary>
         <p className="topbot-footnote">{source==="Worker" ? "Recorded worker qualifications include signals between evaluations. Reasons use linked decisions, orders or recorded open positions." : "Continuous market observations run with the bot disarmed. Independent arrivals can differ from the worker; the two samples are shown separately."}</p>
-        <div className="topbot-stat-table"><table><thead><tr><th>Qualified (ET)</th><th>Side</th><th>Bid / ask</th><th>Disposition</th><th>Control</th><th>30s / 2m / 5m (pts)</th></tr></thead>
-          <tbody>{selected.recent.map(r=><tr key={r.id}><td>{time(r.at)}</td><td>{r.side===1 ? "Buy" : "Sell"}</td><td>{fmt(r.bid)} / {fmt(r.ask)}</td><td>{r.disposition}{r.reason && " · "+r.reason}</td>
+        <div className="topbot-stat-table"><table><thead><tr><th>Qualified (ET)</th><th>Heavy side</th><th>Worker order</th><th>Bid / ask</th><th>Disposition</th><th>Control</th><th>30s / 2m / 5m (pts)</th></tr></thead>
+          <tbody>{selected.recent.map(r=><tr key={r.id}><td>{time(r.at)}</td><td>{r.heavy===1 ? "Bid" : r.heavy===-1 ? "Ask" : "Unknown"}</td><td>{source==="Independent" ? "—" : r.order_side===1 ? "Buy" : r.order_side===-1 ? "Sell" : "Unknown"}</td><td>{fmt(r.bid)} / {fmt(r.ask)}</td><td>{r.disposition}{r.reason && " · "+r.reason}</td>
           <td>{r.control==null ? "Unmatched" : "#"+r.control}</td><td>{[30,120,300].map(h=>r.moves[h] ? r.moves[h].reason || fmt(r.moves[h].points) : "Pending").join(" / ")}</td></tr>)}</tbody></table></div>
       </details>
     </>}

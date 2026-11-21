@@ -292,10 +292,11 @@ class ReleaseTests(unittest.TestCase):
         sample = {"pid": 123, "capture_id": "capture", "rejected_events": 0, "errors": 0, "durable_events": 100}
         (self.bundle / "recorder-before.json").write_text(json.dumps(sample))
         with patch.object(host, "independent_recording", return_value=sample) as independent, \
-                patch.object(host, "recording") as application, patch.object(host.time, "sleep"):
+                patch.object(host, "recording") as application, patch.object(host, "study_freshness", return_value=[]) as study, patch.object(host.time, "sleep"):
             host.monitor_recording(self.bundle)
             self.assertEqual(independent.call_count, 3)
             application.assert_not_called()
+            study.assert_called_once()
         self.assertTrue(json.loads((self.bundle / "recording-verification.json").read_text())["verified"])
 
     def test_ci_requires_all_jobs_and_exact_commit_and_latest_success(self):

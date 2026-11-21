@@ -3,12 +3,13 @@
 import json
 import math
 import time
-from collections import Counter
+from bisect import bisect_left
+from collections import Counter, defaultdict
 from datetime import datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from imbalance_study import HORIZONS, directory
+from imbalance_study import EpisodeMatches, HORIZONS, broker_ids, directory, saved_direction
 from track_imbalances import iso, pg
 
 
@@ -48,13 +49,20 @@ def execution_rows(db, owner, account, config):
        raw_request->'entryEvidence'->'signal'->'evidence'->>'capture_id' AS capture,
        raw_request->'strategySnapshot'->'rules' AS rules,
        raw_request->'strategySnapshot'->'risk_limits' AS limits,
-       raw_request->'strategySnapshot'->'quantity' AS planned_quantity
+       raw_request->'strategySnapshot'->'quantity' AS planned_quantity, provider_order_id, created_at, left(rejection_reason,160)
        FROM bot_order_attempts WHERE user_id=%s AND account_id=%s AND bot_config_id=%s
-       AND raw_request->'timeExit'->'runner'->>'version'='1' ORDER BY id DESC LIMIT 5001"""
+       AND (raw_request->'strategySnapshot' IS NOT NULL OR raw_request->'timeExit'->'runner'->>'version'='1')
+       ORDER BY id DESC LIMIT 5001"""
     rows = db.execute(sql, (owner, account, config)).fetchall()
-    actual = []
+    actual, attempts = [], []
     first_by_version = {}
-    for id_, side, status, contract, size, runner, version, impl, episode, capture, rules, limits, quantity in rows[:5000]:
+    for id_, side, status, contract, size, runner, version, impl, episode, capture, rules, limits, quantity, order, created, reason in rows[:5000]:
+        attempts.append(dict(id=id_, user_id=owner, account_id=account, bot_config_id=config, side=side,
+                             status=status, contract_id=contract, runner=runner or {}, capture=capture,
+                             episode=episode, version=version, direction=saved_direction((rules or {}).get("entry") or {}),
+                             provider_order_id=order, at=created.timestamp(), reason=reason))
+        if not runner or str(runner.get("version")) != "1":
+            continue
         request = {
             "timeExit": {"runner": runner},
             "strategySnapshot": {"strategy_version_id": version} if version else {},
@@ -107,7 +115,14 @@ def execution_rows(db, owner, account, config):
     for version, label in labels.items():
         if occurrences[label] > 1:
             labels[version] = f"{label} · entry #{first_by_version[version][1]}"
-    return actual, len(rows) > 5000, labels
+    ids = sorted({i for a in attempts for i in broker_ids(a["runner"], "entry_fill_id")})
+    legs = db.execute("""SELECT user_id,account_id,contract_id,order_id,source_trade_id,side,status,
+                         raw_payload->>'voided' FROM projectx_trade_events
+                         WHERE user_id=%s AND account_id=%s AND source_trade_id=ANY(%s)""",
+                      (owner, account, ids)).fetchall() if ids else []
+    fills = [dict(user_id=u, account_id=a, contract_id=c, order_id=o, source_trade_id=i,
+                  side=s, status=st, voided=v == "true") for u, a, c, o, i, s, st, v in legs]
+    return actual, len(rows) > 5000, labels, EpisodeMatches(attempts, fills, owner, account, config)
 
 
 def coverage(owner, account, actual):
@@ -161,67 +176,48 @@ def coverage(owner, account, actual):
     return result
 
 
-def dispositions(pgdb, local, owner, cfg, start, actual):
-    local.execute("""CREATE TABLE IF NOT EXISTS decisions(capture TEXT,episode TEXT,contract TEXT,side INTEGER,
-        disposition TEXT,reason TEXT,entry_id INTEGER,PRIMARY KEY(capture,episode,contract,side))""")
-    # Revisit the newest decisions to pick up late attempts. Confirmed fills below also reconcile older episodes.
-    watermark = local.execute("SELECT value FROM meta WHERE key='decision_id'").fetchone()
-    floor = max(0, int(watermark[0]) - 50) if watermark else 0
-    rows = pgdb.execute(
-        """SELECT d.id,d.contract_id,d.action,d.raw_payload->'depth_entry'->>'episode_at',
-        d.raw_payload->'depth_entry'->'evidence'->>'capture_id',a.id,a.status,left(a.rejection_reason,160),
-        d.reason FROM bot_decisions d LEFT JOIN bot_order_attempts a ON a.bot_decision_id=d.id
-        AND a.user_id=d.user_id AND a.account_id=d.account_id WHERE d.user_id=%s AND d.account_id=%s
-        AND d.bot_config_id=%s AND d.id>%s AND d.created_at >= %s AND d.action IN ('SELL','BUY')
-        ORDER BY d.id,a.id LIMIT 2000""",
-        (owner, cfg["account"], cfg["config"], floor, iso(start - 60)),
-    ).fetchall()
-
-    def save(capture, episode, contract, side, disposition, reason, entry):
-        if capture and episode:
-            local.execute(
-                """INSERT INTO decisions VALUES(?,?,?,?,?,?,?) ON CONFLICT(capture,episode,contract,side)
-                DO UPDATE SET disposition=excluded.disposition,reason=excluded.reason,entry_id=excluded.entry_id
-                WHERE decisions.disposition!='Filled'""",
-                (capture, episode, contract, 1 if side == "BUY" else -1, disposition, reason, entry),
-            )
-
-    for id_, contract, side, episode, capture, entry, status, reason, decision_reason in rows:
-        skipped = status in {"blocked", "rejected", "cancelled", "error", "dry_run"}
-        disposition = "Skipped" if skipped else "Order unresolved" if entry else "Decision only"
-        save(
-            capture,
-            episode,
-            contract,
-            side,
-            disposition,
-            reason or status or "No linked order attempt",
-            entry,
-        )
-    if rows:
-        local.execute("INSERT OR REPLACE INTO meta VALUES('decision_id',?)", (str(rows[-1][0]),))
-    for t in actual:
-        save(t["capture"], t["episode"], t["contract"], t["side"], "Filled", None, t["id"])
-    # Exact worker identity only. Independent market observations have no worker capture ID.
-    local.execute("""UPDATE anchors AS a SET (disposition,reason,entry_id)=
-        (SELECT disposition,reason,entry_id FROM decisions d WHERE d.capture=a.capture AND d.episode=a.episode
-        AND d.contract=a.contract AND d.side=a.side) WHERE a.source='Worker' AND a.side!=0
-        AND EXISTS(SELECT 1 FROM decisions d WHERE d.capture=a.capture AND d.episode=a.episode
-        AND d.contract=a.contract AND d.side=a.side AND (a.disposition IS NOT d.disposition OR a.reason IS NOT d.reason
-        OR a.entry_id IS NOT d.entry_id))""")
-    # A verified position already open at qualification explains an otherwise unevaluated episode.
-    for item in actual:
-        if not item["exit"] or item["exit"] < iso(start):
+def reconcile(local, matches, actual):
+    # Derived only in this connection. Original directions, dispositions and IDs remain auditable.
+    local.execute("""CREATE TEMP TABLE IF NOT EXISTS attribution(anchor INTEGER PRIMARY KEY,
+                  order_side INTEGER, version TEXT, disposition TEXT, reason TEXT, entry_id INTEGER,
+                  entry_order_id TEXT, entry_fill_ids TEXT)""")
+    local.execute("DELETE FROM attribution")
+    rows = local.execute("""SELECT id,capture,episode,contract,at,bid,ask,-side AS heavy FROM anchors
+                         WHERE source='Worker' AND side!=0""").fetchall()
+    links = {}
+    verified = {a["id"] for attempts in matches.episodes.values() for a in attempts if matches.verified(a)}
+    intervals = defaultdict(list)
+    for a in actual:
+        if a["exit"] and a["id"] in verified:
+            intervals[a["contract"]].append((datetime.fromisoformat(a["entry"]).timestamp(),
+                                             datetime.fromisoformat(a["exit"]).timestamp()))
+    for periods in intervals.values():
+        periods.sort()
+        for i in range(1, len(periods)):
+            start, end = periods[i]
+            periods[i] = start, max(end, periods[i-1][1])
+    keys = Counter((r["contract"], r["capture"], r["episode"]) for r in rows)
+    for r in rows:
+        key = r["contract"], r["capture"], r["episode"]
+        m = matches.lookup(*key, r["at"], r["heavy"])
+        if keys[key] > 1:
             continue
-        local.execute(
-            """UPDATE anchors SET disposition='Skipped',reason='Bot position already open'
-            WHERE source='Worker' AND contract=? AND side!=0 AND disposition IS NULL AND at>? AND at<?""",
-            (
-                item["contract"],
-                datetime.fromisoformat(item["entry"]).timestamp(),
-                datetime.fromisoformat(item["exit"]).timestamp(),
-            ),
-        )
+        periods = intervals[r["contract"]]
+        previous = bisect_left(periods, r["at"], key=lambda p: p[0]) - 1
+        if (m["disposition"] == "Unknown" and key not in matches.episodes and previous >= 0
+                and r["at"] < periods[previous][1]):
+            m.update(disposition="Skipped", reason="Bot position already open")
+        local.execute("INSERT INTO attribution VALUES(?,?,?,?,?,?,?,?)", (
+            r["id"], m["order_side"], m["version"], m["disposition"], m["reason"], m["entry_id"],
+            m["entry_order_id"], json.dumps(m["entry_fill_ids"])))
+        if m["entry_id"]:
+            links[m["entry_id"]] = r["ask"] if m["order_side"] == 1 else r["bid"]
+    local.execute("""CREATE TEMP VIEW IF NOT EXISTS study_signals AS
+        SELECT a.id,a.source,a.capture,a.episode,a.contract,a.at,a.bid,a.ask,a.control,a.rule,
+        -a.side AS heavy, CASE WHEN a.source='Independent' THEN a.side ELSE t.order_side END AS side,
+        t.order_side,t.version,t.disposition,t.reason,t.entry_id,t.entry_order_id,t.entry_fill_ids
+        FROM anchors a LEFT JOIN attribution t ON a.id=t.anchor WHERE a.side!=0""")
+    return links
 
 
 def observed(db, source, contract, start, through):
@@ -230,11 +226,11 @@ def observed(db, source, contract, start, through):
         # Both paths use the same simulated marketable direction. Only complete pairs enter the difference.
         sample = db.execute(
             """WITH moves AS (SELECT a.control,
-            CASE a.side WHEN 1 THEN s.bid-a.ask ELSE a.bid-s.ask END AS signal,
-            CASE a.side WHEN 1 THEN m.bid-c.ask ELSE c.bid-m.ask END AS baseline
-            FROM anchors a LEFT JOIN marks s ON s.anchor=a.id AND s.seconds=?
+            CASE a.side WHEN 1 THEN s.bid-a.ask WHEN -1 THEN a.bid-s.ask END AS signal,
+            CASE a.side WHEN 1 THEN m.bid-c.ask WHEN -1 THEN c.bid-m.ask END AS baseline
+            FROM study_signals a LEFT JOIN marks s ON s.anchor=a.id AND s.seconds=?
             LEFT JOIN anchors c ON c.id=a.control LEFT JOIN marks m ON m.anchor=c.id AND m.seconds=?
-            WHERE a.source=? AND a.contract=? AND a.side!=0)
+            WHERE a.source=? AND a.contract=?)
             SELECT count(signal),avg(signal),count(signal-baseline),avg(CASE WHEN baseline IS NOT NULL THEN signal END),
             avg(CASE WHEN signal IS NOT NULL THEN baseline END),avg(signal-baseline) FROM moves""",
             (h, h, source, contract),
@@ -243,38 +239,27 @@ def observed(db, source, contract, start, through):
             dict(zip(("valid", "all_mean", "pairs", "signal", "baseline", "difference"), sample), seconds=h)
         )
     counts = db.execute(
-        """SELECT count(*),count(control),sum(disposition='Filled') FROM anchors
-        WHERE source=? AND contract=? AND side!=0""",
+        """SELECT count(*),count(control),sum(disposition='Filled') FROM study_signals
+        WHERE source=? AND contract=?""",
         (source, contract),
     ).fetchone()
     rows = db.execute(
-        """SELECT id,episode,at,side,bid,ask,control,disposition,reason,entry_id,rule,
-        (SELECT at FROM episode_ends e WHERE e.anchor=anchors.id) AS ended FROM anchors
-        WHERE source=? AND contract=? AND side!=0 ORDER BY at DESC LIMIT 40""",
+        """SELECT id,episode,at,side,bid,ask,control,disposition,reason,entry_id,rule,heavy,order_side,version,entry_order_id,entry_fill_ids,
+        (SELECT at FROM episode_ends e WHERE e.anchor=study_signals.id) AS ended FROM study_signals
+        WHERE source=? AND contract=? ORDER BY at DESC LIMIT 40""",
         (source, contract),
     ).fetchall()
     recent = []
     for r in rows:
         row = dict(r)
         row["at"] = iso(row["at"])
-        if not row["disposition"]:
-            row["disposition"] = (
-                "Independent observation"
-                if source != "Worker"
-                else "Awaiting reconciliation"
-                if time.time() - r["at"] < 45
-                else "Skipped / no linked decision"
-                if r["ended"]
-                else "No linked decision recorded"
-            )
-            row["reason"] = (
-                "No verified reason recorded" if row["disposition"].startswith("Skipped") else None
-            )
+        row["disposition"] = row["disposition"] or ("Independent observation" if source == "Independent" else "Unknown")
+        row["entry_fill_ids"] = json.loads(row["entry_fill_ids"] or "[]")
         marks = db.execute("SELECT seconds,bid,ask,reason FROM marks WHERE anchor=?", (r["id"],))
         row["moves"] = {
             str(h): {
                 "points": None
-                if b is None or r["ask"] is None
+                if b is None or r["ask"] is None or r["side"] is None
                 else b - r["ask"]
                 if r["side"] == 1
                 else r["bid"] - a,
@@ -297,15 +282,12 @@ def observed(db, source, contract, start, through):
 
 def build_report(cfg, dsn, cache, owner, contract, db, start, through):
     with pg(dsn) as client:
-        actual, truncated, labels = execution_rows(client, owner, cfg["account"], cfg["config"])
-        dispositions(client, db, owner, cfg, start, actual)
+        actual, truncated, labels, matches = execution_rows(client, owner, cfg["account"], cfg["config"])
+    links = reconcile(db, matches, actual)
     for t in actual:
-        q = db.execute(
-            """SELECT bid,ask FROM anchors WHERE source='Worker' AND capture=? AND episode=? AND contract=?
-            AND side=? LIMIT 1""",
-            (t.pop("capture"), t.pop("episode"), t["contract"], 1 if t["side"] == "BUY" else -1),
-        ).fetchone()
-        t["qualify"] = (q["ask"] if t["side"] == "BUY" else q["bid"]) if q else None
+        t["qualify"] = links.get(t["id"])
+        t.pop("capture")
+        t.pop("episode")
     independent = {}
     try:
         independent = json.loads(
@@ -325,6 +307,6 @@ def build_report(cfg, dsn, cache, owner, contract, db, start, through):
         "coverage": coverage(owner, cfg["account"], actual),
         "studies": [
             observed(db, "Worker", contract, start, through),
-            observed(db, "Independent", contract, start, independent.get("through")),
+            observed(db, "Independent", contract, start, independent.get("through") if independent.get("contract") == contract else None),
         ],
     }

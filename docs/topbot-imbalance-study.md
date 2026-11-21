@@ -107,3 +107,24 @@ The viewing-PC connection definition before this rollout is preserved under
 stop only its dedicated viewing task, restore the connection's original local
 4173 to remote 4173 mapping and restart only the viewing connection. Host
 collection continues. No database migration or trading task restart is needed.
+
+## Independent processing warning and worker attribution
+
+Recorders shows the last same-contract raw market receipt and independent processed market
+timestamp. Host recording diagnostics poll this status with the browser closed. Five minutes
+of advancing raw receipts without processed market progress raises
+`independent_study_stalled`. A new processed timestamp clears it. The MNQ session calendar,
+stale raw receipts and the reconnect interval have separate statuses. Only processed market
+events advance the watermark. Full release verification records study freshness alongside
+recorder continuity.
+
+On November 19 the independent receipt stopped at 19:06:24 ET with `OperationalError`.
+The host task and worker reader continued. The error receipt omitted the SQLite subcode.
+A second busy writer during boundary cleanup could terminate the independent thread after
+its error was recorded. The helper now retries boundary writes, supervises the thread,
+and retains the last committed market timestamp across reconnects.
+
+The original v1 anchor side encodes the contrarian reference. Reports project the observed
+heavy side separately and derive each worker's order side from saved rules. Reconciliation
+uses a connection-local table and preserves original anchor dispositions and IDs for audit.
+The independent sample retains its original contrarian reference horizons.

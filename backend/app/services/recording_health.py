@@ -7,7 +7,12 @@ it does not certify that any recording is complete.
 """
 from datetime import datetime, timezone
 import json
+import os
 import shutil
+from pathlib import Path
+from threading import Lock
+
+from .trading_day import futures_session_is_open
 
 from .probabilistic_shadow import cache_root, scope_hash
 
@@ -90,6 +95,103 @@ def _depth_recorder(owner, root, now, problems):
     return value
 
 
+def _receipt(path):
+    try:
+        with path.open('rb') as stream:
+            data = json.loads(stream.read(65537))
+            return data if isinstance(data, dict) else {}
+    except (ValueError, OSError):
+        return {}
+
+
+class StudyWatch:
+    def __init__(self):
+        self.lock = Lock()
+        self.samples = {}
+        self.raw_cursors = {}
+
+    def check(self, key, contract, raw, processed, now):
+        detail = raw.get('recording') or {}
+        same = bool(contract) and raw.get('contract_id') == contract
+        last_raw = detail.get('last_depth_at') if same else None
+        through = processed.get('through') if processed.get('contract') == contract else None
+        try:
+            stamp = datetime.fromtimestamp(through, timezone.utc) if through is not None else None
+        except (TypeError, ValueError, OverflowError, OSError):
+            stamp = None
+        receipt_age = _age(raw.get('at'), now)
+        key = (*key, contract)
+        with self.lock:
+            # The recorder identifies depth receipts directly. Its general event clock also
+            # identifies a market receipt when all intervening indices are depth/quote/trade.
+            counts = detail.get('counts') or {}
+            market_count = sum(counts.get(kind, 0) for kind in ('depth', 'trade', 'quote'))
+            total = detail.get('received_events', 0)
+            run = detail.get('run_id')
+            prior = self.raw_cursors.get(key)
+            if same and run and prior and prior[0] == run:
+                if total > prior[1] and total-prior[1] == market_count-prior[2]:
+                    last_raw = detail.get('last_event_at') or last_raw
+                elif total >= prior[1] and prior[3]:
+                    last_raw = max(filter(None, (last_raw, prior[3])))
+            self.raw_cursors[key] = (run, total, market_count, last_raw)
+            age = _age(last_raw, now)
+            if not contract:
+                state = 'scope_unknown'
+            elif not futures_session_is_open(now, symbol=contract):
+                state = 'scheduled_closure'
+            elif (not same or raw.get('state') != 'recording' or receipt_age is None
+                  or not 0 <= receipt_age <= RECORDER_STALE_SECONDS or age is None
+                  or not 0 <= age <= RECORDER_STALE_SECONDS):
+                state = 'raw_feed_stale'
+            else:
+                tick = now.timestamp() - age
+                previous = self.samples.get(key)
+                if stamp and stamp > now:
+                    stamp = None
+                previous_mark = previous[2] if previous else None
+                mark = stamp.timestamp() if stamp else None
+                restarted = previous is None or not 0 <= tick-previous[1] <= RECORDER_STALE_SECONDS
+                advanced = mark is not None and previous_mark is not None and mark > previous_mark
+                fresh = stamp is not None and (now - stamp).total_seconds() <= RECORDER_STALE_SECONDS
+                since = tick if restarted else previous[0]
+                if advanced or (previous_mark is None and fresh):
+                    since = tick
+                self.samples[key] = (since, tick, mark if mark is not None else previous_mark)
+                state = ('study_stalled' if tick-since >= 300 else
+                         'processing' if fresh else 'waiting_for_progress')
+            if state in {'scope_unknown', 'scheduled_closure', 'raw_feed_stale'}:
+                self.samples.pop(key, None)
+        heartbeat_age = _age(processed.get('at'), now)
+        return dict(contract_id=contract, state=state, last_raw_at=last_raw,
+                    helper_fresh=processed.get('contract') == contract and heartbeat_age is not None and 0 <= heartbeat_age <= 90,
+                    last_processed_at=stamp.isoformat() if stamp else None)
+
+
+_study_watch = StudyWatch()
+
+
+def _study_status(owner, root, now, depth, problems):
+    raw_path = os.getenv('TOPSIGNAL_DEPTH_RECORDER_STATUS')
+    if not raw_path:
+        return []
+    # Only compare private receipts under this authenticated owner's registration.
+    raw = _receipt(Path(raw_path)) if depth.get('state') != 'not_reported' else {}
+    folder = root / 'imbalance-study-v1' / scope_hash(str(owner))
+    result = []
+    for path in folder.glob('*/scope.json'):
+        scope = _receipt(path)
+        if str(scope.get('account')) != path.parent.name:
+            continue
+        sample = _study_watch.check((owner, scope['account']), scope.get('contract'), raw,
+                                    _receipt(path.with_name('independent.json')), now)
+        result.append(dict(account=scope['account'], config=scope.get('config'), **sample))
+        if sample['state'] == 'study_stalled':
+            problems.append(dict(code='independent_study_stalled', contract_id=sample['contract_id'],
+                                 action='Raw market data is advancing. Check the independent study task and its last processed market time.'))
+    return result
+
+
 def report(owner, *, now=None):
     now = now or datetime.now(timezone.utc)
     root = cache_root()
@@ -132,6 +234,7 @@ def report(owner, *, now=None):
     except Exception as exc:
         result['broker_events'] = {'status_error': type(exc).__name__}
     result['depth_recorder'] = _depth_recorder(owner, root, now, problems)
+    result['independent_studies'] = _study_status(owner, root, now, result['depth_recorder'], problems)
     from .market_archive import backup_status
     backup = result['backup'] = backup_status()
     if backup.get('stale'):

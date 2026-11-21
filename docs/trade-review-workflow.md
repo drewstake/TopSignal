@@ -305,3 +305,48 @@ partial; a heartbeat or sparse marks never certify full-path coverage.
 > candidates, increase budgets or delete originals. Reconcile against the prior
 > report and explain changed totals/gaps. Return artifact links, recorder/backup
 > scope, completeness state and exact remaining causes.
+
+## Weekly held-bid recap
+
+On the review PC, restore the verified copies of the week's worker captures and metadata,
+sealed raw depth segments, and heatmap session databases under their original cache
+subdirectories. Put the frozen owner-scoped execution export and its capture manifest in
+`trade-review-v1/week-YYYYMMDD/evidence/` under that cache. Use the capture procedure
+above after the Friday close. Check the backup inventory and unmatched broker entries.
+A missing worker capture can also mean missing skipped episodes.
+
+From the repository root for the week ending November 27:
+
+```powershell
+backend/.venv/Scripts/python.exe backend/tools/weekly_rebound.py --week-ending 2026-11-27 --account 29593203 --config 40
+```
+
+The default cache is `backend/storage/databento`. Use `--cache` for a separate restored
+cache, `--bundle` for another frozen execution export, or `--output` for a new output
+filename. The command writes `trade-review-v1/week-20261127/rebound-recap.json`.
+It reads the worker's first-qualification transitions, including skipped entries and
+qualifications before study registration. Futures sessions begin the previous evening at
+18:00 New York. Independent study signals have their own sample.
+
+The saved attempt snapshot resolves version and order side for an exact episode. Between
+attempts the recap uses adjacent snapshots in the same capture and contract. Disagreement
+leaves the version unknown. At a capture edge the nearest snapshot in that capture supplies
+the version. The output retains every worker qualification, including unresolved setups.
+Broker links require unique broker order and fill IDs. A verified target requires the
+closing fills' order IDs to belong to the saved target orders. Other profitable exits
+have a separate label.
+
+For each following-rule heavy bid with the fixed 25-point stop and 40-point target, use
+reported trades received in the 30 seconds through qualification, excluding the left
+endpoint. Include the prevailing bid at the start of each 15-second half. Sell volume must
+exceed buy volume and the second minimum bid must equal or exceed the first. Receipt-time
+500 ms BBO frames have a two-second freshness limit. Missing print coverage, a boundary or
+an interrupted price window leaves the feature unknown. The 60-second midpoint comparison
+uses the prevailing midpoint at its two endpoints and has its own missing-data count.
+The report groups each condition by session, delivery contract and saved strategy version.
+
+Recheck the November 20 identities, feature values and midpoint changes from the repository root:
+
+```powershell
+backend/.venv/Scripts/python.exe backend/tools/verify_rebound_review.py backend/storage/databento/trade-review-v1/week-20261120
+```

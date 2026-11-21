@@ -9,6 +9,7 @@ type Report = {
     state: string; reason?: string | null; stale?: boolean;
     last_write_at?: string | null; last_totals_write_at?: string | null; rejected_events?: number;
   };
+  independent_studies?: { account: number; contract_id: string; state: string; last_raw_at: string | null; last_processed_at: string | null }[];
   problems: { code: string; action: string; count?: number; contract_id?: string }[];
 };
 
@@ -61,6 +62,11 @@ export function CaptureHealth() {
         {gaps == null ? "Unknown" : gaps ? `${gaps.toLocaleString()} rejected events` : "None reported"}
       </dd></div>
     </dl>
+    {report?.independent_studies?.map(s => <p key={s.account} role="status" className={s.state === "study_stalled" ? "glance-warning" : undefined}>
+      Independent study · {s.contract_id} · {outdated ? "Status unknown" : s.state.replaceAll("_", " ")}
+      {" · Last raw market event "}{s.last_raw_at ? timeLabel(s.last_raw_at) : "unavailable"}
+      {" · Last processed "}{s.last_processed_at ? timeLabel(s.last_processed_at) : "unavailable"}
+    </p>)}
     {(failed || depth?.stale || depth?.reason) && <p className="glance-warning" role="status">
       {failed ? "Health check failed" : depth?.stale ? "Stale recorder report" : depth?.reason?.replaceAll("_", " ")}
       {report && failed && ` · Last checked ${timeLabel(report.as_of)}`}

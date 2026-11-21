@@ -5,7 +5,8 @@ import json
 import math
 import sqlite3
 import zlib
-from collections import deque
+from bisect import bisect_left
+from collections import Counter, defaultdict, deque
 from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
@@ -170,6 +171,8 @@ class Observations:
                 if bucket:
                     self._anchor(rule, f"slot-{slot}", at, 0, bid, ask, bucket)
             for event in qualifications:
+                # Keep the v1 ledger encoding for audit and existing replay readers.
+                # EpisodeMatches resolves worker order side from the saved strategy separately.
                 self._anchor(rule, event["episode_at"], at, -int(event["direction"]), bid, ask, bucket)
         if bid is not None:
             point = (second, at, (bid + ask) / 2)
@@ -202,3 +205,85 @@ class Observations:
                 self._mark(result.lastrowid, horizon, None, None, "qualification quote unavailable")
             else:
                 heapq.heappush(self.due, (at + horizon, result.lastrowid, horizon))
+
+
+def broker_ids(runner, name):
+    """Accept both the original single-fill receipt and split-fill receipts."""
+    ids = runner.get(name + "s") or []
+    first = runner.get(name)
+    if not isinstance(ids, list) or (ids and first and str(first) not in {str(i) for i in ids}):
+        return ()
+    return tuple(str(i) for i in (ids or [first]) if i)
+
+
+class EpisodeMatches:
+    """One owner/account/config. Only worker episodes have an intended order side."""
+    def __init__(self, attempts, fills, owner, account, config):
+        self.episodes = defaultdict(list)
+        self.timeline = defaultdict(list)
+        self.legs = defaultdict(list)
+        self.orders = Counter()
+        self.claims = Counter()
+        for f in fills:
+            if str(f["user_id"]) == owner and f["account_id"] == account and f["source_trade_id"]:
+                self.legs[str(f["source_trade_id"])].append(f)
+        for a in attempts:
+            if (str(a["user_id"]), a["account_id"], a["bot_config_id"]) != (owner, account, config):
+                continue
+            order = str(a["provider_order_id"] or "")
+            if order:
+                self.orders[order] += 1
+            ids = broker_ids(a["runner"], "entry_fill_id")
+            self.claims.update(ids)
+            key = a["contract_id"], a["capture"]
+            if not all(key) or not a["episode"]:
+                continue
+            self.episodes[(*key, a["episode"])].append(a)
+            self.timeline[key].append((a["at"], a["version"], a["direction"]))
+        for rows in self.timeline.values():
+            rows.sort(key=lambda r: r[0])
+
+    def verified(self, a):
+        order = str(a["provider_order_id"] or "")
+        runner = a["runner"]
+        ids = broker_ids(runner, "entry_fill_id")
+        if (a["status"] != "submitted" or not ids or not order or self.orders[order] != 1
+                or str(runner.get("entry_order_id")) != order):
+            return ()
+        for i in ids:
+            if self.claims[i] != 1 or len(self.legs[i]) != 1:
+                return ()
+            leg = self.legs[i][0]
+            if ((leg["contract_id"], str(leg["order_id"]), leg["side"]) != (a["contract_id"], order, a["side"])
+                    or leg.get("voided") or str(leg.get("status")).lower() == "voided"):
+                return ()
+        return ids
+
+    def lookup(self, contract, capture, episode, at, heavy):
+        rows = self.episodes.get((contract, capture, episode), ())
+        attempt = rows[0] if len(rows) == 1 else None
+        version = direction = None
+        if attempt:
+            version, direction = attempt["version"], attempt["direction"]
+        elif not rows:
+            history = self.timeline.get((contract, capture), [])
+            i = bisect_left(history, at, key=lambda r: r[0])
+            adjacent = {r[1:] for r in history[max(0, i-1):i+1]}
+            if len(adjacent) == 1:
+                version, direction = adjacent.pop()
+        side = (heavy if direction == "following" else -heavy if direction == "contrarian" else None) if version else None
+        result = dict(version=version, order_side=side, disposition="Unknown", entry_id=None,
+                      entry_order_id=None, entry_fill_ids=(), reason=None)
+        if not attempt or not side or attempt["side"] != ("BUY" if side == 1 else "SELL"):
+            return result
+        ids = self.verified(attempt)
+        if ids:
+            result.update(disposition="Filled", entry_id=attempt["id"],
+                          entry_order_id=str(attempt["provider_order_id"]), entry_fill_ids=ids)
+        elif attempt["status"] in {"blocked", "rejected", "cancelled", "dry_run"} and not attempt["provider_order_id"]:
+            result.update(disposition="Skipped", reason=attempt.get("reason") or attempt["status"])
+        return result
+
+
+def saved_direction(entry):
+    return entry.get("imbalance_direction", "contrarian") if entry.get("revision") == "dom_contrarian_v1" else None

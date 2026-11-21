@@ -6,7 +6,8 @@ from app.services.imbalance_study import Observations, open_store
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import track_imbalances
-from imbalance_report import observed, version_label
+from imbalance_report import observed, reconcile, version_label
+from imbalance_study import EpisodeMatches
 
 
 def test_version_labels_use_saved_rules_and_limits():
@@ -21,6 +22,13 @@ def test_version_labels_use_saved_rules_and_limits():
 
 def event(at):
     return {"kind": "episode_qualified", "direction": -1, "episode_at": str(at - 30)}
+
+
+def previous_rules(db, cap, at):
+    attempt = dict(id=1, user_id="o", account_id=2, bot_config_id=3, provider_order_id=None,
+                   runner={}, capture=cap, episode="prior", at=at, version="v1", direction="contrarian",
+                   contract_id="MNQ", status="blocked")
+    reconcile(db, EpisodeMatches([attempt], [], "o", 2, 3), [])
 
 
 def test_pairs_are_prior_same_hour_nonoverlapping_and_side_correct(tmp_path):
@@ -41,6 +49,7 @@ def test_pairs_are_prior_same_hour_nonoverlapping_and_side_correct(tmp_path):
     row = db.execute("SELECT * FROM anchors WHERE side=1").fetchone()
     other = db.execute("SELECT * FROM anchors WHERE id=?", (row["control"],)).fetchone()
     assert row["at"] - other["at"] >= 300
+    previous_rules(db, "cap", start)
     report = observed(db, "Worker", "MNQ", start, start + 1100)
     assert report["total"] == 1
     assert report["horizons"][0]["pairs"] == 1
@@ -61,6 +70,7 @@ def test_gap_keeps_episode_blocks_horizons_and_short_pays_spread(tmp_path):
         obs.observe(1000 + n, book, [], 0.1, 30)
     next_obs = Observations(db, "Worker", "first", "MNQ", 1000, obs.checkpoint())
     next_obs.observe(1140, book, [], 0.1, 30)
+    previous_rules(db, "first", 1000)
     report = observed(db, "Worker", "MNQ", 1000, 1140)
     assert report["matched"] == 0 and report["total"] == 1
     assert report["recent"][0]["moves"]["30"]["points"] == -0.25
