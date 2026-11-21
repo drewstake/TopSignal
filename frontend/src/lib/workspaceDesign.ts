@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 
 export const WORKSPACE_DESIGNS = [
-  { id: "signal-deck", name: "Signal Deck", description: "A full sidebar and layered, rounded cards. The original TopSignal workspace." },
+  { id: "signal-deck", name: "Signal Deck", description: "A full sidebar with compact sections and aligned data rows." },
   { id: "terminal", name: "Terminal", description: "A slim tool rail, compact panels, and monospaced type for scanning data." },
   { id: "editorial", name: "Editorial", description: "A masthead, horizontal navigation, and serif headings for reviewing a session." },
 ] as const;

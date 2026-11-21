@@ -22,7 +22,9 @@ export function RecordedSignalReplay({ accountId }: { accountId: number }) {
   const [day, setDay] = useState("");
   return <section className="topbot-panel space-y-3" aria-labelledby="recorded-replay-title">
     <h2 id="recorded-replay-title" className="text-base font-semibold">Recorded live signal replay</h2>
-    <p className="topbot-muted">Compare two exits from the same recorded MNQ qualifications. Each signal is modeled independently using the worker’s observed order book.</p>
+    <details className="method-details"><summary>Details</summary>
+      <p>Each signal is modeled independently using the recorded order book. Targets require one tick of trade-through. Stops execute after 250 ms with one tick of slippage.</p>
+    </details>
     <SignalDay key={`${accountId}/${day}`} accountId={accountId} day={day} onDay={setDay} />
   </section>;
 }
@@ -94,12 +96,13 @@ function SignalDay({ accountId, day, onDay }: { accountId: number; day: string; 
       <label>Capture date (New York) <input type="date" value={day || page?.day || ""} onChange={e => onDay(e.target.value)} /></label>
       <Button size="sm" variant="ghost" disabled={!page?.next_day} onClick={() => page?.next_day && onDay(page.next_day)}>Next recorded day</Button>
     </div>
+    {page && (!page.previous_day || !page.next_day) && <p className="text-xs text-app-muted">{!page.previous_day && "No earlier recorded day. "}{!page.next_day && "No later recorded day."}</p>}
     {loading && <p role="status">Loading recorded signals…</p>}
     {pageError && <p role="alert">Recorded signals could not be loaded. <Button size="sm" variant="ghost"
       onClick={() => { setLoading(true); setPageError(false); setRevision(v => v+1); }}>Retry</Button></p>}
     {page && !page.signals.length && <p>No live worker signals recorded{page.day ? " on this date" : " for this account"}.</p>}
     {!!page?.signals.length && <form onSubmit={compare}>
-      <fieldset disabled={running} className="space-y-3">
+      <fieldset disabled={running} className="min-w-0 space-y-3">
         <div className="topbot-comparison-filters">
           <label>Replay direction <select value={settings.direction} onChange={e => setSettings({ ...settings, direction: e.target.value as Settings["direction"] })}>
             <option value="following">Follow imbalance</option><option value="contrarian">Fade imbalance</option></select></label>
@@ -131,7 +134,8 @@ function SignalDay({ accountId, day, onDay }: { accountId: number; day: string; 
         <label className="block text-sm"><input type="checkbox" checked={settings.timed} onChange={e => setSettings({ ...settings, timed: e.target.checked })} /> Include 30-second, 2-minute and 5-minute exits</label>
         <Button type="submit" disabled={running || !picked.length}>{running ? "Replaying…" : `Compare brackets (${picked.length})`}</Button>
       </fieldset>
-      <p className="topbot-footnote">Replay uses $2 per MNQ point and $1.22 round-trip fees per contract. Targets require one tick of trade-through. Stops execute after 250 ms with one tick of slippage. Gaps leave open exits unresolved.</p>
+      {!picked.length && <p className="text-sm text-app-muted">Select a signal to compare brackets.</p>}
+      <p className="topbot-footnote">Replay uses $2 per MNQ point and $1.22 round-trip fees per contract. Gaps leave open exits unresolved.</p>
     </form>}
     {replayError && <p role="alert">{replayError}</p>}
     {run && <ReplayResults settings={run.settings} rows={run.rows} count={run.count} />}

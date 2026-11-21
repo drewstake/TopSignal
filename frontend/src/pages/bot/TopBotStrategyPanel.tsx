@@ -62,10 +62,14 @@ export function BotRunControl({ accountId, bot, activity, demoMode, onChanged }:
       setActionError(error instanceof Error ? error.message : "Practice action failed");
     } finally { setBusy(false); }
   }
-  return <div className="flex flex-wrap items-center gap-2">
+  const controlNote = demoMode ? "Demo mode is read only." : accountId == null ? "A connected ProjectX account is required."
+    : running ? "Stopping entries keeps protection and position management active." : null;
+  return <div className="bot-run-control">
     <button className="topbot-run-button" disabled={busy || accountId == null || demoMode}
-      title={running ? "Stopping entries keeps protection and position management active." : undefined}
+      title={controlNote ?? undefined}
+      aria-describedby={controlNote ? "bot-run-note" : undefined}
       onClick={() => void act()}>{busy ? "Updating…" : running ? "Stop new entries" : "Start practice bot"}</button>
+    {controlNote && <small id="bot-run-note">{controlNote}</small>}
     {actionError && <p role="alert" className="text-sm text-app-negative">{actionError}</p>}
   </div>;
 }

@@ -43,10 +43,10 @@ describe("app theme persistence", () => {
     vi.unstubAllGlobals();
   });
 
-  it("falls back to midnight when storage has an unknown value", () => {
+  it("falls back to graphite when storage has an unknown value", () => {
     window.localStorage.setItem(APP_THEME_STORAGE_KEY, "unknown");
 
-    expect(readStoredAppThemeId()).toBe("midnight");
+    expect(readStoredAppThemeId()).toBe("graphite");
   });
 
   it("applies the selected theme to the document root", () => {

@@ -522,7 +522,7 @@ export function AppShell() {
       <aside className="workspace-sidebar" aria-label="Workspace sidebar">
         <Link className="workspace-brand" to={buildAccountAwarePath("/", selectedAccountId)} aria-label="TopSignal home">
           <span className="workspace-brand-mark"><Icon name="chart" /></span>
-          <span className="workspace-brand-name">TopSignal<span className="workspace-brand-caption">TRADING WORKSPACE</span></span>
+          <span className="workspace-brand-name">TopSignal</span>
         </Link>
         <p className="workspace-nav-label">Workspace</p>
           <Tabs
@@ -539,7 +539,7 @@ export function AppShell() {
             ]}
           />
         <div className="workspace-sidebar-bottom">
-          <div className="workspace-connection"><span className="workspace-status-dot" /><span>{demoMode.enabled ? "Demo workspace" : `${orderedAccounts.length} connected account${orderedAccounts.length === 1 ? "" : "s"}`}</span></div>
+          <div className="workspace-connection"><span>{demoMode.enabled ? "Demo workspace" : `${orderedAccounts.length} connected account${orderedAccounts.length === 1 ? "" : "s"}`}</span></div>
                 {localAuthConfigured ? (
                   <div className="workspace-identity flex min-h-11 w-full min-w-0 max-w-full items-center gap-2 self-end rounded-lg border border-app-border bg-app-surface/60 px-2.5 text-xs text-app-muted sm:h-9 sm:min-h-0 sm:w-auto sm:max-w-[340px] xl:w-[260px] xl:flex-none">
                     <span className="min-w-0 flex-1 truncate" title={sessionIdentityDisplay}>
@@ -556,7 +556,6 @@ export function AppShell() {
                     </Button>
                   </div>
                 ) : null}
-          <p className="workspace-footer">A clearer view of your edge.</p>
         </div>
       </aside>
       <header ref={appHeaderRef} className="workspace-topbar relative z-30 border-b border-app-border/80 bg-app-bg/95 sm:sticky sm:top-0">

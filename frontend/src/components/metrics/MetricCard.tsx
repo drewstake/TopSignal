@@ -50,7 +50,7 @@ export function MetricCard({
         {primaryValue}
       </p>
       {subtitle ? <p className="mt-1 text-[11px] leading-snug text-app-muted">{subtitle}</p> : null}
-      {children ? <details className="metric-details"><summary><span>Explore details<span className="sr-only"> for {title}</span></span><Icon name="chevron" /></summary><div className={cn("metric-details-content mt-2.5 space-y-1.5", contentClassName)}>{children}</div></details> : null}
+      {children ? <details className="metric-details"><summary><span>Details<span className="sr-only"> for {title}</span></span><Icon name="chevron" /></summary><div className={cn("metric-details-content mt-2.5 space-y-1.5", contentClassName)}>{children}</div></details> : null}
     </Card>
   );
 }

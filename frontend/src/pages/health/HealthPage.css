@@ -47,13 +47,21 @@
 .health-counts i, .health-badge i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: rgb(var(--health-color)); }
 
 .health-components-heading { margin: 28px 0 14px; font-size: 21px; }
-.health-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
-.health-card { display: flex; flex-direction: column; min-width: 0; padding: 18px; }
-.health-card[data-status="Unhealthy"], .health-card[data-status="Unknown"] {
-  border-color: rgb(var(--health-color) / .45);
-  background: linear-gradient(135deg, rgb(var(--health-color) / .08), transparent 65%), var(--sd-surface);
+.health-grid { border-block: 1px solid var(--sd-hairline); }
+.health-card {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.1fr) 90px minmax(0, 2fr) 110px;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 12px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--sd-hairline);
+  border-radius: 0;
+  box-shadow: none;
 }
-.health-card-top { margin-bottom: 14px; }
+.health-card:last-child { border: 0; }
+.health-card-top { justify-content: flex-start; }
+.health-card .health-badge { justify-self: start; }
 .health-service-icon {
   display: grid; place-items: center; width: 34px; height: 34px;
   background: rgb(var(--theme-surface-raised) / .7); color: rgb(var(--theme-text-soft));
@@ -64,13 +72,15 @@
   padding: 3px 8px; border-radius: 99px; background: rgb(var(--health-color) / .1);
   color: rgb(var(--theme-text)); font-size: 11px; font-weight: 600;
 }
-.health-card h3 { font-size: 18px; }
-.health-card p { flex: 1; margin: 6px 0 16px; color: rgb(var(--theme-muted)); font-size: 13px; line-height: 1.5; }
-.health-check { border-top: 1px solid var(--sd-hairline); padding-top: 10px; }
+.health-card h3 { font-size: 15px; }
+.health-card p { flex: 1; margin: 0; color: rgb(var(--theme-muted)); font-size: 13px; line-height: 1.5; }
+.health-check { justify-self: end; }
 .health-check dd { margin-top: 2px; color: rgb(var(--theme-text-soft)); font-size: 12px; }
 
 @container (max-width: 64rem) {
-  .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .health-card { grid-template-columns: minmax(0, 1fr) auto; }
+  .health-check { text-align: right; }
+  .health-card .health-badge { justify-self: end; }
 }
 @container (max-width: 34rem) {
   .health-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }

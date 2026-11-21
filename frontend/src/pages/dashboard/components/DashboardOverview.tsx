@@ -18,7 +18,7 @@ export function DashboardOverview({ summary, loading, error, hasAccount, maxDraw
   const hasTrades = hasAccount && summary.trade_count > 0 && !error;
   const metrics: { label: string; value: string; detail: string; icon: IconName; tone?: string }[] = [
     { label: copyAdjusted ? "Copy Trade Net" : "Net P&L", value: formatPnl(summary.net_pnl), detail: copyAdjusted ? "Combined leader + follower result" : "Realized profit after fees", icon: "chart", tone: hasTrades ? summary.net_pnl > 0 ? "positive" : summary.net_pnl < 0 ? "negative" : undefined : undefined },
-    { label: copyAdjusted ? "Leader win rate" : "Win rate", value: hasTrades ? formatPercent(summary.win_rate, 1) : "—", detail: hasTrades ? `${formatInteger(summary.win_count)} wins · ${formatInteger(summary.loss_count)} losses` : "Your wins, in perspective", icon: "target" },
+    { label: copyAdjusted ? "Leader win rate" : "Win rate", value: hasTrades ? formatPercent(summary.win_rate, 1) : "—", detail: hasTrades ? `${formatInteger(summary.win_count)} wins · ${formatInteger(summary.loss_count)} losses` : "No closed trades", icon: "target" },
     { label: copyAdjusted ? "Leader profit factor" : "Profit factor", value: hasTrades ? formatProfitFactor(summary) : "—", detail: "Gross profit / gross loss", icon: "pulse" },
     { label: copyAdjusted ? "Leader max drawdown" : "Max drawdown", value: hasTrades ? formatPnl(-Math.abs(maxDrawdown)) : "—", detail: "Largest peak-to-trough decline", icon: "shield" },
   ];
@@ -26,7 +26,7 @@ export function DashboardOverview({ summary, loading, error, hasAccount, maxDraw
   return <>
     {!hasAccount && !loading ? <div className="dashboard-welcome">
       <span className="dashboard-welcome-icon"><Icon name="link" /></span>
-      <div><h2>Your next chapter starts here.</h2><p>Connect an account or import your trades to see your performance take shape.</p></div>
+      <div><h2>No account selected</h2><p>Connect a ProjectX account or import trade history.</p></div>
       <Link className="workspace-primary-link" to="/accounts">Set up an account <Icon name="arrow" /></Link>
     </div> : null}
     <div className="dashboard-overview" aria-label="Performance overview">
@@ -49,11 +49,9 @@ export function TradingProfile({ summary, score, loading, error, copyAdjusted = 
   ];
   return <section className="trading-profile">
     <div className="section-heading"><h2>{copyAdjusted ? "Leader trading snapshot" : "Trading snapshot"}</h2><Icon name="pulse" /></div>
-    <p className="section-description">The shape of your selected session.</p>
     <div className="profile-trade-count"><strong>{loading ? "…" : error ? "—" : formatInteger(summary.trade_count)}</strong><span>closed trades</span></div>
     <div className="profile-outcome-bar" aria-hidden="true">{hasTrades && outcomes.map((outcome) => <span key={outcome.label} className={`outcome-${outcome.tone}`} style={{ width: `${total ? outcome.count / total * 100 : 0}%` }} />)}</div>
     <div className="profile-outcomes">{outcomes.map((outcome) => <div key={outcome.label}><span><i className={`outcome-${outcome.tone}`} />{outcome.label}</span><strong>{loading || error ? "—" : outcome.count}</strong></div>)}</div>
     <dl className="profile-stat-list"><div><dt>Active days</dt><dd>{loading || error ? "—" : summary.active_days}</dd></div><div><dt>Average trades / day</dt><dd>{hasTrades ? formatNumber(summary.avg_trades_per_day, 1) : "—"}</dd></div><div><dt>Sustainability score</dt><dd>{hasTrades ? `${formatInteger(score)} / 100` : "Awaiting trades"}</dd></div></dl>
-    <p className="profile-note"><Icon name="shield" />{hasTrades ? "Consistency starts with understanding your habits." : "Your trading patterns will appear as you add trades."}</p>
   </section>;
 }

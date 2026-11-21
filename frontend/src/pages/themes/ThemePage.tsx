@@ -101,11 +101,7 @@ export function AppearancePage() {
       </DemoModeNotice>
       <section className="flex flex-col gap-4 border-b border-app-border/80 pb-6 lg:flex-row lg:items-end lg:justify-between">
         <div className="max-w-3xl space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-app-accent">Workspace preferences</p>
           <h1 className="text-3xl font-semibold tracking-tight text-app-text md:text-4xl">Appearance</h1>
-          <p className="max-w-2xl text-sm leading-6 text-app-muted">
-            Choose a workspace design, color palette, and display scale.
-          </p>
         </div>
         <div className="flex items-center gap-2 rounded-xl border border-app-border bg-app-surface/60 px-3 py-2 text-sm text-app-muted">
           <span className="text-app-muted-strong">Palette</span>
@@ -115,7 +111,6 @@ export function AppearancePage() {
 
       <fieldset className="min-w-0">
         <legend className="text-xl font-semibold text-app-text">Workspace design</legend>
-        <p className="mb-4 mt-1 text-sm text-app-muted">Select a layout to apply it across the app. You can switch back here anytime.</p>
         <div className="grid gap-3 md:grid-cols-3">
           {WORKSPACE_DESIGNS.map(design => (
             <label key={design.id} className="design-option">
@@ -162,16 +157,15 @@ export function AppearancePage() {
 
       <div className="space-y-1">
         <h2 className="text-xl font-semibold text-app-text">Color palette</h2>
-        <p className="text-sm text-app-muted">Choose a palette for your entire workspace.</p>
       </div>
-      <section className="grid gap-4 lg:grid-cols-4" role="radiogroup" aria-label="Theme selection">
+      <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4" role="radiogroup" aria-label="Theme selection">
         {APP_THEMES.map((theme, themeIndex) => {
           const isSelected = theme.id === selectedThemeId;
           return (
             <Card
               key={theme.id}
               className={cn(
-                "flex min-h-[250px] flex-col rounded-lg p-0 transition duration-200",
+                "flex flex-col rounded-lg p-0 transition duration-200",
                 isSelected ? "border-app-accent/70 shadow-[0_20px_45px_-32px_rgb(var(--theme-accent)/0.95)]" : "",
               )}
             >
@@ -189,7 +183,7 @@ export function AppearancePage() {
                 onKeyDown={(event) => handleThemeKeyDown(event, themeIndex)}
               >
                 <div
-                  className="grid h-24 overflow-hidden rounded-lg border border-app-border"
+                  className="grid h-5 overflow-hidden rounded-lg border border-app-border"
                   style={{ gridTemplateColumns: `repeat(${theme.swatches.length}, minmax(0, 1fr))` }}
                 >
                   {theme.swatches.map((swatch) => (

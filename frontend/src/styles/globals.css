@@ -69,6 +69,25 @@ body, #root, .min-h-screen {
   --dashboard-calendar-empty: rgb(var(--theme-bg) / 0.6);
 }
 
+:root[data-app-theme="graphite"] {
+  --theme-bg: 20 23 28;
+  --theme-surface: 27 32 39;
+  --theme-surface-raised: 36 43 52;
+  --theme-surface-glass: 27 32 39;
+  --theme-border: 52 62 76;
+  --theme-border-strong: 82 98 118;
+  --theme-text: 240 242 245;
+  --theme-text-soft: 213 220 230;
+  --theme-muted: 172 183 197;
+  --theme-muted-strong: 152 166 184;
+  --theme-accent: 138 186 255;
+  --theme-accent-contrast: 13 29 49;
+  --theme-accent-secondary: 110 157 225;
+  --theme-highlight: 155 188 235;
+  --theme-chart-grid: 57 68 82;
+  --theme-chart-label: 172 183 197;
+}
+
 :root[data-app-theme="daylight"] {
   --theme-color-scheme: light;
   --theme-bg: 248 250 252;

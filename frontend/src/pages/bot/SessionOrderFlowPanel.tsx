@@ -101,7 +101,7 @@ export function SessionOrderFlowView({ flow, error, minutes, setMinutes, clock, 
       <p>{flow.coverage.status === "building" ? `${flow.coverage.pending_segments} segments still to process. ` : ""}Recorded deliveries only; full exchange coverage is not certified. Latest unsealed trades are not included.</p>
       {Object.keys(flow.coverage.reasons).length > 0 && <ul>{Object.keys(flow.coverage.reasons).map(reason => <li key={reason}>{coverageReasons[reason] ?? "Recording quality issue"}</li>)}</ul>}
     </div>}
-    <details className="session-flow-method"><summary>How to read these numbers</summary>
+    <details className="session-flow-method"><summary>Details</summary>
       <p>Reported delta is Buy-labeled volume minus Sell-labeled volume. Percentages use only classified contracts; they are not probabilities. Unknown sides and unreliable timestamps stay unclassified. Counts use complete recorded minutes, so recent windows end at the displayed “totals through” time.</p>
       <p>Each executed trade has a buyer and seller. A provider trade label is different from resting bids and asks in the order book. Replayed provider deliveries cannot be reliably identified without exchange trade IDs.</p>
       <p>The Buy/Sell mapping was cross-checked against Quantower's provider-mode aggressor labels in a 60-second MNQ December 2026 sample on November 3, 2026. Both platforms use ProjectX; this is a sample consistency check, not independent exchange verification or certification of the current session.</p>

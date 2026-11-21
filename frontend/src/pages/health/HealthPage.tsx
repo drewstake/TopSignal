@@ -158,9 +158,9 @@ export default function HealthPage() {
       {rows.map(row => <li key={row.id} className="health-card" data-status={row.status}>
         <div className="health-card-top">
           <span className="health-service-icon"><Icon name={icons[row.id]} /></span>
-          <span className="health-badge"><i aria-hidden="true" />{row.status}</span>
+          <h3>{components[row.id]}</h3>
         </div>
-        <h3>{components[row.id]}</h3>
+        <span className="health-badge"><i aria-hidden="true" />{row.status}</span>
         <p>{row.reason}</p>
         <dl className="health-check"><dt>Last check</dt><dd>
           {row.checked_at && Number.isFinite(Date.parse(row.checked_at))

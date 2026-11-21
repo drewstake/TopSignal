@@ -200,7 +200,7 @@ export function CompactDashboardView({
       <div className="flex flex-col gap-2 py-0.5 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
           <p className="text-base font-semibold text-app-text">{greeting}</p>
-          <p className="mt-1 truncate text-xs text-app-muted-text">Focused performance context for {accountName}.</p>
+          <p className="mt-1 truncate text-xs text-app-muted-text">{accountName}</p>
         </div>
         <div className="inline-flex w-fit items-center gap-2 rounded-full border border-app-border/70 bg-app-surface/65 px-3 py-2 text-xs text-app-muted-text">
           <span className="h-2 w-2 rounded-full bg-app-accent" aria-hidden="true" />

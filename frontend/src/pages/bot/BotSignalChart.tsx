@@ -3313,7 +3313,9 @@ export function BotSignalChart({ monitorOnly = false, bot: savedBot, market, dem
               <label> Run <select aria-label="Signal run" value={signalRun} onChange={e => setSignalRun(e.target.value)} className="rounded border border-app-border bg-app-surface p-1">
                 <option value="all">All runs</option>{activity?.runs.map(run => <option key={run.id} value={run.id}>Run {run.id}</option>)}
               </select></label>
-              <span>Arrows: model decisions · ○: blocked · squares: observed fills</span>
+              <details className="method-details"><summary>Details</summary>
+                <p>Arrows mark model decisions, circles mark blocked decisions, and squares mark observed fills.</p>
+              </details>
               {signalHistory?.key === signalHistoryKey && signalHistory.error && <span>Signal history unavailable; showing recent activity.</span>}
               {chartActivity && chartActivity.decisions.length >= 2000 && <span>Showing the latest 2,000 decisions in the loaded range.</span>}
             </div>}

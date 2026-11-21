@@ -55,6 +55,7 @@ export function CaptureHealth() {
   const gaps = depth?.rejected_events;
   const problems = report?.problems ?? [];
   return <section className="glance-panel" aria-label="Independent capture health">
+    <div className="feed-heading"><h2>Capture health</h2>{report && <span>Checked {timeLabel(report.as_of)}</span>}</div>
     <dl className="glance-metrics recorder-metrics">
       <div><dt>Independent capture</dt><dd className={tone}>{!report && !failed ? "Checking…" : label}</dd></div>
       <div><dt>Last saved recording</dt><dd>{latest ? timeLabel(latest) : "Unavailable"}</dd></div>
@@ -62,7 +63,7 @@ export function CaptureHealth() {
         {gaps == null ? "Unknown" : gaps ? `${gaps.toLocaleString()} rejected events` : "None reported"}
       </dd></div>
     </dl>
-    {report?.independent_studies?.map(s => <p key={s.account} role="status" className={s.state === "study_stalled" ? "glance-warning" : undefined}>
+    {report?.independent_studies?.map(s => <p key={s.account} role="status" className={s.state === "study_stalled" ? "glance-warning" : "capture-study"}>
       Independent study · {s.contract_id} · {outdated ? "Status unknown" : s.state.replaceAll("_", " ")}
       {" · Last raw market event "}{s.last_raw_at ? timeLabel(s.last_raw_at) : "unavailable"}
       {" · Last processed "}{s.last_processed_at ? timeLabel(s.last_processed_at) : "unavailable"}
@@ -71,10 +72,10 @@ export function CaptureHealth() {
       {failed ? "Health check failed" : depth?.stale ? "Stale recorder report" : depth?.reason?.replaceAll("_", " ")}
       {report && failed && ` · Last checked ${timeLabel(report.as_of)}`}
     </p>}
-    {problems.length > 0 && <details className="capture-problems"><summary className="cursor-pointer text-app-warning">
-      {problems.length} recording {problems.length === 1 ? "warning" : "warnings"} · {problems[0].code.replaceAll("_", " ")}
-    </summary><ul className="mt-2 space-y-2">{problems.map((p, i) => <li key={`${p.code}:${p.contract_id}:${i}`}>
+    {problems.length > 0 && <div className="capture-problems"><h3 className="text-app-warning">
+      {problems.length} recording {problems.length === 1 ? "warning" : "warnings"}
+    </h3><ul className="mt-2 space-y-2">{problems.map((p, i) => <li key={`${p.code}:${p.contract_id}:${i}`}>
       <strong>{p.code.replaceAll("_", " ")}</strong>{p.contract_id && ` · ${p.contract_id}`}{p.count != null && ` · ${p.count}`}<br/>{p.action}
-    </li>)}</ul></details>}
+    </li>)}</ul></div>}
   </section>;
 }

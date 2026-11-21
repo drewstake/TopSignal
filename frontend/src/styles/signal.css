@@ -35,16 +35,16 @@
   --font-display: "Bricolage Grotesque Variable", "Instrument Sans Variable", "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
 
-  --sd-radius-lg: 18px;
-  --sd-radius: 14px;
-  --sd-radius-sm: 10px;
+  --sd-radius-lg: 8px;
+  --sd-radius: 6px;
+  --sd-radius-sm: 4px;
   --sd-ease: cubic-bezier(0.22, 1, 0.36, 1);
 
   /* Depth recipe shared by every surface. */
-  --sd-edge: inset 0 1px 0 rgb(var(--theme-text) / 0.06);
-  --sd-lift: 0 1px 2px rgb(var(--theme-shadow-color) / 0.28), 0 22px 44px -30px rgb(var(--theme-shadow-color) / 0.9);
-  --sd-lift-hover: 0 2px 4px rgb(var(--theme-shadow-color) / 0.3), 0 30px 60px -32px rgb(var(--theme-shadow-color) / 1);
-  --sd-surface: linear-gradient(180deg, rgb(var(--theme-surface-raised) / 0.62) 0%, rgb(var(--theme-surface) / 0.86) 44%, rgb(var(--theme-surface) / 0.8) 100%);
+  --sd-edge: 0 0 transparent;
+  --sd-lift: 0 0 transparent;
+  --sd-lift-hover: 0 0 transparent;
+  --sd-surface: rgb(var(--theme-surface));
   --sd-surface-inset: rgb(var(--theme-bg) / 0.42);
   --sd-hairline: rgb(var(--theme-border) / 0.72);
   --sd-glow: 0 0 0 1px rgb(var(--theme-accent) / 0.35), 0 14px 38px -18px rgb(var(--theme-accent) / 0.55);
@@ -53,10 +53,10 @@
 :root[data-app-theme="daylight"],
 :root[data-app-theme="arctic"],
 :root[data-app-theme="paper-trading"] {
-  --sd-edge: inset 0 1px 0 rgb(255 255 255 / 0.9);
-  --sd-lift: 0 1px 2px rgb(var(--theme-shadow-color) / 0.18), 0 18px 40px -28px rgb(var(--theme-shadow-color) / 0.55);
-  --sd-lift-hover: 0 2px 4px rgb(var(--theme-shadow-color) / 0.2), 0 26px 52px -28px rgb(var(--theme-shadow-color) / 0.7);
-  --sd-surface: linear-gradient(180deg, rgb(var(--theme-surface) / 1) 0%, rgb(var(--theme-surface) / 0.96) 100%);
+  --sd-edge: 0 0 transparent;
+  --sd-lift: 0 0 transparent;
+  --sd-lift-hover: 0 0 transparent;
+  --sd-surface: rgb(var(--theme-surface));
   --sd-surface-inset: rgb(var(--theme-surface-raised) / 0.7);
 }
 
@@ -155,7 +155,7 @@ html {
 }
 
 .app-workspace {
-  --workspace-sidebar-width: 244px;
+  --workspace-sidebar-width: 210px;
   position: relative;
   isolation: isolate;
   font-size: 14px;
@@ -181,46 +181,19 @@ html {
   font-variant-numeric: tabular-nums;
 }
 
-/* Atmospheric backdrop: a faint instrument grid with a soft signal glow. */
-.app-workspace::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background-image:
-    radial-gradient(rgb(var(--theme-text) / 0.07) 1px, transparent 1.2px),
-    radial-gradient(1100px 520px at 72% -12%, rgb(var(--theme-accent) / 0.1), transparent 70%),
-    radial-gradient(900px 600px at 8% 108%, rgb(var(--theme-accent-secondary) / 0.07), transparent 70%);
-  background-size: 22px 22px, auto, auto;
-  -webkit-mask-image: linear-gradient(180deg, black, rgb(0 0 0 / 0.35) 55%, transparent);
-  mask-image: linear-gradient(180deg, black 0%, rgb(0 0 0 / 0.55) 60%, rgb(0 0 0 / 0.25) 100%);
-}
+
 
 /* ------------------------------------------------------------------ */
 /* Sidebar                                                             */
 /* ------------------------------------------------------------------ */
 
 .app-workspace .workspace-sidebar {
-  padding: 26px 16px 18px;
-  border-right: 1px solid rgb(var(--theme-border) / 0.55);
-  background:
-    linear-gradient(180deg, rgb(var(--theme-accent) / 0.05), transparent 30%),
-    linear-gradient(180deg, rgb(var(--theme-surface) / 0.92), rgb(var(--theme-bg) / 0.94));
-  backdrop-filter: blur(20px) saturate(1.2);
-  box-shadow: inset -1px 0 0 rgb(var(--theme-text) / 0.03), 18px 0 50px -40px rgb(var(--theme-shadow-color) / 0.8);
+  padding: 20px 12px 16px;
+  overflow-y: auto;
+  background: rgb(var(--theme-surface));
+  border-right: 1px solid var(--sd-hairline);
 }
 
-.app-workspace .workspace-sidebar::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  right: -1px;
-  width: 1px;
-  height: 220px;
-  background: linear-gradient(180deg, rgb(var(--theme-accent) / 0.7), transparent);
-  pointer-events: none;
-}
 
 .app-workspace .workspace-brand {
   gap: 12px;
@@ -238,31 +211,12 @@ html {
 }
 
 .app-workspace .workspace-brand-mark {
-  position: relative;
-  width: 38px;
-  height: 38px;
-  border-radius: 11px;
-  background:
-    radial-gradient(circle at 30% 20%, rgb(255 255 255 / 0.45), transparent 55%),
-    linear-gradient(145deg, rgb(var(--theme-accent)), rgb(var(--theme-accent-secondary)));
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.35),
-    inset 0 -2px 6px rgb(0 0 0 / 0.18),
-    0 10px 26px -12px rgb(var(--theme-accent) / 0.9);
+  width: 34px;
+  height: 34px;
+  border-radius: 7px;
+  background: rgb(var(--theme-accent));
 }
 
-.app-workspace .workspace-brand-mark::after {
-  content: "";
-  position: absolute;
-  right: -3px;
-  top: -3px;
-  width: 9px;
-  height: 9px;
-  border: 2px solid rgb(var(--theme-surface));
-  border-radius: 50%;
-  background: rgb(var(--theme-positive));
-  animation: sd-beacon 2.8s var(--sd-ease) infinite;
-}
 
 .app-workspace .workspace-brand-mark svg {
   width: 23px;
@@ -283,7 +237,7 @@ html {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 40px 12px 10px;
+  margin: 24px 12px 8px;
   font-family: var(--font-mono);
   font-size: 10px;
   font-weight: 500;
@@ -348,7 +302,7 @@ html {
 .app-workspace .workspace-navigation a[aria-current="page"]::before {
   content: "";
   position: absolute;
-  left: -17px;
+  left: 0;
   top: 11px;
   bottom: 11px;
   width: 3px;
@@ -378,15 +332,7 @@ html {
   color: rgb(var(--theme-text-soft));
 }
 
-.app-workspace .workspace-status-dot {
-  position: relative;
-  width: 7px;
-  height: 7px;
-  flex-shrink: 0;
-  background: rgb(var(--theme-positive));
-  box-shadow: 0 0 0 3px rgb(var(--theme-positive) / 0.16);
-  animation: sd-beacon 2.8s var(--sd-ease) infinite;
-}
+
 
 .app-workspace .workspace-sidebar .workspace-identity {
   min-height: 0;
@@ -432,19 +378,9 @@ html {
   backdrop-filter: blur(18px) saturate(1.3);
 }
 
-.app-workspace .workspace-topbar::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -1px;
-  height: 1px;
-  background: linear-gradient(90deg, rgb(var(--theme-accent) / 0.55), rgb(var(--theme-accent-secondary) / 0.25) 30%, transparent 70%);
-  pointer-events: none;
-}
 
 .app-workspace .workspace-topbar-inner {
-  padding: 14px 36px;
+  padding: 10px 26px;
 }
 
 .app-workspace .workspace-controls {
@@ -517,14 +453,6 @@ html {
   color: rgb(var(--theme-muted-strong));
 }
 
-.app-workspace .workspace-account label::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: rgb(var(--theme-positive));
-  box-shadow: 0 0 8px rgb(var(--theme-positive) / 0.8);
-}
 
 .app-workspace .workspace-account select {
   width: 220px;
@@ -565,20 +493,8 @@ html {
 /* ------------------------------------------------------------------ */
 
 .app-workspace .workspace-main {
-  padding: 28px 36px 48px;
+  padding: 20px 26px 36px;
 }
-
-.app-workspace .workspace-main > *,
-.app-workspace .dashboard-surface > *,
-.app-workspace .workspace-main > div > * {
-  animation: sd-rise 0.6s var(--sd-ease) both;
-}
-
-.app-workspace .workspace-main > div > *:nth-child(2) { animation-delay: 40ms; }
-.app-workspace .workspace-main > div > *:nth-child(3) { animation-delay: 80ms; }
-.app-workspace .workspace-main > div > *:nth-child(4) { animation-delay: 120ms; }
-.app-workspace .workspace-main > div > *:nth-child(5) { animation-delay: 160ms; }
-.app-workspace .workspace-main > div > *:nth-child(n + 6) { animation-delay: 200ms; }
 
 .app-workspace .workspace-demo-ribbon {
   display: flex;
@@ -659,7 +575,7 @@ html {
   border-radius: var(--sd-radius-lg);
   background: var(--sd-surface);
   box-shadow: var(--sd-edge), var(--sd-lift);
-  backdrop-filter: blur(14px) saturate(1.15);
+
   transition: border-color 0.3s var(--sd-ease), box-shadow 0.3s var(--sd-ease);
 }
 
@@ -1057,66 +973,20 @@ html {
 /* ------------------------------------------------------------------ */
 
 .app-workspace .dashboard-overview {
-  grid-template-columns: minmax(0, 1.35fr) repeat(3, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.app-workspace .overview-stat {
-  position: relative;
-  overflow: hidden;
-  padding: 20px 22px 18px;
-  border-color: var(--sd-hairline);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  border: 1px solid var(--sd-hairline);
   border-radius: var(--sd-radius-lg);
+  overflow: hidden;
+  background: rgb(var(--theme-border));
+}
+.app-workspace .overview-stat {
+  min-width: 0;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 0;
   background: var(--sd-surface);
-  box-shadow: var(--sd-edge), var(--sd-lift);
-  transition: transform 0.35s var(--sd-ease), box-shadow 0.35s var(--sd-ease), border-color 0.3s;
-}
-
-.app-workspace .overview-stat::before {
-  content: "";
-  position: absolute;
-  left: 22px;
-  right: 22px;
-  top: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgb(var(--theme-text) / 0.22), transparent);
-}
-
-.app-workspace .overview-stat:hover {
-  transform: translateY(-2px);
-  border-color: rgb(var(--theme-border-strong) / 0.9);
-  box-shadow: var(--sd-edge), var(--sd-lift-hover);
-}
-
-.app-workspace .overview-stat-featured {
-  border-color: rgb(var(--theme-accent) / 0.34);
-  background:
-    radial-gradient(120% 140% at 100% 0%, rgb(var(--theme-accent) / 0.2), transparent 55%),
-    radial-gradient(80% 120% at 0% 100%, rgb(var(--theme-accent-secondary) / 0.08), transparent 60%),
-    var(--sd-surface);
-  box-shadow: var(--sd-edge), var(--sd-lift), 0 18px 46px -30px rgb(var(--theme-accent) / 0.8);
-}
-
-.app-workspace .overview-stat-featured::before {
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: linear-gradient(90deg, rgb(var(--theme-accent)), rgb(var(--theme-accent-secondary)) 60%, transparent);
-}
-
-.app-workspace .overview-stat-featured::after {
-  content: "";
-  position: absolute;
-  right: -30px;
-  bottom: -38px;
-  width: 190px;
-  height: 90px;
-  opacity: 0.22;
-  background:
-    repeating-linear-gradient(90deg, rgb(var(--theme-accent) / 0.6) 0 2px, transparent 2px 12px);
-  -webkit-mask-image: linear-gradient(0deg, black, transparent);
-  mask-image: linear-gradient(10deg, black 10%, transparent 70%);
-  pointer-events: none;
+  box-shadow: none;
 }
 
 .app-workspace .overview-stat-heading h2 {
@@ -1443,7 +1313,7 @@ html {
 
 @media (max-width: 1279px) {
   .app-workspace {
-    --workspace-sidebar-width: 212px;
+    --workspace-sidebar-width: 182px;
   }
 
   .app-workspace .workspace-sidebar {
@@ -1452,7 +1322,7 @@ html {
   }
 
   .app-workspace .workspace-navigation a[aria-current="page"]::before {
-    left: -13px;
+    left: 0;
   }
 
   .app-workspace .workspace-topbar-inner {
@@ -1555,8 +1425,9 @@ html {
     border-radius: 2px;
   }
 
+  .app-workspace .workspace-sidebar-bottom { padding-top: 0; }
   .app-workspace .workspace-sidebar .workspace-identity {
-    padding: 4px 0 10px;
+    padding: 4px 0 6px;
   }
 
   .app-workspace .workspace-topbar-inner {

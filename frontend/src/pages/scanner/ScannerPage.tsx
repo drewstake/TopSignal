@@ -8,18 +8,24 @@ import { easternTime, type ScannerEvent, type Snapshot } from "./types";
 function EventRow({ e, compact }: { e: ScannerEvent; compact: boolean }) {
   const direct = e.kind === "move" && e.updates.length > 0;
   const stamp = e.published ?? e.received;
-  return <details className="group border-t border-app-border first:border-0">
-    <summary className={`grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-3 px-4 sm:grid-cols-[6rem_minmax(0,1fr)_auto] [&::-webkit-details-marker]:hidden ${compact ? "py-2" : "py-3"}`}>
-      <strong className="break-words text-sm text-app-accent">{e.tickers.join(" · ") || "Market"}</strong>
-      <span className="col-span-2 row-start-2 min-w-0 break-words text-sm font-medium sm:col-span-1 sm:col-start-2 sm:row-start-1">
-        {e.baseline && <span className="mr-2 rounded bg-app-bg px-1.5 py-0.5 text-xs text-app-muted">Initial baseline</span>}
-        {e.delayed && !e.baseline && <span className="mr-2 rounded bg-app-warning/10 px-1.5 py-0.5 text-xs text-app-warning">Delayed alert</span>}
-        {e.title}
+  // Worker-generated move titles start with the instrument's signed percentage.
+  // Other percentages in the headline can belong to its sector benchmark.
+  const sign = e.kind === "move" && /^\S+ ([+-])\d+(?:\.\d+)?% in /.exec(e.title)?.[1];
+  const direction = sign === "+" ? "Up" : sign === "-" ? "Down" : e.kind === "move" ? "Move" : "Headline";
+  return <details className="group scanner-event">
+    <summary className={compact ? "scanner-row scanner-row-compact" : "scanner-row"}>
+      <time dateTime={new Date(stamp * 1000).toISOString()} title={e.published != null ? "Published" : "First seen"}>
+        {easternTime(stamp)}
+      </time>
+      <span className="scanner-direction" data-direction={direction}>{direction}</span>
+      <span className="scanner-headline">
+        <strong>{e.tickers.join(" · ") || "Market"}</strong>
+        {e.baseline && <small>Initial baseline</small>}
+        {e.delayed && !e.baseline && <small className="text-app-warning">Delayed alert</small>}
+        <span>{e.title}</span>
       </span>
-      <span className="col-start-2 row-start-1 whitespace-nowrap text-xs tabular-nums text-app-muted sm:col-start-3">
-        <time dateTime={new Date(stamp * 1000).toISOString()} title={e.published != null ? "Published" : "First seen"}>{easternTime(stamp)}</time>
-        <span aria-hidden="true" className="ml-2 inline-block group-open:rotate-90">›</span>
-      </span>
+      <span className="scanner-source">{e.source}</span>
+      <span aria-hidden="true" className="scanner-chevron">›</span>
     </summary>
     <div className="space-y-2 border-t border-app-border/60 bg-app-bg/40 px-4 py-3 text-sm">
       <p className="text-app-muted">{e.kind === "move" ? "Price move" : "Headline"} · {e.link
@@ -65,20 +71,22 @@ function Feed() {
   const sourceSummary = issues.length === 1 ? `${issues[0].name} · ${issues[0].status}`
     : issues.length ? `${issues.length} sources need attention` : sources.length ? `${sources.length} healthy` : "No sources reported";
   return <section className="space-y-3 text-app-text">
-    <header className="flex items-baseline justify-between"><h1 className="text-2xl font-semibold">Scanner</h1>
-      <span className="text-xs text-app-muted">Eastern time</span></header>
-    {error && <p role="alert" className="rounded-lg border border-app-negative/60 bg-app-negative/10 px-4 py-3 font-semibold text-app-negative">Feed unavailable · {data ? "Showing the last received events." : "Retrying…"}</p>}
-    {data ? <>
-      <details className="rounded-lg border border-app-border bg-app-surface p-3 text-sm">
+    <header className="page-bar"><h1 className="text-2xl font-semibold">Scanner</h1>
+      {data && <details className="scanner-health text-sm">
         <summary className="cursor-pointer">Source health · <span className={offline || issues.length || error ? "text-app-warning" : "text-app-muted"}>
           {error ? "Last known" : data.worker} · {sourceSummary}</span></summary>
         <dl className="mt-3 divide-y divide-app-border">{data.sources.map(s => <div key={s.name} className="flex flex-wrap justify-between gap-2 py-2">
           <dt>{s.name}</dt><dd className="text-app-muted">{s.status} · Last success {s.success ? easternTime(s.success) : "never"}</dd>
         </div>)}</dl>
         {data.spend && <p>AI spend and open reservations · ${(data.spend.micro_usd / 1e6).toFixed(4)} · Cycle starting {data.spend.cycle}</p>}
-      </details>
-      <div className="overflow-hidden rounded-xl border border-app-border bg-app-surface">
-        <h2 className="border-b border-app-border px-4 py-2 text-sm font-semibold">Event feed</h2>
+      </details>}</header>
+    {error && <p role="alert" className="rounded-lg border border-app-negative/60 bg-app-negative/10 px-4 py-3 font-semibold text-app-negative">Feed unavailable · {data ? "Showing the last received events." : "Retrying…"}</p>}
+    {data ? <>
+      <div className="scanner-feed">
+        <div className="feed-heading"><h2>Event feed</h2><span>Eastern time</span></div>
+        {data.events.length > 0 && <div aria-hidden="true" className="scanner-columns">
+          <span>Time (ET)</span><span>Direction</span><span>Headline</span><span>Source</span>
+        </div>}
         {data.events.length ? data.events.map(e => <EventRow key={e.id} e={e} compact={compactMode.enabled} />) :
           <p className="p-4 text-sm text-app-muted">No scanner events yet.</p>}
       </div></> : !error && <p role="status">Loading scanner…</p>}

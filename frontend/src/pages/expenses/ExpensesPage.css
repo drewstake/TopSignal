@@ -96,3 +96,17 @@
     font-size: clamp(1.05rem, 5.2vw, 1.3rem);
   }
 }
+
+.expenses-summary {
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--sd-hairline);
+  border-radius: var(--sd-radius);
+  background: rgb(var(--theme-border));
+}
+:root[data-app-theme] .app-workspace .expenses-summary .expenses-stat {
+  border: 0;
+  border-radius: 0;
+  padding: 14px 16px;
+  background: rgb(var(--theme-surface));
+}

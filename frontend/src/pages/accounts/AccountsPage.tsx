@@ -5,7 +5,7 @@ import { DemoModeNotice } from "../../components/demo/DemoModeNotice";
 import { useDemoInteractionPolicy } from "../../components/demo/useDemoInteractionPolicy";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
+import { Card, CardContent } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Toggle } from "../../components/ui/Toggle";
@@ -556,7 +556,7 @@ export function AccountsPage() {
   );
   return (
     <div className="space-y-6 pb-10">
-      <h1 className="sr-only">Accounts</h1>
+      <h1>Accounts</h1>
       <DemoModeNotice>
         <p>
           These are isolated sample accounts. Selecting an account and filtering rows are simulated locally;
@@ -565,10 +565,6 @@ export function AccountsPage() {
       </DemoModeNotice>
       <section>
         <Card>
-          <CardHeader>
-            <CardTitle>Trading Accounts</CardTitle>
-            <CardDescription>Manage ProjectX accounts and Live accounts that use CSV trade imports.</CardDescription>
-          </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>

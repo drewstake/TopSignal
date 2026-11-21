@@ -234,7 +234,7 @@ function tradingAccessBadge(canTrade: boolean | null) {
 }
 
 function pnlClass(value: number) {
-  return value >= 0 ? "text-emerald-300" : "text-rose-300";
+  return value >= 0 ? "text-emerald-300" : "text-app-negative-text";
 }
 
 function share(part: number, total: number) {
@@ -273,7 +273,6 @@ function TradesAccountState({ error, hasAccounts = false, onRetry }: {
     <div className="w-full space-y-5 pb-8">
       <header>
         <h1 className="text-2xl font-semibold tracking-tight text-app-text sm:text-3xl">Trades</h1>
-        <p className="mt-2 text-sm text-app-muted">Review your executions, track performance, and explore trade history.</p>
       </header>
 
       <Card className="relative isolate overflow-hidden !p-0">
@@ -639,14 +638,11 @@ export function TradesPage() {
           Filters, paging, and refresh explore the fixed sample timeline. Provider sync is disabled so this page never contacts or changes a connected account.
         </p>
       </DemoModeNotice>
-      <section className="relative overflow-hidden rounded-[26px] border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.15),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(251,191,36,0.1),transparent_24%),linear-gradient(145deg,rgba(15,23,42,0.96),rgba(15,23,42,0.84))] p-4 shadow-[0_20px_70px_-42px_rgba(8,47,73,0.82)] lg:shrink-0">
-        <div aria-hidden="true" className="pointer-events-none absolute -left-10 top-4 h-28 w-28 rounded-full bg-cyan-300/10 blur-3xl" />
-        <div aria-hidden="true" className="pointer-events-none absolute bottom-0 right-0 h-32 w-32 rounded-full bg-amber-300/8 blur-3xl" />
+      <section className="rounded-lg border border-app-border bg-app-surface p-4 lg:shrink-0">
 
         <div className="relative flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
-              <p className="text-[11px] uppercase tracking-[0.26em] text-cyan-200/75">Trades Desk</p>
               {selectedAccountIsCsvImport ? (
                 <Badge variant="accent">Live · CSV</Badge>
               ) : selectedAccount ? (
@@ -666,11 +662,11 @@ export function TradesPage() {
             </div>
 
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-[2rem]">
+              <h1 className="text-2xl font-semibold tracking-tight text-app-text sm:text-[2rem]">
                 {selectedAccount ? getDemoAccountName(selectedAccount) : "Trades"}
               </h1>
-              <p className="mt-1 text-sm text-slate-400">
-                {currentWindowLabel} <span className="text-slate-500">·</span>{" "}
+              <p className="mt-1 text-sm text-app-muted">
+                {currentWindowLabel} <span className="text-app-muted">·</span>{" "}
                 {selectedAccount?.last_trade_at ? formatTimestamp(selectedAccount.last_trade_at) : "No recent fills"}
               </p>
             </div>
@@ -767,7 +763,7 @@ export function TradesPage() {
           </FilterField>
         </div>
 
-        <div className="relative mt-3 flex flex-wrap gap-2 text-xs text-slate-300">
+        <div className="relative mt-3 flex flex-wrap gap-2 text-xs text-app-text-soft">
           <InlinePill label="Feed Net" value={tradesError ? "Unavailable" : formatPnl(filteredTradeStats.netPnl)} />
           <InlinePill label="Page" value={`${currentPage}/${totalPages}`} />
           <InlinePill label="Avg Hold" value={formatDurationCompact(filteredTradeStats.avgDurationMinutes)} />
@@ -778,7 +774,7 @@ export function TradesPage() {
         </div>
 
         {dateRangeInvalid ? (
-          <div className="relative mt-3 rounded-2xl border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-200" role="alert">
+          <div className="relative mt-3 rounded-2xl border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-app-negative-text" role="alert">
             Start date must be before end date.
           </div>
         ) : null}
@@ -788,8 +784,8 @@ export function TradesPage() {
             className={cn(
               "relative mt-3 rounded-2xl border px-3 py-2 text-xs",
               syncMessageIsError
-                ? "border-rose-400/35 bg-rose-500/10 text-rose-200"
-                : "border-cyan-400/25 bg-cyan-500/10 text-cyan-100",
+                ? "border-rose-400/35 bg-rose-500/10 text-app-negative-text"
+                : "border-cyan-400/25 bg-cyan-500/10 text-app-accent",
             )}
             role={syncMessageIsError ? "alert" : "status"}
             aria-live="polite"
@@ -801,13 +797,13 @@ export function TradesPage() {
 
       {selectedAccountIsCsvImport ? (
         <Card className="border-cyan-400/35 bg-cyan-500/10 p-4 lg:shrink-0">
-          <p className="text-sm text-cyan-100">
+          <p className="text-sm text-app-accent">
             Live CSV account: trade metrics use imported Topstep history, and ProjectX sync is disabled.
           </p>
         </Card>
       ) : selectedAccount?.account_state === "MISSING" ? (
         <Card className="border-amber-400/40 bg-amber-500/10 p-4 lg:shrink-0">
-          <p className="text-sm text-amber-100">
+          <p className="text-sm text-app-warning">
             This account is missing from ProjectX. Trade metrics are shown from locally stored data when live sync is unavailable.
           </p>
         </Card>
@@ -820,13 +816,12 @@ export function TradesPage() {
           ))
         ) : summaryError ? (
           <Card className="xl:col-span-12" role="alert">
-            <p className="text-sm text-rose-300">{summaryError}</p>
+            <p className="text-sm text-app-negative-text">{summaryError}</p>
           </Card>
         ) : (
           <>
             <Card className="xl:col-span-5 p-3 md:p-3.5">
               <CardHeader className="mb-2 space-y-0.5">
-                <CardDescription className="text-[10px] uppercase tracking-[0.18em] text-cyan-200/70">Snapshot</CardDescription>
                 <CardTitle className="text-base tracking-tight">P/L and output</CardTitle>
               </CardHeader>
               <CardContent className="space-y-0">
@@ -854,11 +849,10 @@ export function TradesPage() {
 
             <Card className="xl:col-span-4 p-3 md:p-3.5">
               <CardHeader className="mb-2 space-y-0.5">
-                <CardDescription className="text-[10px] uppercase tracking-[0.18em] text-emerald-200/70">Outcomes</CardDescription>
                 <CardTitle className="text-base tracking-tight">Hit rate and pacing</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                <div className="overflow-hidden rounded-full border border-slate-700/80 bg-slate-950/60">
+                <div className="overflow-hidden rounded-full border border-slate-700/80 bg-app-bg/60">
                   <div className="flex h-2 w-full">
                     <div className="bg-emerald-300/85" style={{ width: `${summaryWinShare}%` }} />
                     <div className="bg-rose-300/85" style={{ width: `${summaryLossShare}%` }} />
@@ -871,21 +865,21 @@ export function TradesPage() {
                     count={summary.win_count}
                     percentage={summaryWinShare}
                     barClassName="bg-emerald-300/85"
-                    countClassName="text-emerald-200"
+                    countClassName="text-app-positive-text"
                   />
                   <OutcomeRow
                     label="Losses"
                     count={summary.loss_count}
                     percentage={summaryLossShare}
                     barClassName="bg-rose-300/85"
-                    countClassName="text-rose-200"
+                    countClassName="text-app-negative-text"
                   />
                   <OutcomeRow
                     label="Flat"
                     count={summary.breakeven_count}
                     percentage={summaryBreakevenShare}
                     barClassName="bg-slate-400/80"
-                    countClassName="text-slate-200"
+                    countClassName="text-app-text-soft"
                   />
                 </div>
                 <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
@@ -901,13 +895,12 @@ export function TradesPage() {
 
             <Card className="xl:col-span-3 p-3 md:p-3.5">
               <CardHeader className="mb-2 space-y-0.5">
-                <CardDescription className="text-[10px] uppercase tracking-[0.18em] text-amber-200/70">Risk + Feed</CardDescription>
                 <CardTitle className="text-base tracking-tight">Concise pressure check</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
                 <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-2">
-                  <MetricTile label="Max DD" value={formatPnl(summary.max_drawdown)} valueClassName="text-rose-300" />
-                  <MetricTile label="Tail Risk" value={formatPnl(summary.tail_risk_5pct)} valueClassName="text-rose-300" />
+                  <MetricTile label="Max DD" value={formatPnl(summary.max_drawdown)} valueClassName="text-app-negative-text" />
+                  <MetricTile label="Tail Risk" value={formatPnl(summary.tail_risk_5pct)} valueClassName="text-app-negative-text" />
                   <MetricTile label="Avg Win" value={formatPnl(summary.avg_win)} valueClassName={pnlClass(summary.avg_win)} />
                   <MetricTile label="Avg Loss" value={formatPnl(summary.avg_loss)} valueClassName={pnlClass(summary.avg_loss)} />
                   <MetricTile
@@ -922,7 +915,7 @@ export function TradesPage() {
                   />
                 </div>
                 {(summary.avgPointGain !== null || summary.avgPointLoss !== null) ? (
-                  <div className="flex flex-wrap gap-1.5 text-xs text-slate-300">
+                  <div className="flex flex-wrap gap-1.5 text-xs text-app-text-soft">
                     <InlinePill label="Point Gain" value={formatPointMove(summary.avgPointGain, summary.pointsBasisUsed)} />
                     <InlinePill label="Point Loss" value={formatPointMove(summary.avgPointLoss, summary.pointsBasisUsed)} />
                   </div>
@@ -936,7 +929,6 @@ export function TradesPage() {
       <Card className="overflow-hidden lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
         <CardHeader className="mb-0 flex flex-col gap-2 border-b border-slate-800/70 pb-3 xl:flex-row xl:items-end xl:justify-between lg:shrink-0">
           <div>
-            <CardDescription className="uppercase tracking-[0.2em] text-amber-200/75">Execution Feed</CardDescription>
             <CardTitle className="text-lg tracking-tight">Trade Events</CardTitle>
             <CardDescription className="mt-1">
               {tradesError
@@ -947,7 +939,7 @@ export function TradesPage() {
             </CardDescription>
           </div>
 
-          <div className="flex flex-wrap gap-2 text-xs text-slate-300">
+          <div className="flex flex-wrap gap-2 text-xs text-app-text-soft">
             <InlinePill label="Page Net" value={tradesError ? "Unavailable" : formatPnl(pageNetPnl)} />
             <InlinePill label="Matches" value={formatInteger(filteredTrades.length)} />
             <InlinePill label="Win" value={`${formatNumber(filteredWinRate, 0)}%`} />
@@ -964,7 +956,7 @@ export function TradesPage() {
                 ))}
               </div>
               <div className="hidden lg:flex lg:min-h-0 lg:flex-1">
-                <div className="flex min-h-0 flex-1 overflow-hidden rounded-[22px] border border-slate-800/80 bg-slate-950/45">
+                <div className="flex min-h-0 flex-1 overflow-hidden rounded-md border border-slate-800/80 bg-app-bg/45">
                   <div className="min-h-0 flex-1 overflow-auto">
                     <table className="w-full min-w-[1280px] table-fixed border-collapse">
                       <tbody>
@@ -982,11 +974,11 @@ export function TradesPage() {
               </div>
             </>
           ) : tradesError ? (
-            <div className="rounded-[24px] border border-rose-400/35 bg-rose-500/10 px-4 py-5 text-sm text-rose-200" role="alert">
+            <div className="rounded-md border border-rose-400/35 bg-rose-500/10 px-4 py-5 text-sm text-app-negative-text" role="alert">
               {tradesError}
             </div>
           ) : pagedTrades.length === 0 ? (
-            <div className="rounded-[24px] border border-slate-700/80 bg-slate-950/45 px-4 py-6 text-sm text-slate-400">
+            <div className="rounded-md border border-slate-700/80 bg-app-bg/45 px-4 py-6 text-sm text-app-muted">
               No trades match your filters.
             </div>
           ) : (
@@ -998,10 +990,10 @@ export function TradesPage() {
               </div>
 
               <div className="hidden lg:flex lg:min-h-0 lg:flex-1">
-                <div className="flex min-h-0 flex-1 overflow-hidden rounded-[22px] border border-slate-800/80 bg-slate-950/45">
+                <div className="flex min-h-0 flex-1 overflow-hidden rounded-md border border-slate-800/80 bg-app-bg/45">
                   <div className="min-h-0 flex-1 overflow-auto">
                     <table className="w-full min-w-[1260px] table-fixed border-collapse text-[11px] leading-tight">
-                      <thead className="sticky top-0 z-10 bg-slate-950/95 text-xs uppercase tracking-[0.16em] text-slate-400">
+                      <thead className="sticky top-0 z-10 bg-slate-950/95 text-xs uppercase tracking-[0.16em] text-app-muted">
                         <tr>
                           <th className="px-3 py-2 text-left font-medium">Entry Time (ET)</th>
                           <th className="px-3 py-2 text-left font-medium">Exit Time (ET)</th>
@@ -1028,25 +1020,25 @@ export function TradesPage() {
 
                           return (
                             <tr key={trade.id} className="transition hover:bg-slate-900/60">
-                              <td className="px-3 py-2 text-left text-slate-300">{entryTime ? formatTimestamp(entryTime) : "-"}</td>
-                              <td className="px-3 py-2 text-left text-slate-300">{formatTimestamp(exitTime)}</td>
-                              <td className="px-3 py-2 text-right text-slate-300">{formatDurationCompact(trade.duration_minutes)}</td>
-                              <td className="px-3 py-2 text-left font-semibold text-slate-100">
+                              <td className="px-3 py-2 text-left text-app-text-soft">{entryTime ? formatTimestamp(entryTime) : "-"}</td>
+                              <td className="px-3 py-2 text-left text-app-text-soft">{formatTimestamp(exitTime)}</td>
+                              <td className="px-3 py-2 text-right text-app-text-soft">{formatDurationCompact(trade.duration_minutes)}</td>
+                              <td className="px-3 py-2 text-left font-semibold text-app-text">
                                 {getDisplayTradeSymbol(trade.symbol, trade.contract_id)}
                                 {!demoModeEnabled && <button className="mt-1 block text-[10px] font-normal text-cyan-300 hover:underline" onClick={() => setReviewTrade(trade)}>Review path</button>}
                               </td>
                               <td className="px-3 py-2 text-center">
                                 <Badge variant={tradeDirectionBadgeVariant(trade.side)}>{direction}</Badge>
                               </td>
-                              <td className="px-3 py-2 text-center text-slate-200">{formatInteger(trade.size)}</td>
-                              <td className="px-3 py-2 text-right font-mono text-slate-200">{formatTradePrice(entryPrice)}</td>
-                              <td className="px-3 py-2 text-right font-mono text-slate-200">{formatTradePrice(exitPrice)}</td>
-                              <td className="px-3 py-2 text-right text-slate-300">{formatFee(trade.fees)}</td>
+                              <td className="px-3 py-2 text-center text-app-text-soft">{formatInteger(trade.size)}</td>
+                              <td className="px-3 py-2 text-right font-mono text-app-text-soft">{formatTradePrice(entryPrice)}</td>
+                              <td className="px-3 py-2 text-right font-mono text-app-text-soft">{formatTradePrice(exitPrice)}</td>
+                              <td className="px-3 py-2 text-right text-app-text-soft">{formatFee(trade.fees)}</td>
                               <td className={cn("px-3 py-2 text-right font-semibold", pnlClass(pnlValue))}>{formatPnl(pnlValue)}</td>
-                              <td className="px-3 py-2 text-right text-slate-300" title={trade.excursion_note || "Observed stream coverage. Position values cover the entire position, including partial fills; — means unavailable."}>
+                              <td className="px-3 py-2 text-right text-app-text-soft" title={trade.excursion_note || "Observed stream coverage. Position values cover the entire position, including partial fills; — means unavailable."}>
                                 {excursionLabel(trade, "mae")} / {excursionLabel(trade, "mfe")}
                               </td>
-                              <td className="px-3 py-2 text-right font-mono text-[11px] text-slate-400">
+                              <td className="px-3 py-2 text-right font-mono text-[11px] text-app-muted">
                                 {getDemoTradeId(trade.source_trade_id ?? trade.order_id)}
                               </td>
                             </tr>
@@ -1060,7 +1052,7 @@ export function TradesPage() {
             </>
           )}
 
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/70 pt-3 text-xs text-slate-400 lg:shrink-0">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/70 pt-3 text-xs text-app-muted lg:shrink-0">
             <p>
               {pagedTrades.length === 0
                 ? "Page 1 of 1"
@@ -1100,10 +1092,10 @@ interface HeroStatProps {
 
 function HeroStat({ label, value, detail, valueClassName }: HeroStatProps) {
   return (
-    <div className="rounded-[18px] border border-white/10 bg-slate-950/35 p-2.5 backdrop-blur-sm">
-      <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
-      <p className={cn("mt-1.5 text-lg font-semibold tracking-tight text-slate-100 sm:text-xl", valueClassName)}>{value}</p>
-      <p className="mt-1 text-xs text-slate-400">{detail}</p>
+    <div className="border-l border-app-border px-3 py-1">
+      <p className="text-[11px] uppercase tracking-[0.18em] text-app-muted">{label}</p>
+      <p className={cn("mt-1.5 text-lg font-semibold tracking-tight text-app-text sm:text-xl", valueClassName)}>{value}</p>
+      <p className="mt-1 text-xs text-app-muted">{detail}</p>
     </div>
   );
 }
@@ -1118,10 +1110,10 @@ interface MetricTileProps {
 
 function MetricTile({ label, value, hint, valueClassName, className }: MetricTileProps) {
   return (
-    <div className={cn("rounded-[14px] border border-white/8 bg-slate-950/35 p-1.5", className)}>
-      <p className="text-[10px] uppercase tracking-[0.16em] text-slate-500">{label}</p>
-      <p className={cn("mt-0.5 text-sm font-semibold text-slate-100 sm:text-[15px]", valueClassName)}>{value}</p>
-      {hint ? <p className="mt-0.5 text-[10px] text-slate-400">{hint}</p> : null}
+    <div className={cn("border-t border-app-border px-1 py-2", className)}>
+      <p className="text-[10px] uppercase tracking-[0.16em] text-app-muted">{label}</p>
+      <p className={cn("mt-0.5 text-sm font-semibold text-app-text sm:text-[15px]", valueClassName)}>{value}</p>
+      {hint ? <p className="mt-0.5 text-[10px] text-app-muted">{hint}</p> : null}
     </div>
   );
 }
@@ -1135,7 +1127,7 @@ interface FilterFieldProps {
 function FilterField({ label, htmlFor, children }: FilterFieldProps) {
   return (
     <div>
-      <label htmlFor={htmlFor} className="mb-1.5 block text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</label>
+      <label htmlFor={htmlFor} className="mb-1.5 block text-[11px] uppercase tracking-[0.18em] text-app-muted">{label}</label>
       {children}
     </div>
   );
@@ -1148,9 +1140,9 @@ interface InlinePillProps {
 
 function InlinePill({ label, value }: InlinePillProps) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-slate-950/35 px-2 py-1">
-      <span className="uppercase tracking-[0.16em] text-slate-500">{label}</span>
-      <span className="font-medium text-slate-200">{value}</span>
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-app-bg/35 px-2 py-1">
+      <span className="uppercase tracking-[0.16em] text-app-muted">{label}</span>
+      <span className="font-medium text-app-text-soft">{value}</span>
     </span>
   );
 }
@@ -1165,15 +1157,15 @@ interface OutcomeRowProps {
 
 function OutcomeRow({ label, count, percentage, barClassName, countClassName }: OutcomeRowProps) {
   return (
-    <div className="rounded-[14px] border border-white/8 bg-slate-950/35 p-1.5">
+    <div className="border-t border-app-border px-1 py-2">
       <div className="flex items-center justify-between text-[11px]">
-        <span className="text-slate-300">{label}</span>
-        <span className={cn("font-semibold text-slate-200", countClassName)}>{formatInteger(count)}</span>
+        <span className="text-app-text-soft">{label}</span>
+        <span className={cn("font-semibold text-app-text-soft", countClassName)}>{formatInteger(count)}</span>
       </div>
-      <div className="mt-1 h-1.5 overflow-hidden rounded-full border border-slate-700/80 bg-slate-950/60">
+      <div className="mt-1 h-1.5 overflow-hidden rounded-full border border-slate-700/80 bg-app-bg/60">
         <div className={cn("h-full transition-all duration-300", barClassName)} style={{ width: `${percentage}%` }} />
       </div>
-      <p className="mt-1 text-[10px] text-slate-500">{formatNumber(percentage, 0)}%</p>
+      <p className="mt-1 text-[10px] text-app-muted">{formatNumber(percentage, 0)}%</p>
     </div>
   );
 }
@@ -1192,26 +1184,26 @@ function TradeFeedCard({ trade, onReview }: TradeFeedCardProps) {
   const exitPrice = trade.exit_price ?? trade.price;
 
   return (
-    <article className="rounded-[18px] border border-slate-800/80 bg-slate-950/45 p-2.5">
+    <article className="rounded-md border border-slate-800/80 bg-app-bg/45 p-2.5">
       {onReview && <button className="mb-2 text-xs text-cyan-300 hover:underline" onClick={onReview}>Review points over time</button>}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-base font-semibold tracking-tight text-slate-100">
+            <p className="text-base font-semibold tracking-tight text-app-text">
               {getDisplayTradeSymbol(trade.symbol, trade.contract_id)}
             </p>
             <Badge variant={tradeDirectionBadgeVariant(trade.side)}>{direction}</Badge>
           </div>
-          <p className="mt-0.5 truncate text-[10px] text-slate-500">{getDemoTradeId(trade.source_trade_id ?? trade.order_id)}</p>
+          <p className="mt-0.5 truncate text-[10px] text-app-muted">{getDemoTradeId(trade.source_trade_id ?? trade.order_id)}</p>
         </div>
 
         <div className="text-right">
           <p className={cn("text-base font-semibold tracking-tight", pnlClass(pnlValue))}>{formatPnl(pnlValue)}</p>
-          <p className="mt-0.5 text-[11px] text-slate-400">{formatFee(trade.fees)} fees</p>
+          <p className="mt-0.5 text-[11px] text-app-muted">{formatFee(trade.fees)} fees</p>
         </div>
       </div>
 
-      <div className="mt-2 grid grid-cols-2 gap-1.5 text-[11px] text-slate-300">
+      <div className="mt-2 grid grid-cols-2 gap-1.5 text-[11px] text-app-text-soft">
         <CompactFeedPill label="In" value={entryTime ? formatTimestamp(entryTime) : "-"} />
         <CompactFeedPill label="Out" value={formatTimestamp(exitTime)} />
         <CompactFeedPill label="Dur" value={formatDurationCompact(trade.duration_minutes)} />
@@ -1233,9 +1225,9 @@ interface CompactFeedPillProps {
 
 function CompactFeedPill({ label, value, title }: CompactFeedPillProps) {
   return (
-    <div title={title} className="rounded-[13px] border border-slate-800/75 bg-slate-950/55 px-2 py-1.5">
-      <span className="block text-[9px] uppercase tracking-[0.16em] text-slate-500">{label}</span>
-      <span className="mt-0.5 block truncate font-medium text-slate-200">{value}</span>
+    <div title={title} className="rounded-md border border-slate-800/75 bg-app-bg/55 px-2 py-1.5">
+      <span className="block text-[9px] uppercase tracking-[0.16em] text-app-muted">{label}</span>
+      <span className="mt-0.5 block truncate font-medium text-app-text-soft">{value}</span>
     </div>
   );
 }

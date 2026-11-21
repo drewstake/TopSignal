@@ -78,7 +78,8 @@ function AccountRecorder({ accountId, initiallyExpanded }: { accountId: number; 
               onClick={() => setReviewTrade(trade)}>Review path</Button>
           </li>)}
         </ul>}
-      <p className="text-xs text-app-muted">Refreshes every 30 s while open{updatedAt ? ` · updated ${new Date(updatedAt).toLocaleTimeString("en-US", { timeZone: "America/New_York" })} ET` : ""}. Trades from before recording was enabled may have no path. Missing observations are shown as gaps.</p>
+      <p className="text-xs text-app-muted">Refreshes every 30 s while open{updatedAt ? ` · updated ${new Date(updatedAt).toLocaleTimeString("en-US", { timeZone: "America/New_York" })} ET` : ""}.</p>
+      <details className="method-details"><summary>Details</summary><p>Trades from before recording was enabled may have no path. Missing observations appear as gaps.</p></details>
     </div>}
     {reviewTrade && <TradeProgressReview key={reviewTrade.id} trade={reviewTrade} onClose={() => setReviewTrade(null)} />}
   </section>;

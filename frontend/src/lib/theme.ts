@@ -2,6 +2,7 @@ export const APP_THEME_STORAGE_KEY = "topsignal.theme";
 export const APP_THEME_CHANGED_EVENT = "topsignal-theme-changed";
 
 export type AppThemeId =
+  | "graphite"
   | "midnight"
   | "daylight"
   | "market"
@@ -30,12 +31,20 @@ export interface AppThemeChangedDetail {
 
 export const APP_THEMES: AppTheme[] = [
   {
+    id: "graphite",
+    name: "Graphite",
+    description: "Graphite surfaces, slate dividers and blue controls.",
+    colorScheme: "dark",
+    swatches: ["#14171c", "#1b2027", "#343e4c", "#8abaff"],
+    tags: ["Default", "Dark"],
+  },
+  {
     id: "midnight",
     name: "Midnight",
     description: "A focused charcoal workspace with soft mint accents and clear performance signals.",
     colorScheme: "dark",
     swatches: ["#0b1013", "#131a1d", "#b9eb94", "#68bfb0"],
-    tags: ["Default", "Dark"],
+    tags: ["Dark"],
   },
   {
     id: "daylight",
@@ -128,7 +137,7 @@ export const APP_THEMES: AppTheme[] = [
   },
 ];
 
-export const DEFAULT_APP_THEME_ID: AppThemeId = "midnight";
+export const DEFAULT_APP_THEME_ID: AppThemeId = "graphite";
 
 export function isAppThemeId(value: unknown): value is AppThemeId {
   return APP_THEMES.some((theme) => theme.id === value);

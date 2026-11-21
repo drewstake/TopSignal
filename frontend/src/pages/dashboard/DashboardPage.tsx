@@ -3340,7 +3340,7 @@ export function DashboardPage() {
   return (
     <div className="dashboard-surface space-y-5 pb-8">
       <div className="dashboard-page-heading">
-        <div><p className="dashboard-eyebrow">YOUR PERFORMANCE, IN FOCUS</p><h1>Trading Dashboard<span>.</span></h1><p className="dashboard-subtitle">See the whole picture. Find your edge.</p></div>
+        <h1>Trading Dashboard</h1>
         <span className="dashboard-range-label"><Icon name="calendar" />{compactMode.enabled ? compactRangeLabel : metricsRange === "ALL" ? "All time" : fullStatsRangeLabel}</span>
       </div>
       <DemoModeNotice compact>

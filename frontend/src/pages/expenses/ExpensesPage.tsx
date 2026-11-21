@@ -866,9 +866,7 @@ export function ExpensesPage() {
     <div className="expenses-workspace space-y-5 pb-10">
       <header className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-app-accent">Financial overview</p>
           <h1 className="text-2xl font-semibold tracking-tight text-app-text sm:text-[28px]">Expenses and Payouts</h1>
-          <p className="mt-1 text-sm text-app-muted">Your trading costs, payouts, and net cash flow.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="ghost" onClick={handleOpenAddPayout} disabled={demoModeEnabled} title={demoModeEnabled ? demoDisabledTitle : undefined}>Add Payout</Button>
@@ -884,7 +882,7 @@ export function ExpensesPage() {
           <h2 className="font-medium text-app-text-soft">At a glance</h2>
           <span>All recorded activity · USD</span>
         </div>
-        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <div className="expenses-summary grid grid-cols-2 xl:grid-cols-4">
           <Card className="expenses-stat expenses-net-stat">
             <CardDescription>Net after payouts</CardDescription>
             <p className={`expenses-stat-value ${netProfitTitleClassName}`}>

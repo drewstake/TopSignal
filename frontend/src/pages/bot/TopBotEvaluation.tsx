@@ -53,6 +53,6 @@ export function TopBotActivity({ activity }: { activity: BotActivity | null }) {
     <div className="topbot-section-heading"><h2>Recent activity</h2><span>Decisions · orders · risk</span></div>
     {events.length ? <ol className="topbot-event-list">{events.map(event => <li key={event.key}>
       <span className="topbot-event-dot" /><div><div className="topbot-event-heading"><strong>{event.kind}</strong><span>{event.label}</span><time>{timeLabel(event.at)}</time></div><p>{event.text}</p></div>
-    </li>)}</ol> : <div className="topbot-empty"><span aria-hidden="true">≋</span><h3>No activity yet</h3><p>Meaningful decisions, order updates and risk checks will appear here as the bot records them.</p></div>}
+    </li>)}</ol> : <p className="topbot-muted">No activity yet.</p>}
   </section>;
 }

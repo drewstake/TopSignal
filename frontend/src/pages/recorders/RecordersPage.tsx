@@ -33,21 +33,23 @@ function AccountRecordings({ accountId }: { accountId: number }) {
   const requested = search.get("view") ?? "trades";
   const view = Object.hasOwn(views, requested) ? requested : "trades";
   const report = useImbalanceReport(view === "liquidity" || view === "research" ? accountId : null);
-  return <>
+  return <section className="recordings-workspace" aria-label="Account recordings">
     <nav aria-label="Recorder views" className="recorder-views">{Object.entries(views).map(([key, label]) =>
-      <button key={key} aria-current={key === view ? "page" : undefined} onClick={() => {
+      <button key={key} type="button" aria-current={key === view ? "page" : undefined} onClick={() => {
         const next = new URLSearchParams(search);
         if (key === "trades") next.delete("view"); else next.set("view", key);
         setSearch(next);
       }}>{label}</button>)}</nav>
-    {view === "trades" && <TopBotTradeRecorder accountId={accountId} initiallyExpanded />}
-    {view === "signals" && <RecordedSignalReplay accountId={accountId} />}
-    {view === "liquidity" && <RecordedLiquidity accountId={accountId} recordedContract={report.data?.contract} />}
-    {view === "research" && <>
-      <TopBotResearchStatus accountId={accountId} />
-      {report.message && <p role="status">{report.message}</p>}
-      {report.data && <SignalPanel data={report.data} now={report.checkedAt ?? Date.parse(report.data.as_of)} />}
-      <TopBotComparison accountId={accountId} inclusion={report.data?.coverage} />
-    </>}
-  </>;
+    <div className="recordings-body">
+      {view === "trades" && <TopBotTradeRecorder accountId={accountId} initiallyExpanded />}
+      {view === "signals" && <RecordedSignalReplay accountId={accountId} />}
+      {view === "liquidity" && <RecordedLiquidity accountId={accountId} recordedContract={report.data?.contract} />}
+      {view === "research" && <>
+        <TopBotResearchStatus accountId={accountId} />
+        {report.message && <p role="status">{report.message}</p>}
+        {report.data && <SignalPanel data={report.data} now={report.checkedAt ?? Date.parse(report.data.as_of)} />}
+        <TopBotComparison accountId={accountId} inclusion={report.data?.coverage} />
+      </>}
+    </div>
+  </section>;
 }

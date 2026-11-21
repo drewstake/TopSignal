@@ -45,7 +45,7 @@ export function BotPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const logsSelected = searchParams.get("view") === "logs";
   return <div className="space-y-4">
-    <div className="flex items-center justify-between">{!logsSelected && <h1 className="text-2xl font-semibold">TopBot</h1>}
+    <div className="page-bar">{!logsSelected && <h1 className="text-2xl font-semibold">TopBot</h1>}
     <nav aria-label="Bot views" className="flex gap-2">
       {(["overview", "logs"] as const).map(view => <Button key={view}
         variant={logsSelected === (view === "logs") ? "secondary" : "ghost"}
@@ -130,34 +130,38 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
       {guard && (guard.trigger || guard.error || !guard.available) && <p role="alert" className="glance-warning">Daily trading guard · {guard.message || guard.error || guard.trigger?.replaceAll("_", " ") || "Unavailable"}</p>}
       {risk && <p className="glance-warning">Last risk warning · {timeLabel(risk.created_at)} · {risk.message}</p>}
     </header>
-    <section className="topbot-chart-shell" aria-label="Live market chart">
-      {monitor.bot ? <SignalChart key={monitor.bot.id} monitorOnly bot={monitor.bot} authenticatedCacheScope={monitor.scope}
-        activity={monitor.activity} lastEvaluation={null} refreshToken={0} onMarketData={setSnapshot} />
-        : <MarketChart monitorOnly enabled={!demoMode} onMarketData={setSnapshot} onMarketResolved={onMarketResolved} />}
-    </section>
-    <BotDetails title="Order flow">
-      <aside className="topbot-book-shell"><Depth key={`${monitor.scope}:${depthContract}`} contractId={depthContract} symbol={market?.symbol} demoMode={demoMode} sharedStore={depthStore} /></aside>
-      <SessionOrderFlowPanel accountId={accountId} contractId={market?.contract_id ?? null} scope={monitor.scope}
-        enabled={!demoMode && !pending && !unavailable} />
-      <TopBotBiasStrip key={`${market?.contract_id ?? "pending"}:${demoMode}`} market={market} demoMode={demoMode} />
-      <TopBotThinking snapshot={matchingSnapshot} now={now}
-        liveImbalance={monitor.bot?.strategy_params?.revision === "dom_contrarian_v1" && <TopBotLiveImbalance
-          key={`${accountId}:${monitor.bot.id}:${monitor.bot.contract_id}`} contractId={monitor.bot.contract_id}
-          threshold={Number(monitor.bot.strategy_params.imbalance_threshold) || .1}
-          requiredSeconds={Number(monitor.bot.strategy_params.persistence_seconds) || 30}
-          following={monitor.bot.strategy_params.imbalance_direction === "following"}
-          monitor={monitor}
-          enabled={!demoMode && !pending && !unavailable && accountId != null} />} />
-    </BotDetails>
-    <BotDetails title="Strategy settings">
-      {reportAccount != null && monitor.bot?.account_id === reportAccount && monitor.bot.strategy_params?.revision === "dom_contrarian_v1" &&
-        <OrderflowSettings key={monitor.bot.id} bot={monitor.bot} onChanged={onChanged} />}
-      <TopBotStrategyPanel accountId={accountId} bot={monitor.bot} versionLabels={edge.data?.version_labels} demoMode={demoMode || pending || unavailable} />
-    </BotDetails>
-    <BotDetails title="Evaluation history">
+    <div className="bot-live-workspace">
+      <section className="topbot-chart-shell" aria-label="Live market chart">
+        {monitor.bot ? <SignalChart key={monitor.bot.id} monitorOnly bot={monitor.bot} authenticatedCacheScope={monitor.scope}
+          activity={monitor.activity} lastEvaluation={null} refreshToken={0} onMarketData={setSnapshot} />
+          : <MarketChart monitorOnly enabled={!demoMode} onMarketData={setSnapshot} onMarketResolved={onMarketResolved} />}
+      </section>
       <TopBotActivity activity={monitor.activity} />
-      <TopBotEvaluation activity={strategyActivity} now={now} failed={Boolean(monitor.error)} strategyUnconfigured={strategyUnconfigured} />
-      {reportAccount != null && <TopBotEdgePanel state={edge} now={now} />}
-    </BotDetails>
+    </div>
+    <div className="bot-inspection">
+      <BotDetails title="Order flow">
+        <aside className="topbot-book-shell"><Depth key={`${monitor.scope}:${depthContract}`} contractId={depthContract} symbol={market?.symbol} demoMode={demoMode} sharedStore={depthStore} /></aside>
+        <SessionOrderFlowPanel accountId={accountId} contractId={market?.contract_id ?? null} scope={monitor.scope}
+          enabled={!demoMode && !pending && !unavailable} />
+        <TopBotBiasStrip key={`${market?.contract_id ?? "pending"}:${demoMode}`} market={market} demoMode={demoMode} />
+        <TopBotThinking snapshot={matchingSnapshot} now={now}
+          liveImbalance={monitor.bot?.strategy_params?.revision === "dom_contrarian_v1" && <TopBotLiveImbalance
+            key={`${accountId}:${monitor.bot.id}:${monitor.bot.contract_id}`} contractId={monitor.bot.contract_id}
+            threshold={Number(monitor.bot.strategy_params.imbalance_threshold) || .1}
+            requiredSeconds={Number(monitor.bot.strategy_params.persistence_seconds) || 30}
+            following={monitor.bot.strategy_params.imbalance_direction === "following"}
+            monitor={monitor}
+            enabled={!demoMode && !pending && !unavailable && accountId != null} />} />
+      </BotDetails>
+      <BotDetails title="Strategy settings">
+        {reportAccount != null && monitor.bot?.account_id === reportAccount && monitor.bot.strategy_params?.revision === "dom_contrarian_v1" &&
+          <OrderflowSettings key={monitor.bot.id} bot={monitor.bot} onChanged={onChanged} />}
+        <TopBotStrategyPanel accountId={accountId} bot={monitor.bot} versionLabels={edge.data?.version_labels} demoMode={demoMode || pending || unavailable} />
+      </BotDetails>
+      <BotDetails title="Evaluation history">
+        <TopBotEvaluation activity={strategyActivity} now={now} failed={Boolean(monitor.error)} strategyUnconfigured={strategyUnconfigured} />
+        {reportAccount != null && <TopBotEdgePanel state={edge} now={now} />}
+      </BotDetails>
+    </div>
   </div>;
 }
