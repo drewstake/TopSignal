@@ -7,6 +7,7 @@ import { Select } from "../../components/ui/Select";
 import { APP_ZOOM_OPTIONS, DEFAULT_APP_ZOOM, selectAppZoom, useAppZoom } from "../../lib/appScale";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { cn } from "../../components/ui/cn";
+import { selectWorkspaceDesign, useWorkspaceDesign, WORKSPACE_DESIGNS } from "../../lib/workspaceDesign";
 import {
   APP_THEME_CHANGED_EVENT,
   APP_THEMES,
@@ -43,6 +44,7 @@ function PreviewAction({ children, variant = "primary" }: { children: string; va
 
 export function AppearancePage() {
   const zoom = useAppZoom();
+  const designId = useWorkspaceDesign();
   const [selectedThemeId, setSelectedThemeId] = useState<AppThemeId>(() => readStoredAppThemeId());
   const themeButtonRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const selectedTheme = getAppTheme(selectedThemeId);
@@ -102,14 +104,40 @@ export function AppearancePage() {
           <p className="text-xs font-semibold uppercase tracking-wide text-app-accent">Workspace preferences</p>
           <h1 className="text-3xl font-semibold tracking-tight text-app-text md:text-4xl">Appearance</h1>
           <p className="max-w-2xl text-sm leading-6 text-app-muted">
-            Make TopSignal feel right for you. Adjust the size of the app and choose your color palette.
+            Choose a workspace design, color palette, and display scale.
           </p>
         </div>
         <div className="flex items-center gap-2 rounded-xl border border-app-border bg-app-surface/60 px-3 py-2 text-sm text-app-muted">
-          <span className="text-app-muted-strong">Active</span>
+          <span className="text-app-muted-strong">Palette</span>
           <span className="font-semibold text-app-text">{selectedTheme.name}</span>
         </div>
       </section>
+
+      <fieldset className="min-w-0">
+        <legend className="text-xl font-semibold text-app-text">Workspace design</legend>
+        <p className="mb-4 mt-1 text-sm text-app-muted">Select a layout to apply it across the app. You can switch back here anytime.</p>
+        <div className="grid gap-3 md:grid-cols-3">
+          {WORKSPACE_DESIGNS.map(design => (
+            <label key={design.id} className="design-option">
+              <span aria-hidden="true" className="design-thumbnail" data-preview={design.id}>
+                <span className="thumbnail-nav"><i /><i /><i /></span>
+                <span className="thumbnail-page">
+                  <span className="thumbnail-title" />
+                  <span className="thumbnail-panels"><i /><i /><i /></span>
+                  <span className="thumbnail-rows" />
+                </span>
+              </span>
+              <span className="flex items-center justify-between gap-3">
+                <span className="font-semibold">{design.name}</span>
+                <input type="radio" name="workspace-design" aria-label={design.name}
+                  aria-describedby={`design-description-${design.id}`} checked={designId === design.id}
+                  onChange={() => selectWorkspaceDesign(design.id)} />
+              </span>
+              <span id={`design-description-${design.id}`} className="text-sm leading-5 text-app-muted">{design.description}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
 
       <Card className="rounded-lg">
         <CardHeader>
@@ -133,7 +161,7 @@ export function AppearancePage() {
       </Card>
 
       <div className="space-y-1">
-        <h2 className="text-xl font-semibold text-app-text">Themes</h2>
+        <h2 className="text-xl font-semibold text-app-text">Color palette</h2>
         <p className="text-sm text-app-muted">Choose a palette for your entire workspace.</p>
       </div>
       <section className="grid gap-4 lg:grid-cols-4" role="radiogroup" aria-label="Theme selection">

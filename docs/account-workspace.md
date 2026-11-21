@@ -149,7 +149,13 @@ The practice workspace combines the strategy panel, chart, order book and trade 
 
 ## Appearance
 
-The Appearance page contains app zoom and theme preferences. Zoom defaults to 80%, with settings from 60% to 150% in 5% steps. It applies immediately across the app, persists in this browser, and syncs between tabs.
+Choose a **Workspace design** at the top of Appearance. **Signal Deck** is the original sidebar and layered-card layout. **Terminal** uses a slim desktop tool rail, monospaced type, and compact panels. **Editorial** moves navigation into a full-width masthead and uses serif headlines and ruled sections. Select any design to switch immediately, including while using Demo Mode. The browser remembers the choice and syncs it between tabs.
+
+The palette and zoom have independent controls. Zoom defaults to 80%, with settings from 60% to 150% in 5% steps.
+
+**Reusable design prompt**
+
+> Add a new workspace design to TopSignal's Appearance page. Give it a short name and a recognizable layout at a glance, even when every design uses the same palette. Define where navigation lives, how headings and data compete for attention, how dense the tables and panels feel, and how the layout adapts to a phone. Show its silhouette in the design picker. Apply it through the shared shell and components so switching preserves the current page, account, and in-progress work. Support keyboard selection, preserve palette and zoom choices, and remember the design across reloads and browser tabs.
 
 Appearance page:
 

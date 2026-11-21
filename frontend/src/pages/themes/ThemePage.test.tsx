@@ -4,19 +4,59 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { APP_ZOOM_STORAGE_KEY, initializeAppScale, readStoredAppZoom, selectAppZoom } from "../../lib/appScale";
 import { AppearancePage } from "./ThemePage";
+import { DESIGN_STORAGE_KEY, initializeWorkspaceDesign } from "../../lib/workspaceDesign";
+import { APP_THEME_STORAGE_KEY } from "../../lib/theme";
 
 vi.mock("../../components/demo/DemoModeNotice", () => ({ DemoModeNotice: () => null }));
 
 let dispose: () => void;
+let disposeDesign: () => void;
 beforeEach(() => {
   localStorage.clear();
   dispose = initializeAppScale();
+  disposeDesign = initializeWorkspaceDesign();
 });
 afterEach(() => {
   cleanup();
   dispose();
+  disposeDesign();
   vi.restoreAllMocks();
   document.documentElement.style.removeProperty("--app-scale");
+});
+
+describe("Workspace design", () => {
+  it("switches in place, restores on startup, and lets the user return to the original layout", () => {
+    localStorage.setItem(APP_THEME_STORAGE_KEY, "daylight");
+    selectAppZoom(110);
+    const view = render(<AppearancePage />);
+    const root = document.documentElement;
+    expect(root.dataset.workspaceDesign).toBe("signal-deck");
+    fireEvent.click(screen.getByRole("radio", { name: "Terminal" }));
+    expect(root.dataset.workspaceDesign).toBe("terminal");
+    fireEvent.click(screen.getByRole("radio", { name: "Editorial" }));
+    expect(root.dataset.workspaceDesign).toBe("editorial");
+    expect(localStorage.getItem(DESIGN_STORAGE_KEY)).toBe("editorial");
+    expect(localStorage.getItem(APP_THEME_STORAGE_KEY)).toBe("daylight");
+    expect(readStoredAppZoom()).toBe(110);
+    view.unmount();
+    disposeDesign();
+    delete root.dataset.workspaceDesign;
+    disposeDesign = initializeWorkspaceDesign();
+    render(<AppearancePage />);
+    expect(screen.getByRole("radio", { name: "Editorial", checked: true })).toBeTruthy();
+    fireEvent.click(screen.getByRole("radio", { name: "Signal Deck" }));
+    expect(root.dataset.workspaceDesign).toBe("signal-deck");
+  });
+
+  it("syncs design changes from another tab and recovers from invalid or cleared storage", () => {
+    render(<AppearancePage />);
+    for (const [stored, name] of [["terminal", "Terminal"], ["old-layout", "Signal Deck"], ["editorial", "Editorial"], [null, "Signal Deck"]] as const) {
+      if (stored === null) localStorage.clear();
+      else localStorage.setItem(DESIGN_STORAGE_KEY, stored);
+      act(() => window.dispatchEvent(new StorageEvent("storage", { key: stored === null ? null : DESIGN_STORAGE_KEY, storageArea: localStorage })));
+      expect(screen.getByRole("radio", { name, checked: true })).toBeTruthy();
+    }
+  });
 });
 
 describe("Appearance zoom", () => {
