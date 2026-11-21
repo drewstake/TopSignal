@@ -134,15 +134,16 @@
 .copy-trade-panel > header { padding-bottom: 14px; border-bottom: 1px solid rgb(var(--theme-border) / .65); }
 .dashboard-section-title { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; padding-top: 10px; }
 .dashboard-section-title h2 { margin-top: 6px; font-size: 20px; font-weight: 550; letter-spacing: -.5px; }
-.dashboard-analytics-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr)); gap: 16px; grid-auto-rows: auto; align-items: start; }
-.dashboard-analytics-grid > .analytics-metric { grid-column: auto; grid-row: auto; align-self: start; height: auto; padding: 20px 22px; overflow: visible; isolation: auto; }
+.dashboard-analytics-grid { --insight-gap: 12px; columns: 24rem 3; column-gap: var(--insight-gap); }
+.dashboard-analytics-grid > .col-span-full { column-span: all; }
+.dashboard-analytics-grid > .analytics-metric { display: inline-block; vertical-align: top; break-inside: avoid; width: 100%; height: auto; margin-bottom: var(--insight-gap); padding: 16px; overflow: visible; isolation: auto; }
 .analytics-metric > [aria-hidden="true"] { display: none; }
 .metric-title { color: rgb(var(--theme-muted)); font-size: 12px; font-weight: 500; letter-spacing: 0; }
 .analytics-metric > p:first-of-type { margin-top: 8px; font-size: 27px; font-weight: 500; line-height: 1.1; letter-spacing: -.8px; filter: none; }
 .analytics-metric > p:nth-of-type(2) { margin-top: 6px; font-size: 11px; line-height: 1.5; }
 .metric-details-content [aria-hidden="true"][class*="blur"] { display: none; }
 .metric-details-content { min-width: 0; padding-top: 12px; border-top: 1px solid rgb(var(--theme-border) / .65); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.metric-details-content dl { grid-template-columns: minmax(0, 1fr); }
+.metric-details-content dl { grid-template-columns: minmax(0, 1fr); gap: 0; }
 .metric-details-content dl > div { gap: 12px; padding: 6px 0; border: 0; border-bottom: 1px solid rgb(var(--theme-border) / .55); border-radius: 0; background: transparent; font-size: 11px; }
 .metric-details-content dl > div:last-child { border-bottom: 0; }
 .dashboard-calendar-card { padding: 24px; }
@@ -163,6 +164,10 @@
 .recent-empty-description { display: block; margin-bottom: 28px; font-size: 11px; }
 .workspace-brand:focus-visible, .workspace-primary-link:focus-visible, .workspace-text-link:focus-visible { outline: 2px solid rgb(var(--theme-accent)); outline-offset: 4px; }
 
+@media (min-width: 1024px) {
+  .app-workspace .workspace-main:has(.dashboard-analytics-grid) { max-width: none; margin-left: var(--workspace-sidebar-width); }
+}
+
 @media (min-width: 1925px) {
   .app-workspace .workspace-main { margin-left: calc(var(--workspace-sidebar-width) + (100vw - var(--workspace-sidebar-width) - 1700px) / 2); }
 }
@@ -178,7 +183,6 @@
   .overview-stat { padding: 18px; }
   .dashboard-chart-row { grid-template-columns: minmax(0, 1.6fr) minmax(235px, 1fr); gap: 16px; }
   .trading-profile { padding: 20px; }
-  .dashboard-analytics-grid > .analytics-metric { padding: 18px; }
 }
 @media (max-width: 1023px) {
   .app-workspace { --workspace-sidebar-width: 76px; }
@@ -255,7 +259,7 @@
   .copy-trade-setup p { line-height: 1.7; }
   .copy-trade-setup .workspace-text-link { margin-left: 52px; min-height: 30px; }
   .copy-trade-panel > div > .grid:first-child { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .dashboard-analytics-grid { grid-template-columns: 1fr; gap: 12px; }
+  .dashboard-analytics-grid { column-count: 1; }
   .calendar-empty-week { gap: 5px; font-size: 9px; }
   .calendar-empty-week i { height: 80px; }
   .calendar-empty-message { padding: 14px; }

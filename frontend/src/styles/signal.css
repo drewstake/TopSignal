@@ -1188,19 +1188,6 @@ html {
   letter-spacing: -0.03em;
 }
 
-.app-workspace .dashboard-analytics-grid {
-  gap: 14px;
-}
-
-.app-workspace .dashboard-analytics-grid > .analytics-metric {
-  transition: transform 0.35s var(--sd-ease), box-shadow 0.35s var(--sd-ease), border-color 0.3s;
-}
-
-.app-workspace .dashboard-analytics-grid > .analytics-metric:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--sd-edge), var(--sd-lift-hover);
-}
-
 .app-workspace .metric-title {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -1483,7 +1470,6 @@ html {
 
 @media (prefers-reduced-motion: reduce) {
   .app-workspace .overview-stat:hover,
-  .app-workspace .dashboard-analytics-grid > .analytics-metric:hover,
   .app-workspace .ui-button:hover {
     transform: none !important;
   }

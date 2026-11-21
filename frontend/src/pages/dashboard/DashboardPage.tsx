@@ -9,7 +9,6 @@ import { Chip } from "../../components/metrics/Chip";
 import { DonutRing } from "../../components/metrics/DonutRing";
 import { GaugeBar } from "../../components/metrics/GaugeBar";
 import { InfoPopover } from "../../components/metrics/InfoPopover";
-import { MasonryGrid } from "../../components/metrics/MasonryGrid";
 import { MetricCard } from "../../components/metrics/MetricCard";
 import { MiniStatList } from "../../components/metrics/MiniStatList";
 import { SplitBar } from "../../components/metrics/SplitBar";
@@ -3738,14 +3737,14 @@ export function DashboardPage() {
         />
       ) : null}
       <div className="dashboard-section-title"><h2>Performance insights</h2></div>
-      <MasonryGrid className="dashboard-analytics-grid">
+      <div className="dashboard-analytics-grid">
         {summaryLoading ? (
           Array.from({ length: 8 }).map((_, index) => (
             <MetricCard
               key={`summary-loading-${index}`}
               title="Loading"
               primaryValue="..."
-              className="animate-pulse sm:col-span-2 md:col-span-3 lg:col-span-4"
+              className="animate-pulse"
             />
           ))
         ) : summaryError ? (
@@ -3766,13 +3765,13 @@ export function DashboardPage() {
               }
               accentClassName={performanceAccentClassName}
               className={cn(
-                "z-20 isolate overflow-visible sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-1 lg:col-span-3 lg:row-start-1 lg:col-start-1",
+                "z-20 isolate overflow-visible",
                 performanceCardClassName,
               )}
               contentClassName="relative mt-2.5 space-y-2.5"
             >
               <div aria-hidden="true" className={cn("pointer-events-none absolute -right-8 -top-10 h-24 w-24 rounded-full blur-2xl", performanceGlowClassName)} />
-              <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
+              <div className="relative">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={performanceSignalVariant}>{performanceSignalLabel}</Badge>
                   <Badge variant="accent">
@@ -3783,26 +3782,26 @@ export function DashboardPage() {
                   </span>
                 </div>
                 {copyTradeStatsActive ? (
-                  <div className="mt-2.5 grid gap-1.5 sm:grid-cols-2">
-                    <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                  <div className="mt-2.5 grid grid-cols-2 gap-2">
+                    <div className="min-w-0">
                       <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Combined Daily P&L</p>
                       <p className={cn("mt-1 text-sm font-semibold", pnlClass(copyTradeTotals.combinedDailyPnl))}>
                         {formatPnl(copyTradeTotals.combinedDailyPnl)}
                       </p>
                     </div>
-                    <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                    <div className="min-w-0">
                       <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Combined Balance</p>
                       <p className="mt-1 text-sm font-semibold text-app-text">
                         {formatAccountBalance(copyTradeTotals.combinedBalance)}
                       </p>
                     </div>
-                    <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                    <div className="min-w-0">
                       <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Leader P&L</p>
                       <p className={cn("mt-1 text-sm font-semibold", pnlClass(copyTradeTotals.leaderNetPnl))}>
                         {formatPnl(copyTradeTotals.leaderNetPnl)}
                       </p>
                     </div>
-                    <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                    <div className="min-w-0">
                       <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Follower P&L</p>
                       <p className={cn("mt-1 text-sm font-semibold", pnlClass(copyTradeTotals.followerContributionNetPnl))}>
                         {formatPnl(copyTradeTotals.followerContributionNetPnl)}
@@ -3810,14 +3809,14 @@ export function DashboardPage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="mt-2.5 grid gap-1.5 sm:grid-cols-2">
-                    <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                  <div className="mt-2.5 grid grid-cols-2 gap-2">
+                    <div className="min-w-0">
                       <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Profit / Day</p>
                       <p className={cn("mt-1 text-sm font-semibold", pnlClass(summary.profit_per_day))}>
                         {formatMetricValue(profitPerDayMetric, formatPnl)}
                       </p>
                     </div>
-                    <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                    <div className="min-w-0">
                       <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Efficiency / Hour</p>
                       <p className={cn("mt-1 text-sm font-semibold", pnlClass(summary.efficiency_per_hour))}>
                         {formatMetricValue(efficiencyPerHourMetric, formatPnl)}
@@ -3904,7 +3903,7 @@ export function DashboardPage() {
               info="Expectancy combines your win rate and payoff profile into average dollars per trade."
               accentClassName={edgeAccentClassName}
               className={cn(
-                "relative isolate sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-3 lg:col-span-6 lg:row-start-1 lg:col-start-4",
+                "relative isolate",
                 edgeCardClassName,
               )}
               contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
@@ -3913,22 +3912,22 @@ export function DashboardPage() {
                 aria-hidden="true"
                 className={cn("pointer-events-none absolute -right-14 -top-12 h-28 w-28 rounded-full blur-3xl", edgeGlowClassName)}
               />
-              <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
+              <div className="relative">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={edgeSignalVariant}>{edgeSignalLabel}</Badge>
                   <Badge variant="accent">{`PF ${formatProfitFactor(summary)}`}</Badge>
                   <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">{`WR ${formatPercent(summary.win_rate, 1)}`}</span>
                 </div>
-                <div className="mt-2.5 grid gap-1.5 sm:grid-cols-3">
-                  <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                <div className="mt-2.5 grid grid-cols-3 gap-2">
+                  <div className="min-w-0">
                     <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Profit Factor</p>
                     <p className="mt-1 text-sm font-semibold text-app-accent">{formatProfitFactor(summary)}</p>
                   </div>
-                  <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                  <div className="min-w-0">
                     <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Win Rate</p>
                     <p className="mt-1 text-sm font-semibold text-app-text">{formatPercent(summary.win_rate, 1)}</p>
                   </div>
-                  <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                  <div className="min-w-0">
                     <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">W/L Ratio</p>
                     <p className="mt-1 text-sm font-semibold text-app-text">
                       {formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}
@@ -3959,10 +3958,10 @@ export function DashboardPage() {
               subtitle="Daily PnL volatility ($)."
               info="Stability uses worst-day % of net PnL; lower worst-day concentration implies higher stability."
               accentClassName="bg-gradient-to-r from-app-secondary/80 via-app-accent/30 to-app-secondary/80"
-              className="relative overflow-hidden p-3 sm:col-span-2 md:col-span-2 md:row-start-2 md:col-start-1 lg:col-span-3 lg:col-start-1 lg:row-start-2"
+              className="relative overflow-hidden p-3"
               contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
             >
-              <div className="relative overflow-hidden rounded-xl border border-app-accent/20 bg-[radial-gradient(120%_130%_at_8%_0%,rgb(var(--theme-accent-secondary)/0.16),rgb(var(--theme-surface)/0.28)_42%,rgb(var(--theme-surface)/0.78)_100%)] p-2.5">
+              <div className="relative">
                 <div aria-hidden="true" className="pointer-events-none absolute -left-8 top-0 h-20 w-20 rounded-full bg-app-secondary/20 blur-2xl" />
                 <div aria-hidden="true" className="pointer-events-none absolute -right-6 bottom-1 h-24 w-24 rounded-full bg-app-accent/15 blur-2xl" />
                 <div className="relative space-y-2.5">
@@ -4047,12 +4046,12 @@ export function DashboardPage() {
               info="Drawdown control is graded from max drawdown as a share of risk base. Known Topstep combines use Maximum Loss Limit as risk capital; other accounts use current balance when available and then fall back to peak equity inferred from daily PnL. Profit giveback is shown separately and does not determine control."
               accentClassName={riskAccentClassName}
               className={cn(
-                "self-start sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-5 lg:col-span-3 lg:row-start-1 lg:col-start-10",
+                "self-start",
                 riskCardClassName,
               )}
               contentClassName="mt-2.5 space-y-2.5"
             >
-              <div className="rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
+              <div className="space-y-2">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={riskSignalVariant}>{riskSignalLabel}</Badge>
                   <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">Account Risk</span>
@@ -4114,10 +4113,10 @@ export function DashboardPage() {
               }
               info="Long % is long trades divided by total directional trades for this range."
               accentClassName="bg-gradient-to-r from-app-positive/80 via-app-accent/25 to-app-negative/80"
-              className="relative flex flex-col overflow-hidden md:col-span-2 md:row-start-2 md:col-start-3 lg:col-span-6 lg:col-start-4 lg:row-start-2"
+              className="relative flex flex-col overflow-hidden"
               contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
             >
-              <div className="relative overflow-hidden rounded-xl border border-app-accent/20 bg-[radial-gradient(120%_130%_at_6%_0%,rgb(var(--theme-positive)/0.16),rgb(var(--theme-surface)/0.25)_42%,rgb(var(--theme-surface)/0.75)_100%)] p-2.5">
+              <div className="relative">
                 <div aria-hidden="true" className="pointer-events-none absolute -left-8 top-0 h-20 w-20 rounded-full bg-app-positive/20 blur-2xl" />
                 <div aria-hidden="true" className="pointer-events-none absolute -right-6 bottom-1 h-24 w-24 rounded-full bg-app-negative/15 blur-2xl" />
                 <div className="relative grid gap-4">
@@ -4261,7 +4260,7 @@ export function DashboardPage() {
               subtitle="Average win versus average loss."
               info="Breakeven win rate = abs(avg loss) / (avg win + abs(avg loss))."
               accentClassName={payoffAccentClassName}
-              className={cn("relative isolate md:col-span-2 md:row-start-2 md:col-start-5 lg:col-span-3 lg:col-start-10 lg:row-start-2", payoffCardClassName)}
+              className={cn("relative isolate", payoffCardClassName)}
               contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
             >
               <div
@@ -4271,7 +4270,7 @@ export function DashboardPage() {
                   derivedMetrics.winLossRatio.value !== null && derivedMetrics.winLossRatio.value < 1 ? "bg-app-negative/20" : "bg-app-positive/20",
                 )}
               />
-              <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
+              <div className="relative">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={payoffSignalVariant}>{payoffSignalLabel}</Badge>
                   <Badge variant="accent">{`W/L ${formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}`}</Badge>
@@ -4360,7 +4359,7 @@ export function DashboardPage() {
               info="Activity normalizes execution count by active trading days."
               accentClassName={activityAccentClassName}
               className={cn(
-                "relative isolate md:col-span-2 md:row-start-3 md:col-start-1 lg:col-span-3 lg:col-start-1 lg:row-start-3 lg:p-3",
+                "relative isolate lg:p-3",
                 activityCardClassName,
               )}
               contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
@@ -4372,7 +4371,7 @@ export function DashboardPage() {
                   activityWeeklyPace !== null && activityWeeklyPace >= 30 ? "bg-app-warning/20" : "bg-app-accent/20",
                 )}
               />
-              <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
+              <div className="relative">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={activitySignalVariant}>{activitySignalLabel}</Badge>
                   <Badge variant="accent">{`${formatInteger(displayActiveDays)} Active Days`}</Badge>
@@ -4436,7 +4435,7 @@ export function DashboardPage() {
               info="Sustainability blends drawdown control, day-to-day consistency, and profit factor with a confidence adjustment for small samples."
               accentClassName={sustainabilityAccentClassName}
               className={cn(
-                "relative isolate self-start p-3 sm:col-span-2 md:col-span-2 md:row-start-3 md:col-start-3 lg:col-span-6 lg:col-start-4 lg:row-start-3",
+                "relative isolate self-start p-3",
                 sustainabilityCardClassName,
               )}
               contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
@@ -4448,13 +4447,13 @@ export function DashboardPage() {
                   sustainability.score >= 70 ? "bg-app-positive/20" : sustainability.score >= 45 ? "bg-app-accent/20" : "bg-app-negative/20",
                 )}
               />
-              <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
+              <div className="relative">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-[11px] uppercase tracking-[0.14em] text-app-muted-strong">Score 0-100</p>
                   <Badge variant={displayTradeCount > 0 ? sustainabilityBadgeVariant(sustainability.label) : "neutral"}>{displayTradeCount > 0 ? sustainability.label : "Awaiting trades"}</Badge>
                 </div>
 
-                <div className="mt-2.5 grid gap-1.5 sm:grid-cols-3">
+                <div className="mt-2.5 space-y-2">
                   {[
                     {
                       label: "Risk",
@@ -4472,7 +4471,7 @@ export function DashboardPage() {
                       fillClassName: "bg-gradient-to-r from-app-positive/90 to-app-accent/80",
                     },
                   ].map((item) => (
-                    <div key={item.label} className="space-y-1 rounded-md border border-app-border/70 bg-app-bg/45 px-2 py-1.5">
+                    <div key={item.label} className="space-y-1">
                       <div className="flex items-center justify-between text-[10px]">
                         <span className="text-app-muted">{item.label}</span>
                         <span className="font-semibold text-app-text">{formatNumber(item.value, 1)}/100</span>
@@ -4515,7 +4514,7 @@ export function DashboardPage() {
               subtitle="Win duration divided by loss duration."
               info="Win Duration / Loss Duration = avg win hold minutes / avg loss hold minutes."
               accentClassName={holdTimeAccentClassName}
-              className={cn("relative isolate md:col-span-2 md:row-start-3 md:col-start-5 lg:col-span-3 lg:col-start-10 lg:row-start-3", holdTimeCardClassName)}
+              className={cn("relative isolate", holdTimeCardClassName)}
               contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
             >
               <div
@@ -4527,7 +4526,7 @@ export function DashboardPage() {
                     : "bg-app-accent/20",
                 )}
               />
-              <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
+              <div className="relative">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={holdTimeSignalVariant}>{holdTimeSignalLabel}</Badge>
                   <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">
@@ -4557,7 +4556,7 @@ export function DashboardPage() {
             </MetricCard>
           </>
         )}
-      </MasonryGrid>
+      </div>
 
       <ViewportDeferredDashboardCard
         title="PnL Calendar"
