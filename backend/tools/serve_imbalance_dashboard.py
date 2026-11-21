@@ -9,14 +9,25 @@ import subprocess
 import threading
 import time
 from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
 from urllib import error, request
 from urllib.parse import urlsplit
+from urllib.response import addinfourl
 
 from maintain_session_flow import NoRedirect, read_json
 
 ROUTE = re.compile(r"/api/accounts/([1-9][0-9]{0,17})/topbot/edge")
 PUBLIC_HOST = "127.0.0.1:4173"
+CONNECTING_PAGE = b"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light"><meta http-equiv="refresh" content="3">
+<title>Connecting to TopSignal</title>
+<style>body { max-width: 42rem; margin: 12vh auto; padding: 0 1.5rem; font: 1rem/1.5 system-ui, sans-serif; }</style>
+</head><body><main><h1>Connecting to peteamdpc</h1>
+<p>Your Bot page will open automatically when the connection is ready.</p>
+</main></body></html>"""
 
 
 def dashboard_response(path, method, port=4176):
@@ -26,7 +37,17 @@ def dashboard_response(path, method, port=4176):
     if not path.startswith("/") or path.startswith("//"):
         raise ValueError("Invalid dashboard path")
     req = request.Request(f"http://127.0.0.1:{port}" + path, method=method, headers={"Host": PUBLIC_HOST})
-    return request.build_opener(request.ProxyHandler({}), NoRedirect()).open(req, timeout=8)
+    try:
+        return request.build_opener(request.ProxyHandler({}), NoRedirect()).open(req, timeout=8)
+    except error.HTTPError:
+        raise  # The host answered. Preserve its status and the viewer's missing-asset handling.
+    except OSError:
+        if path not in ("/bot", "/bot/"):
+            raise
+        # Refresh the current URL so the browser keeps the account query and fragment.
+        headers = {"Content-Type": "text/html; charset=utf-8", "Content-Length": str(len(CONNECTING_PAGE))}
+        body = b"" if method == "HEAD" else CONNECTING_PAGE
+        return addinfourl(BytesIO(body), headers, req.full_url, 200)
 
 
 class ViewingCopy:

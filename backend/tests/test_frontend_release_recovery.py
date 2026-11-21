@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import logging
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 import threading
 from urllib.request import urlopen
@@ -26,6 +27,51 @@ def build(root, assets):
     for name, data in assets.items():
         (root / "assets" / name).write_text(data)
     return root
+
+
+def test_bot_view_waits_for_tunnel_then_serves_current_dashboard(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "backend" / "tools"))
+    from serve_imbalance_dashboard import dashboard_response
+
+    class Dashboard(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path != "/bot" or self.headers["Host"] != "127.0.0.1:4173":
+                return self.send_error(404)
+            self.send_response(self.server.dashboard_status)
+            self.end_headers()
+            self.wfile.write(b"Current dashboard")
+
+    # Reserve a real loopback port, but delay listen() just like the SSH forward at logon.
+    with HTTPServer(("127.0.0.1", 0), Dashboard, bind_and_activate=False) as upstream:
+        upstream.server_bind()
+        port = upstream.server_port
+        page = "/bot?account=29593203"
+        with dashboard_response(page, "GET", port) as response:
+            body = response.read()
+            assert response.status == 200
+            assert b"Connecting to peteamdpc" in body and b'http-equiv="refresh" content="3"' in body
+            assert int(response.headers["Content-Length"]) == len(body)
+        with dashboard_response("/bot/", "HEAD", port) as response:
+            assert response.status == 200 and response.read() == b""
+            assert int(response.headers["Content-Length"]) == len(body)
+        with pytest.raises(OSError):
+            dashboard_response("/assets/app.js", "GET", port)
+
+        upstream.server_activate()
+        upstream.dashboard_status = 200
+        thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with dashboard_response(page, "GET", port) as response:
+                assert response.read() == b"Current dashboard"
+            upstream.dashboard_status = 503
+            with pytest.raises(HTTPError) as exc:
+                dashboard_response(page, "GET", port)
+            exc.value.close()
+            assert exc.value.code == 503
+        finally:
+            upstream.shutdown()
+            thread.join(2)
 
 
 def test_old_tab_assets_survive_one_deployment_without_accumulation(tmp_path):
