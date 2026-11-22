@@ -10,6 +10,10 @@ TopSignal brings ProjectX accounts and Topstep trade exports into one futures tr
 
 ## Local quick start
 
+On the configured viewing PC, run `npm start` from the repository root. Each start pulls the Expenses calendar's expense and payout ledgers from peteamdpc through the private connection, starts the checkout's backend and frontend, and opens the [local Bot dashboard for practice account 29593203](http://127.0.0.1:5174/bot?account=29593203). Test edits stay on this PC. If the pull fails, check Tailscale and the **TopSignal Host Connection** task. The [deployed dashboard](http://127.0.0.1:4173/bot?account=29593203) runs on peteamdpc. [Development profiles](docs/offline-development.md)
+
+### Start an isolated development workspace
+
 Use a fresh checkout, Python 3.11 or 3.12, and Node.js 24 with npm. Run these commands from the repository root in PowerShell.
 
 ```powershell
@@ -124,7 +128,7 @@ The retired **Simulation** screen let you place trades with simulated funds in a
 | Root command | Services and storage |
 | --- | --- |
 | `npm run dev:offline` | Disconnected SQLite workspace on 5174. Broker access, worker and both live-order flags are disabled by the launcher. |
-| `npm run dev:local` | The same SQLite workspace and port with ProjectX access and a dry-run worker. Provider reads need valid credentials. Both live-order flags stay off. |
+| `npm run dev:local` | Pulls the peteamdpc expense and payout ledgers, then runs local code on 5174 with ProjectX access and a dry-run worker. `npm start` also opens the Bot page. |
 | `npm run dev:cloud` | Historical command name for the configured account workspace on `http://localhost:5173`. It applies pending migrations to its configured PostgreSQL database before startup. Point it at a dedicated local development database. |
 | `npm run dev` | Starts the connected SQLite profile and the configured PostgreSQL profile. Each frontend waits for its own API, on available loopback ports starting at 8000. |
 

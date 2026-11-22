@@ -6,6 +6,7 @@
     "concurrently": "^9.2.5"
   },
   "scripts": {
+    "start": "node scripts/dev.cjs --offline --topstep --pull-ledgers --open",
     "release": "node scripts/release.cjs",
     "db:init": "node scripts/db-init.cjs",
     "db:adopt-current": "node scripts/db-migrate.cjs --adopt-current --acknowledge-populated-database",
@@ -16,7 +17,7 @@
     "dev:live": "node scripts/dev-both.cjs --live",
     "dev:cloud": "node scripts/dev.cjs",
     "dev:offline": "node scripts/dev.cjs --offline",
-    "dev:local": "node scripts/dev.cjs --offline --topstep",
+    "dev:local": "node scripts/dev.cjs --offline --topstep --pull-ledgers",
     "dev:local:live": "node scripts/dev.cjs --offline --topstep --live",
     "dev:backend": "node scripts/dev-backend.cjs",
     "dev:frontend": "node scripts/dev-frontend.cjs",

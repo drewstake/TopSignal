@@ -15,6 +15,10 @@ Honor a narrower request such as “local only” or “don't deploy”. Questio
 and reviews call for an answer. Approval to cut research windows short applies
 only to the specific release the user approved.
 
+# Running TopSignal on the viewing PC
+
+For requests to run TopSignal locally on this PC, use `npm start`. It refreshes the local Expenses calendar from peteamdpc, runs checkout code on 5174 and opens the Bot page for account 29593203. Port 4173 serves the deployed host dashboard.
+
 # Storage rules for TopSignal
 
 Current architecture: see the [November 13 maintenance receipt](docs/audits/2026-11-13/storage-maintenance.md).

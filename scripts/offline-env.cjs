@@ -1,7 +1,7 @@
 const path = require("node:path");
 
 // Apply last, after reading .env: a cloud configuration must never win here.
-function offlineEnvironment(environment, repoRoot, { projectx = false, liveOrders = false } = {}) {
+function offlineEnvironment(environment, repoRoot, { projectx = false, liveOrders = false, pullLedgers = false } = {}) {
   if (liveOrders && !projectx) {
     throw new Error("Local live orders require the connected Topstep profile (--offline --topstep --live).");
   }
@@ -12,11 +12,12 @@ function offlineEnvironment(environment, repoRoot, { projectx = false, liveOrder
       env[key] = "";
     }
   }
-  const storageDir = path.join(repoRoot, "backend", "storage", "offline");
+  const storageDir = path.join(repoRoot, "backend", "storage", pullLedgers ? "peteamdpc-dev" : "offline");
   return {
     ...env,
     PYTHON_DOTENV_DISABLED: "1",
     TOPSIGNAL_OFFLINE_DEV: "1",
+    TOPSIGNAL_DEV_HOST_LEDGERS: pullLedgers ? "1" : "0",
     TOPSIGNAL_LOCAL_PROJECTX: projectx ? "1" : "0",
     TOPSIGNAL_LOCAL_LIVE_ORDERS: liveOrders ? "1" : "0",
     TOPSIGNAL_ENV: "development",

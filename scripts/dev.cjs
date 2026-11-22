@@ -1,4 +1,4 @@
-const { spawn } = require("node:child_process");
+const { spawn, execFileSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const path = require("node:path");
 const readline = require("node:readline");
@@ -207,14 +207,22 @@ async function main() {
   const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
   if (offline) {
     await assertLocalFrontendAvailable();
-    requireBackendPython(repoRoot);
+    const python = requireBackendPython(repoRoot);
+    const pullLedgers = process.argv.includes("--pull-ledgers");
     process.env = offlineEnvironment(createEnvironmentSnapshot(process.env, backendEnv), repoRoot, {
       projectx: process.argv.includes("--topstep"),
       liveOrders,
+      pullLedgers,
     });
-    fs.mkdirSync(path.join(backendDir, "storage", "offline"), { recursive: true });
+    if (pullLedgers) {
+      execFileSync(python, ["-m", "tools.pull_host_ledgers"], {
+        cwd: backendDir, stdio: "inherit", windowsHide: true,
+      });
+    } else {
+      fs.mkdirSync(path.join(backendDir, "storage", "offline"), { recursive: true });
+    }
     console.log("[OFFLINE] Local SQLite workspace; Google sign-in and cloud storage are disabled.");
-    console.log("[OFFLINE] Saved locally in backend/storage/offline; changes do not sync to Supabase.");
+    console.log(`[LOCAL] Workspace: backend/storage/${pullLedgers ? "peteamdpc-dev" : "offline"}.`);
     if (process.env.TOPSIGNAL_LOCAL_PROJECTX === "1") {
       console.log(liveOrders
         ? "[LOCAL] Topstep API and live order routing enabled. Start and confirm TopBot in the app to send orders."
@@ -280,6 +288,7 @@ async function main() {
   states.get("BACKEND").ready = true;
   const apiBaseUrl = offline ? `http://127.0.0.1:${backendPort}` : process.env.VITE_API_BASE_URL ?? `http://127.0.0.1:${backendPort}`;
   frontendCommand.env.VITE_API_BASE_URL = apiBaseUrl;
+  frontendCommand.env.TOPSIGNAL_DEV_OPEN_BOT = offline && process.argv.includes("--open") ? "1" : "0";
   process.stdout.write(`[DEV] Frontend VITE_API_BASE_URL set to ${apiBaseUrl}.\n`);
   process.stdout.write("[DEV] Backend is ready; starting frontend.\n");
   startCommand(frontendCommand);

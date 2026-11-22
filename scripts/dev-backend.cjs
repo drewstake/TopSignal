@@ -28,6 +28,7 @@ const snapshot = createBackendEnvironmentSnapshot(process.env, backendEnv);
 const childEnv = process.env.TOPSIGNAL_OFFLINE_DEV === "1"
   ? offlineEnvironment(snapshot, repoRoot, {
     projectx: process.env.TOPSIGNAL_LOCAL_PROJECTX === "1",
+    pullLedgers: process.env.TOPSIGNAL_DEV_HOST_LEDGERS === "1",
     // Preserve the supervisor's explicit launch mode across .env reloads.
     liveOrders: process.env.TOPSIGNAL_LOCAL_LIVE_ORDERS === "1",
   })
