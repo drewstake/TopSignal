@@ -1,6 +1,7 @@
 import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 
+import { AccountActionDialog, type AccountEditAction } from "./AccountActionDialog";
 import { Button } from "../components/ui/Button";
 import { ScannerAlerts } from "../pages/scanner/ScannerAlerts";
 import { Select } from "../components/ui/Select";
@@ -93,6 +94,7 @@ export function AppShell() {
   const navigate = useNavigate();
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
+  const [accountEdit, setAccountEdit] = useState<{ action: AccountEditAction; accountId: number } | null>(null);
   const [accountsError, setAccountsError] = useState<string | null>(null);
   const [providerAccountsRefreshing, setProviderAccountsRefreshing] = useState(false);
   const [providerRefreshError, setProviderRefreshError] = useState<string | null>(null);
@@ -111,6 +113,8 @@ export function AppShell() {
   const activeLifecycleAccountIdRef = useRef<number | null>(null);
   const localStartupRefreshAttempted = useRef(false);
   const appHeaderRef = useRef<HTMLElement | null>(null);
+  const pickerRef = useRef<HTMLSelectElement>(null);
+  const returnFocusToAccount = useRef<number | null>(null);
   const locationRef = useRef(location);
   locationRef.current = location;
 
@@ -349,6 +353,15 @@ export function AppShell() {
     : currentUserEmailDisplay;
   const isTradesRoute = location.pathname.startsWith("/trades");
   const isDashboardRoute = location.pathname === "/dashboard" || location.pathname === "/";
+  useEffect(() => setAccountEdit(null), [selectedAccountId, isDashboardRoute, demoMode.enabled]);
+  useEffect(() => {
+    if (accountEdit || accountsLoading || returnFocusToAccount.current === null) return;
+    if (isDashboardRoute && returnFocusToAccount.current === selectedAccountId && document.activeElement === document.body) {
+      pickerRef.current?.focus();
+    }
+    returnFocusToAccount.current = null;
+  }, [accountEdit, accountsLoading, isDashboardRoute, selectedAccountId]);
+  const canEditAccount = Boolean(selectedAccount && !selectedAccount.is_archived && !accountsLoading && !demoMode.enabled);
   const currentPageLabel = WORKSPACE_PAGE_LABELS.find(([prefix]) =>
     prefix === "/" ? location.pathname === "/" : location.pathname.startsWith(prefix),
   )?.[1] ?? "Workspace";
@@ -376,6 +389,16 @@ export function AppShell() {
   );
 
   function handleAccountChange(rawValue: string) {
+    if (isDashboardRoute && rawValue === "manage") {
+      navigate(buildAccountAwarePath("/accounts", selectedAccountId));
+      return;
+    }
+    if (rawValue === "rename" || rawValue === "main") {
+      if (isDashboardRoute && canEditAccount && selectedAccount && !(rawValue === "main" && selectedAccount.is_main)) {
+        setAccountEdit({ action: rawValue, accountId: selectedAccount.id });
+      }
+      return;
+    }
     const nextAccountId = parseAccountId(rawValue);
     if (!nextAccountId) {
       return;
@@ -528,7 +551,6 @@ export function AppShell() {
           <Tabs
             items={[
               { label: "Dashboard", to: buildAccountAwarePath(location.pathname === "/" ? "/" : "/dashboard", selectedAccountId) },
-              { label: "Accounts", to: `/accounts${accountSuffix}` },
               { label: "Expenses", to: `/expenses${accountSuffix}` },
               { label: "Bot", to: `/bot${accountSuffix}` },
               { label: "Scanner", to: "/scanner" },
@@ -584,15 +606,16 @@ export function AppShell() {
                     Active Account
                   </label>
                   <Select
+                    ref={pickerRef}
                     id="app-active-account"
                     className="h-11 min-w-0 sm:h-9"
                     value={selectedAccountValue}
                     onChange={(event) => handleAccountChange(event.target.value)}
-                    disabled={accountsLoading || orderedAccounts.length === 0}
+                    disabled={accountsLoading || (!isDashboardRoute && orderedAccounts.length === 0)}
                   >
                     {!accountsLoading && unavailableAccountLink ? <option value="">Choose an available account</option> : null}
                     {accountsLoading ? <option>Loading accounts...</option> : null}
-                    {!accountsLoading && orderedAccounts.length === 0 ? <option>No accounts</option> : null}
+                    {!accountsLoading && orderedAccounts.length === 0 ? <option value="">No accounts</option> : null}
                     {orderedAccounts.map((account) => (
                       <option key={account.id} value={account.id}>
                         {`${getDemoAccountLabel(account)}${
@@ -606,6 +629,17 @@ export function AppShell() {
                         }`}
                       </option>
                     ))}
+                    {isDashboardRoute && (
+                      <optgroup label={demoMode.enabled ? "Account actions (Demo is read-only)" : "Account actions"}>
+                        {selectedAccount && <>
+                          <option value="rename" disabled={!canEditAccount}>Rename account…</option>
+                          <option value="main" disabled={!canEditAccount || selectedAccount.is_main}>
+                            {selectedAccount.is_main ? "Already the main account" : "Set as main…"}
+                          </option>
+                        </>}
+                        <option value="manage">Manage accounts…</option>
+                      </optgroup>
+                    )}
                   </Select>
                 </div>
                 <Button
@@ -704,6 +738,16 @@ export function AppShell() {
 
         </div>
       </header>
+      {isDashboardRoute && !demoMode.enabled && accountEdit && selectedAccount?.id === accountEdit.accountId && !selectedAccount.is_archived && (
+        <AccountActionDialog
+          action={accountEdit.action}
+          account={selectedAccount}
+          onClose={() => {
+            returnFocusToAccount.current = accountEdit.accountId;
+            setAccountEdit(current => current === accountEdit ? null : current);
+          }}
+        />
+      )}
       <main
         id="app-main-content"
         tabIndex={-1}

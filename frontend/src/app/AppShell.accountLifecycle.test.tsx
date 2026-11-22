@@ -76,6 +76,46 @@ afterEach(() => {
 });
 
 describe("AppShell account lifecycle reconciliation", () => {
+  it("renames and sets Main from Dashboard without changing account scope", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    const user = userEvent.setup();
+    const current = account(7102, "Daily", "csv_import", false);
+    getSelectableAccountsLocalFirstMock.mockResolvedValue([account(7101, "First", "csv_import", true), current]);
+    const rename = vi.spyOn(accountsApi, "renameAccountDisplayName").mockResolvedValue({
+      account_id: current.id, name: "Morning", provider_name: "Daily", custom_display_name: "Morning",
+    });
+    const setMain = vi.spyOn(accountsApi, "setMainAccount").mockImplementation(async id => {
+      getSelectableAccountsLocalFirstMock.mockResolvedValue([account(7101, "First", "csv_import", false), { ...current, is_main: true }]);
+      return { account_id: id, is_main: true };
+    });
+    HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+    HTMLDialogElement.prototype.close = function () { this.open = false; };
+    const router = createMemoryRouter([{
+      path: "/", element: <AppShell />, children: [
+        { path: "dashboard", element: <div>Dashboard content</div> },
+        { path: "accounts", element: <div>Account management</div> },
+      ],
+    }], { initialEntries: ["/dashboard?range=all&account=7102"] });
+    render(<RouterProvider router={router} />);
+    await screen.findByRole("option", { name: "Daily — Live CSV" });
+    const picker = screen.getByRole("combobox", { name: "Active Account" });
+    expect(screen.queryByRole("link", { name: "Accounts" })).toBeNull();
+    await user.selectOptions(picker, "rename");
+    const input = screen.getByRole("textbox", { name: "Display name" });
+    await user.clear(input);
+    await user.click(screen.getByRole("button", { name: "Save name" }));
+    expect(screen.getByRole("alert").textContent).toMatch(/cannot be empty/);
+    await user.type(input, " Morning {Enter}");
+    expect(rename).toHaveBeenCalledExactlyOnceWith(7102, "Morning");
+    await user.selectOptions(picker, "main");
+    await user.click(screen.getByRole("button", { name: "Set as main" }));
+    expect(setMain).toHaveBeenCalledExactlyOnceWith(7102);
+    await waitFor(() => expect((screen.getByRole("option", { name: "Already the main account" }) as HTMLOptionElement).disabled).toBe(true));
+    expect(router.state.location.search).toBe("?range=all&account=7102");
+    await user.selectOptions(picker, "manage");
+    expect(router.state.location.pathname + router.state.location.search).toBe("/accounts?account=7102");
+  });
+
   it.each(["9999", "", "bad", "7101&account=7102"])("does not fall back under an unavailable or invalid account URL: %s", async query => {
     Element.prototype.scrollIntoView = vi.fn();
     const available = account(7101, "Available", "csv_import", true);

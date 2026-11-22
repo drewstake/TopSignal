@@ -70,10 +70,10 @@ describe("AppShell compact mode", () => {
   it("keeps only the supported workspace tabs in navigation", async () => {
     renderAppShell("/?account=10");
     await screen.findByRole("link", { name: "Bot" });
-    for (const name of ["Dashboard", "Accounts", "Expenses", "Bot", "Scanner", "Recorders", "Health", "Appearance"]) {
+    for (const name of ["Dashboard", "Expenses", "Bot", "Scanner", "Recorders", "Health", "Appearance"]) {
       expect(screen.getByRole("link", { name })).toBeTruthy();
     }
-    for (const name of ["Trades", "Backtesting", "Simulation", "Logs", "Order book history", "Liquidity research", "Event study"]) {
+    for (const name of ["Accounts", "Trades", "Backtesting", "Simulation", "Logs", "Order book history", "Liquidity research", "Event study"]) {
       expect(screen.queryByRole("link", { name })).toBeNull();
     }
   });

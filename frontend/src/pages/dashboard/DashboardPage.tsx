@@ -23,7 +23,9 @@ import { AccountRiskForecastPanel } from "./components/AccountRiskForecastPanel"
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Toggle } from "../../components/ui/Toggle";
 import {
+  ACCOUNT_DISPLAY_NAME_UPDATED_EVENT,
   ACCOUNT_QUERY_PARAM,
+  MAIN_ACCOUNT_UPDATED_EVENT,
   buildAccountAwarePath,
   parseAccountId,
   readStoredAccountId,
@@ -891,6 +893,12 @@ export function DashboardPage() {
       return;
     }
     void loadAccounts();
+    window.addEventListener(ACCOUNT_DISPLAY_NAME_UPDATED_EVENT, loadAccounts);
+    window.addEventListener(MAIN_ACCOUNT_UPDATED_EVENT, loadAccounts);
+    return () => {
+      window.removeEventListener(ACCOUNT_DISPLAY_NAME_UPDATED_EVENT, loadAccounts);
+      window.removeEventListener(MAIN_ACCOUNT_UPDATED_EVENT, loadAccounts);
+    };
   }, [loadAccounts, usingShellAccounts]);
 
   useEffect(() => {
