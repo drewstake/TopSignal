@@ -95,25 +95,27 @@ describe("AppShell account lifecycle reconciliation", () => {
         { path: "dashboard", element: <div>Dashboard content</div> },
         { path: "accounts", element: <div>Account management</div> },
       ],
-    }], { initialEntries: ["/dashboard?range=all&account=7102"] });
+    }], { initialEntries: ["/dashboard?range=all&account=7101"] });
     render(<RouterProvider router={router} />);
-    await screen.findByRole("option", { name: "Daily — Live CSV" });
-    const picker = screen.getByRole("combobox", { name: "Active Account" });
+    const picker = await screen.findByRole("button", { name: /Active Account: First/ });
     expect(screen.queryByRole("link", { name: "Accounts" })).toBeNull();
-    await user.selectOptions(picker, "rename");
+    await user.click(picker);
+    await user.click(screen.getByRole("button", { name: "Rename Daily" }));
     const input = screen.getByRole("textbox", { name: "Display name" });
     await user.clear(input);
     await user.click(screen.getByRole("button", { name: "Save name" }));
     expect(screen.getByRole("alert").textContent).toMatch(/cannot be empty/);
     await user.type(input, " Morning {Enter}");
     expect(rename).toHaveBeenCalledExactlyOnceWith(7102, "Morning");
-    await user.selectOptions(picker, "main");
+    await user.click(picker);
+    await user.click(screen.getByRole("button", { name: "Set Daily as main" }));
     await user.click(screen.getByRole("button", { name: "Set as main" }));
     expect(setMain).toHaveBeenCalledExactlyOnceWith(7102);
-    await waitFor(() => expect((screen.getByRole("option", { name: "Already the main account" }) as HTMLOptionElement).disabled).toBe(true));
-    expect(router.state.location.search).toBe("?range=all&account=7102");
-    await user.selectOptions(picker, "manage");
-    expect(router.state.location.pathname + router.state.location.search).toBe("/accounts?account=7102");
+    await user.click(picker);
+    expect((await screen.findByRole("button", { name: "Main account: Daily" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(router.state.location.search).toBe("?range=all&account=7101");
+    await user.click(screen.getByRole("link", { name: "Manage accounts" }));
+    expect(router.state.location.pathname + router.state.location.search).toBe("/accounts?account=7101");
   });
 
   it.each(["9999", "", "bad", "7101&account=7102"])("does not fall back under an unavailable or invalid account URL: %s", async query => {
@@ -159,12 +161,12 @@ describe("AppShell account lifecycle reconciliation", () => {
     }]);
     render(<StrictMode><RouterProvider router={router} /></StrictMode>);
 
-    await screen.findByRole("option", { name: /Express First/ });
-    const select = screen.getByRole("combobox", { name: "Active Account" }) as HTMLSelectElement;
-    expect(select.value).toBe("7101");
-    fireEvent.change(select, { target: { value: "7102" } });
+    const picker = await screen.findByRole("button", { name: /Active Account: Express First/ });
+    fireEvent.click(picker);
+    fireEvent.click(screen.getByRole("button", { name: /^Express Second/ }));
+    expect(router.state.location.search).toBe("?account=7102");
     await act(async () => { await router.navigate("/accounts?account=7102"); });
-    expect(select.value).toBe("7102");
+    expect((screen.getByRole("combobox", { name: "Active Account" }) as HTMLSelectElement).value).toBe("7102");
     expect(getSelectableAccountsMock).toHaveBeenCalledExactlyOnceWith({ refreshProvider: true });
   });
 
@@ -179,7 +181,7 @@ describe("AppShell account lifecycle reconciliation", () => {
     }]);
     render(<RouterProvider router={router} />);
     expect((await screen.findByRole("alert")).textContent).toContain("ProjectX account refresh failed");
-    expect(screen.getByRole("option", { name: /Express Saved/ })).not.toBeNull();
+    expect(screen.getByRole("button", { name: /Active Account: Express Saved/ })).not.toBeNull();
     expect(getSelectableAccountsMock).toHaveBeenCalledTimes(1);
   });
 
@@ -243,8 +245,8 @@ describe("AppShell account lifecycle reconciliation", () => {
     );
 
     render(<RouterProvider router={router} />);
-    const accountSelect = await screen.findByRole("combobox", { name: "Active Account" });
-    await waitFor(() => expect((accountSelect as HTMLSelectElement).value).toBe("88001"));
+    const accountSelect = await screen.findByRole("button", { name: /^Active Account:/ });
+    await waitFor(() => expect((accountSelect as HTMLButtonElement).value).toBe("88001"));
 
     act(() => {
       dispatchAccountListChanged({
@@ -255,10 +257,11 @@ describe("AppShell account lifecycle reconciliation", () => {
     });
 
     await waitFor(() => expect(getSelectableAccountsLocalFirstMock).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect((accountSelect as HTMLSelectElement).value).toBe("88002"));
+    await waitFor(() => expect((accountSelect as HTMLButtonElement).value).toBe("88002"));
     expect(router.state.location.search).toBe("?account=88002");
-    expect(screen.queryByRole("option", { name: /Live Active/ })).toBeNull();
-    expect(screen.getByRole("option", { name: /Live Backup/ })).not.toBeNull();
+    fireEvent.click(accountSelect);
+    expect(screen.queryByRole("button", { name: /^Live Active/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Live Backup/ })).not.toBeNull();
     expect(getSelectableAccountsMock).not.toHaveBeenCalled();
   });
 
@@ -401,22 +404,24 @@ describe("AppShell account lifecycle reconciliation", () => {
     );
 
     render(<RouterProvider router={router} />);
-    const accountSelect = await screen.findByRole("combobox", { name: "Active Account" });
+    const accountSelect = await screen.findByRole("button", { name: /^Active Account:/ });
     await waitFor(() => expect(getSelectableAccountsMock).toHaveBeenCalledWith({ refreshProvider: true }));
     expect(screen.getByRole("status").textContent).toContain("Refreshing ProjectX accounts");
 
-    fireEvent.change(accountSelect, { target: { value: "88001" } });
-    await waitFor(() => expect((accountSelect as HTMLSelectElement).value).toBe("88001"));
+    fireEvent.click(accountSelect);
+    fireEvent.click(screen.getByRole("button", { name: /^Live Selected/ }));
+    await waitFor(() => expect((accountSelect as HTMLButtonElement).value).toBe("88001"));
 
     await act(async () => {
       refresh.resolve([live, refreshedExpress, discoveredExpress]);
       await refresh.promise;
     });
 
-    await waitFor(() => expect(screen.queryByRole("option", { name: /Express Saved/ })).toBeNull());
-    expect(screen.getByRole("option", { name: /Express Refreshed/ })).not.toBeNull();
-    expect(screen.getByRole("option", { name: /Express Newly Discovered/ })).not.toBeNull();
-    expect((accountSelect as HTMLSelectElement).value).toBe("88001");
+    fireEvent.click(accountSelect);
+    expect(screen.queryByRole("button", { name: /^Express Saved/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Express Refreshed/ })).not.toBeNull();
+    expect(screen.getByRole("button", { name: /^Express Newly Discovered/ })).not.toBeNull();
+    expect((accountSelect as HTMLButtonElement).value).toBe("88001");
     expect(router.state.location.search).toBe("?account=88001");
     expect(screen.getByText(/ProjectX account data refreshed successfully/)).not.toBeNull();
   });
@@ -450,8 +455,8 @@ describe("AppShell account lifecycle reconciliation", () => {
     expect((await screen.findByRole("alert")).textContent).toContain(
       "ProjectX rejected the saved credential for this signed-in user.",
     );
-    expect(screen.getByRole("option", { name: /cached after refresh failure/ })).not.toBeNull();
-    expect((screen.getByRole("combobox", { name: "Active Account" }) as HTMLSelectElement).value).toBe("7101");
+    expect(screen.getByRole("button", { name: /^Active Account: .*cached after refresh failure/ })).not.toBeNull();
+    expect((screen.getByRole("button", { name: /^Active Account:/ }) as HTMLButtonElement).value).toBe("7101");
   });
 
   it("surfaces a structured configuration failure instead of swallowing the rejected refresh", async () => {
@@ -478,6 +483,6 @@ describe("AppShell account lifecycle reconciliation", () => {
     expect((await screen.findByRole("alert")).textContent).toContain(
       "The saved ProjectX credential cannot be opened by this runtime. Saved account data remains available.",
     );
-    expect(screen.getByRole("option", { name: /Express Cached/ })).not.toBeNull();
+    expect(screen.getByRole("button", { name: /Active Account: Express Cached/ })).not.toBeNull();
   });
 });

@@ -171,8 +171,8 @@ describe("AppShell transition safety integration", () => {
   it("keeps a non-main active account through Appearance and when the query is absent", async () => {
     writeStoredAccountId(secondaryAccount.id);
     const router = renderShell();
-    const accountSelect = await screen.findByRole("combobox", { name: /active account/i });
-    await waitFor(() => expect((accountSelect as HTMLSelectElement).value).toBe(String(secondaryAccount.id)));
+    const accountSelect = await screen.findByRole("button", { name: /^Active Account:/ });
+    await waitFor(() => expect((accountSelect as HTMLButtonElement).value).toBe(String(secondaryAccount.id)));
 
     const appearanceLink = screen.getByRole("link", { name: "Appearance" });
     expect(appearanceLink.getAttribute("href")).toBe(`/appearance?account=${secondaryAccount.id}`);

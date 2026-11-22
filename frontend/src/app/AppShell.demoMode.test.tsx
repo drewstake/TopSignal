@@ -125,7 +125,7 @@ describe("AppShell Demo Mode policy", () => {
     expect(main.tabIndex).toBe(-1);
     expect(provenance.textContent).toContain("Demo data · read only · scenario as of Jul 24, 2026");
     expect((liveAction as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByRole("option", { name: "Demo Main — Intraday (910001)" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: /Active Account: Demo Main — Intraday/ })).not.toBeNull();
     expect(screen.queryByText("real.user@example.com")).toBeNull();
     expect(getCurrentUserEmailSyncMock).not.toHaveBeenCalled();
     expect(getAccessTokenSyncMock).not.toHaveBeenCalled();
