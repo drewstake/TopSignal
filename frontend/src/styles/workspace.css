@@ -134,9 +134,23 @@
 .copy-trade-panel > header { padding-bottom: 14px; border-bottom: 1px solid rgb(var(--theme-border) / .65); }
 .dashboard-section-title { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; padding-top: 10px; }
 .dashboard-section-title h2 { margin-top: 6px; font-size: 20px; font-weight: 550; letter-spacing: -.5px; }
+.dashboard-insights { container: insights / inline-size; }
 .dashboard-analytics-grid { --insight-gap: 12px; columns: 24rem 3; column-gap: var(--insight-gap); }
-.dashboard-analytics-grid > .col-span-full { column-span: all; }
 .dashboard-analytics-grid > .analytics-metric { display: inline-block; vertical-align: top; break-inside: avoid; width: 100%; height: auto; margin-bottom: var(--insight-gap); padding: 16px; overflow: visible; isolation: auto; }
+@container insights (min-width: 72rem) {
+  .dashboard-analytics-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: var(--insight-gap); }
+  .dashboard-analytics-grid > .analytics-metric { grid-column: span 4; align-self: stretch; min-width: 0; margin: 0; }
+  .dashboard-analytics-grid > .insight-comparison { grid-column: span 6; }
+  .dashboard-analytics-grid > .insight-summary { grid-column: span 3; }
+  .insight-direction-breakdown { grid-template-columns: minmax(8rem, 1fr) minmax(0, 3fr); align-items: start; }
+  .insight-direction-breakdown > :first-child { flex-direction: column; }
+  .insight-direction-breakdown > :first-child > :last-child { width: 100%; }
+  .metric-details-content dl.insight-paired-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 16px; }
+  .insight-summary .insight-edge-stats { grid-template-columns: 1fr; gap: 0; }
+  .insight-edge-stats > div { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 6px 0; border-bottom: 1px solid rgb(var(--theme-border) / .55); }
+  .insight-edge-stats p { margin: 0; }
+  .insight-summary .metric-details-content dl > div { padding-block: 4px; }
+}
 .analytics-metric > [aria-hidden="true"] { display: none; }
 .metric-title { color: rgb(var(--theme-muted)); font-size: 12px; font-weight: 500; letter-spacing: 0; }
 .analytics-metric > p:first-of-type { margin-top: 8px; font-size: 27px; font-weight: 500; line-height: 1.1; letter-spacing: -.8px; filter: none; }

@@ -3737,22 +3737,19 @@ export function DashboardPage() {
         />
       ) : null}
       <div className="dashboard-section-title"><h2>Performance insights</h2></div>
-      <div className="dashboard-analytics-grid">
+      <div className="dashboard-insights">
         {summaryLoading ? (
-          Array.from({ length: 8 }).map((_, index) => (
-            <MetricCard
-              key={`summary-loading-${index}`}
-              title="Loading"
-              primaryValue="..."
-              className="animate-pulse"
-            />
-          ))
+          <div className="dashboard-analytics-grid">
+            {Array.from({ length: 9 }, (_, index) => (
+              <MetricCard key={index} title="Loading" primaryValue="..." className="animate-pulse" />
+            ))}
+          </div>
         ) : summaryError ? (
           <Card className="col-span-full p-4">
             <p className="text-sm text-app-negative">{summaryError}</p>
           </Card>
         ) : (
-          <>
+          <div className="dashboard-analytics-grid">
             <MetricCard
               title={copyTradeStatsActive ? "Copy Trade Net" : "Performance"}
               primaryValue={formatMetricValue(netPnlMetric, formatPnl)}
@@ -3896,62 +3893,6 @@ export function DashboardPage() {
             </MetricCard>
 
             <MetricCard
-              title="Edge"
-              primaryValue={formatMetricValue(expectancyPerTradeMetric, formatPnl)}
-              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgb(var(--theme-bg)/0.5)]", edgePrimaryClassName)}
-              subtitle="Expected net result per trade."
-              info="Expectancy combines your win rate and payoff profile into average dollars per trade."
-              accentClassName={edgeAccentClassName}
-              className={cn(
-                "relative isolate",
-                edgeCardClassName,
-              )}
-              contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
-            >
-              <div
-                aria-hidden="true"
-                className={cn("pointer-events-none absolute -right-14 -top-12 h-28 w-28 rounded-full blur-3xl", edgeGlowClassName)}
-              />
-              <div className="relative">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <Badge variant={edgeSignalVariant}>{edgeSignalLabel}</Badge>
-                  <Badge variant="accent">{`PF ${formatProfitFactor(summary)}`}</Badge>
-                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">{`WR ${formatPercent(summary.win_rate, 1)}`}</span>
-                </div>
-                <div className="mt-2.5 grid grid-cols-3 gap-2">
-                  <div className="min-w-0">
-                    <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Profit Factor</p>
-                    <p className="mt-1 text-sm font-semibold text-app-accent">{formatProfitFactor(summary)}</p>
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Win Rate</p>
-                    <p className="mt-1 text-sm font-semibold text-app-text">{formatPercent(summary.win_rate, 1)}</p>
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">W/L Ratio</p>
-                    <p className="mt-1 text-sm font-semibold text-app-text">
-                      {formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}
-                    </p>
-                  </div>
-                </div>
-                <div className="mt-2.5 space-y-1">
-                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-app-muted">
-                    <span>Outcome Mix</span>
-                    <span>{`${summary.win_count}W / ${summary.loss_count}L / ${summary.breakeven_count} BE`}</span>
-                  </div>
-                  <div className="relative h-2 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/85">
-                    <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-app-positive/95 to-app-positive/85" style={{ width: `${edgeWinShare}%` }} />
-                    <div
-                      className="absolute inset-y-0 bg-gradient-to-r from-app-warning/85 to-app-muted/75"
-                      style={{ left: `${edgeWinShare}%`, width: `${edgeBreakevenShare}%` }}
-                    />
-                    <div className="absolute inset-y-0 right-0 bg-gradient-to-l from-app-negative/95 to-app-negative/85" style={{ width: `${edgeLossShare}%` }} />
-                  </div>
-                </div>
-              </div>
-            </MetricCard>
-
-            <MetricCard
               title="Swing"
               primaryValue={formatMetricValue(derivedMetrics.stability.dailyPnlVolatility, formatCurrency)}
               primaryClassName="bg-gradient-to-r from-app-secondary via-app-accent to-app-secondary bg-clip-text text-transparent"
@@ -3977,7 +3918,7 @@ export function DashboardPage() {
                     rightBarClassName="bg-gradient-to-l from-app-negative/90 to-app-warning/75"
                   />
                   <MiniStatList
-                    className="gap-1.5"
+                    className="insight-paired-stats gap-1.5"
                     items={[
                       {
                         label: "Best Day",
@@ -4113,13 +4054,13 @@ export function DashboardPage() {
               }
               info="Long % is long trades divided by total directional trades for this range."
               accentClassName="bg-gradient-to-r from-app-positive/80 via-app-accent/25 to-app-negative/80"
-              className="relative flex flex-col overflow-hidden"
+              className="insight-comparison relative flex flex-col overflow-hidden"
               contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
             >
               <div className="relative">
                 <div aria-hidden="true" className="pointer-events-none absolute -left-8 top-0 h-20 w-20 rounded-full bg-app-positive/20 blur-2xl" />
                 <div aria-hidden="true" className="pointer-events-none absolute -right-6 bottom-1 h-24 w-24 rounded-full bg-app-negative/15 blur-2xl" />
-                <div className="relative grid gap-4">
+                <div className="insight-direction-breakdown relative grid gap-4">
                   <DonutRing
                     className="min-w-0"
                     segments={[
@@ -4260,7 +4201,7 @@ export function DashboardPage() {
               subtitle="Average win versus average loss."
               info="Breakeven win rate = abs(avg loss) / (avg win + abs(avg loss))."
               accentClassName={payoffAccentClassName}
-              className={cn("relative isolate", payoffCardClassName)}
+              className={cn("insight-comparison relative isolate", payoffCardClassName)}
               contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
             >
               <div
@@ -4290,7 +4231,7 @@ export function DashboardPage() {
                   rightBarClassName="bg-gradient-to-l from-app-negative/90 to-app-warning/80"
                 />
                 <MiniStatList
-                  className="mt-2.5 gap-1.5"
+                  className="insight-paired-stats mt-2.5 gap-1.5"
                   items={[
                     {
                       label: "Avg Win",
@@ -4352,6 +4293,62 @@ export function DashboardPage() {
             </MetricCard>
 
             <MetricCard
+              title="Edge"
+              primaryValue={formatMetricValue(expectancyPerTradeMetric, formatPnl)}
+              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgb(var(--theme-bg)/0.5)]", edgePrimaryClassName)}
+              subtitle="Expected net result per trade."
+              info="Expectancy combines your win rate and payoff profile into average dollars per trade."
+              accentClassName={edgeAccentClassName}
+              className={cn(
+                "insight-summary relative isolate",
+                edgeCardClassName,
+              )}
+              contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
+            >
+              <div
+                aria-hidden="true"
+                className={cn("pointer-events-none absolute -right-14 -top-12 h-28 w-28 rounded-full blur-3xl", edgeGlowClassName)}
+              />
+              <div className="relative">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Badge variant={edgeSignalVariant}>{edgeSignalLabel}</Badge>
+                  <Badge variant="accent">{`PF ${formatProfitFactor(summary)}`}</Badge>
+                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">{`WR ${formatPercent(summary.win_rate, 1)}`}</span>
+                </div>
+                <div className="insight-edge-stats mt-2.5 grid grid-cols-3 gap-2">
+                  <div className="min-w-0">
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Profit Factor</p>
+                    <p className="mt-1 text-sm font-semibold text-app-accent">{formatProfitFactor(summary)}</p>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Win Rate</p>
+                    <p className="mt-1 text-sm font-semibold text-app-text">{formatPercent(summary.win_rate, 1)}</p>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">W/L Ratio</p>
+                    <p className="mt-1 text-sm font-semibold text-app-text">
+                      {formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-2.5 space-y-1">
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-app-muted">
+                    <span>Outcome Mix</span>
+                    <span>{`${summary.win_count}W / ${summary.loss_count}L / ${summary.breakeven_count} BE`}</span>
+                  </div>
+                  <div className="relative h-2 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/85">
+                    <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-app-positive/95 to-app-positive/85" style={{ width: `${edgeWinShare}%` }} />
+                    <div
+                      className="absolute inset-y-0 bg-gradient-to-r from-app-warning/85 to-app-muted/75"
+                      style={{ left: `${edgeWinShare}%`, width: `${edgeBreakevenShare}%` }}
+                    />
+                    <div className="absolute inset-y-0 right-0 bg-gradient-to-l from-app-negative/95 to-app-negative/85" style={{ width: `${edgeLossShare}%` }} />
+                  </div>
+                </div>
+              </div>
+            </MetricCard>
+
+            <MetricCard
               title="Activity"
               primaryValue={formatInteger(displayTradeCount)}
               primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgb(var(--theme-bg)/0.45)]", activityPrimaryClassName)}
@@ -4359,7 +4356,7 @@ export function DashboardPage() {
               info="Activity normalizes execution count by active trading days."
               accentClassName={activityAccentClassName}
               className={cn(
-                "relative isolate lg:p-3",
+                "insight-summary relative isolate lg:p-3",
                 activityCardClassName,
               )}
               contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
@@ -4435,7 +4432,7 @@ export function DashboardPage() {
               info="Sustainability blends drawdown control, day-to-day consistency, and profit factor with a confidence adjustment for small samples."
               accentClassName={sustainabilityAccentClassName}
               className={cn(
-                "relative isolate self-start p-3",
+                "insight-summary relative isolate self-start p-3",
                 sustainabilityCardClassName,
               )}
               contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
@@ -4514,7 +4511,7 @@ export function DashboardPage() {
               subtitle="Win duration divided by loss duration."
               info="Win Duration / Loss Duration = avg win hold minutes / avg loss hold minutes."
               accentClassName={holdTimeAccentClassName}
-              className={cn("relative isolate", holdTimeCardClassName)}
+              className={cn("insight-summary relative isolate", holdTimeCardClassName)}
               contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
             >
               <div
@@ -4554,7 +4551,7 @@ export function DashboardPage() {
                 ]}
               />
             </MetricCard>
-          </>
+          </div>
         )}
       </div>
 
