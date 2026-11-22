@@ -67,11 +67,7 @@ export function BotProjectXAccountNotice({
           </label>
         ) : (
           <div className="flex shrink-0 flex-wrap items-center gap-3 sm:justify-end">
-            <span className="text-xs text-app-muted">No ProjectX account connected</span>
-            <a
-              className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-lg border border-app-border px-3 text-xs font-medium text-app-text transition-colors hover:bg-app-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/55"
-              href="/accounts"
-            >Open Accounts</a>
+            <span className="text-xs text-app-muted">No ProjectX account connected. Refresh ProjectX accounts under Health → Account records.</span>
           </div>
         )}
       </section>

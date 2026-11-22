@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Button } from "../../components/ui/Button";
 import { Icon, type IconName } from "../../components/ui/Icon";
 import { isApiError, requestJson } from "../../lib/api";
@@ -6,6 +6,8 @@ import { useDemoMode } from "../../lib/demoMode";
 import { usePageVisibility } from "../bot/usePageVisibility";
 import { easternTime, type Snapshot } from "../scanner/types";
 import "./HealthPage.css";
+
+const AccountRecords = lazy(() => import("../accounts/AccountRecords").then(module => ({ default: module.AccountRecords })));
 
 type ScannerHealth = Omit<Snapshot, "events">;
 
@@ -132,6 +134,7 @@ function useHealthSamples(live: boolean) {
 }
 
 export default function HealthPage() {
+  const [recordsOpen, setRecordsOpen] = useState(false);
   const { enabled: demo } = useDemoMode();
   const { samples, scanner, scannerFailed, visible, refresh } = useHealthSamples(!demo);
   const rows = ids.map(id => {
@@ -181,6 +184,10 @@ export default function HealthPage() {
       </li>)}
     </ul>
     <ScannerSources report={scanner} failed={scannerFailed} demo={demo} visible={visible} />
+    <details className="mt-4" onToggle={event => setRecordsOpen(event.currentTarget.open)}>
+      <summary className="cursor-pointer py-2 font-semibold">Account records</summary>
+      {recordsOpen && <Suspense fallback={<p role="status">Loading account records…</p>}><AccountRecords /></Suspense>}
+    </details>
   </section>;
 }
 

@@ -250,7 +250,7 @@ function mountDashboard(options: {
         ),
         children: [
           { path: "dashboard", element: <DashboardPage /> },
-          { path: "accounts", element: <div>Accounts route</div> },
+          { path: "health", element: <div>Health route</div> },
         ],
       },
     ],
@@ -329,7 +329,7 @@ afterEach(() => {
 });
 
 describe("DashboardPage Compact Mode request and state integration", () => {
-  it.each([false, true])("reuses successful copy-trade sync after Dashboard → Accounts → Dashboard (compact=%s)", async (compact) => {
+  it.each([false, true])("reuses successful copy-trade sync after Dashboard → Health → Dashboard (compact=%s)", async (compact) => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-04T21:05:00Z"));
     const leader = makeAccount(compact ? 94001 : 93001, "Leader", { isMain: true });
@@ -347,8 +347,8 @@ describe("DashboardPage Compact Mode request and state integration", () => {
     if (compact) await waitForCompactSettled();
     else await screen.findByText("Copy Adjusted");
     const initialSummaryCalls = api.getSummaryWithPointBases.mock.calls.length;
-    await act(async () => { await router.navigate(`/accounts?account=${leader.id}`); });
-    expect(screen.getByText("Accounts route")).toBeTruthy();
+    await act(async () => { await router.navigate(`/health?account=${leader.id}`); });
+    expect(screen.getByText("Health route")).toBeTruthy();
     vi.setSystemTime(new Date("2026-09-04T21:08:00Z"));
     await act(async () => { await router.navigate(`/dashboard?account=${leader.id}`); });
     await waitFor(() => expect(api.getSummaryWithPointBases.mock.calls.length).toBeGreaterThan(initialSummaryCalls));

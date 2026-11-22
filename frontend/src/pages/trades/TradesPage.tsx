@@ -1,6 +1,6 @@
 import { formatProfitFactor } from "../../utils/profitFactor";
 import { type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
-import { Link, useOutletContext } from "react-router-dom";
+import { useOutletContext } from "react-router-dom";
 
 import type { AppShellOutletContext } from "../../app/AppShell";
 import { DemoModeNotice } from "../../components/demo/DemoModeNotice";
@@ -296,27 +296,15 @@ function TradesAccountState({ error, hasAccounts = false, onRetry }: {
             </h2>
             <p className="mt-3 text-sm leading-6 text-app-muted">
               {error
-                ? "We couldn't load your saved accounts. Try again or review your accounts to continue."
+                ? "We couldn't load your saved accounts. Try again to reload the list."
                 : hasAccounts
-                  ? "Select an active account from the header or Accounts page to see its trades and performance."
-                  : "Open Accounts to refresh your account list and select an account. Its trade history will appear here."}
+                  ? "Select an active account from the header to see its trades and performance."
+                  : "Refresh ProjectX accounts under Health → Account records, or add a Live CSV account on the Dashboard."}
             </p>
             {error ? <p className="mt-3 break-words text-sm text-app-negative-text">{error}</p> : null}
           </div>
           <div className="mt-6 flex w-full flex-col items-center justify-center gap-3 sm:w-auto sm:flex-row">
             {error && onRetry ? <Button onClick={onRetry} className="w-full sm:w-auto">Try again</Button> : null}
-            <Link
-              to="/accounts"
-              className={cn(
-                "inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border px-5 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-2 focus-visible:ring-offset-app-surface sm:w-auto",
-                error ? "border-app-border text-app-text hover:bg-app-accent/10" : "border-app-accent/70 bg-app-accent/90 text-app-accent-contrast hover:bg-app-accent",
-              )}
-            >
-              {hasAccounts ? "Choose an account" : "Go to Accounts"}
-              <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
-                <path d="M4 10h12m-5-5 5 5-5 5" />
-              </svg>
-            </Link>
           </div>
         </div>
         <div className="border-t border-app-border bg-app-bg/25 px-5 py-4 text-center text-xs leading-5 text-app-muted">

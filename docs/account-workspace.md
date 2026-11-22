@@ -51,26 +51,9 @@ Important dashboard behaviors:
 
 ## Accounts
 
-The Accounts page is the account-management surface for ProjectX-synced and
-Live CSV accounts.
+On the Dashboard, open **Active Account**. Select an account by name, use its pencil to rename it, or use its star to set it as main. Opening an old `/accounts` bookmark takes you to the Dashboard with its account query intact.
 
-A user can:
-
-- view discovered accounts
-- see current balance, state, and last known trade timestamp
-- toggle hidden and missing accounts into view
-- mark one account as the main account
-- set the active account used across the rest of the app
-- override the provider account name with a local display name
-- use the dashboard's `Live Account (CSV)` control to switch to a separate
-  local Live account backed by manually imported Topstep trades
-- create Live accounts with a name and opening balance; TopSignal generates and
-  hides the internal routing key and derives current balance from imported net P&L
-- resolve the last trade timestamp from the provider when local data is stale or absent
-
-Accounts page:
-
-![Accounts management page](screenshots/accounts-2026-11-18.png)
+Open **Health → Account records** to refresh ProjectX, review balances and last trade times, show hidden or missing accounts, and archive or restore Live CSV accounts. Use **Live Account (CSV)** on the Dashboard to create a Live account with an opening balance and import its trade history.
 
 TopSignal tracks four account states:
 

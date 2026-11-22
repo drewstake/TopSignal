@@ -204,7 +204,7 @@ describe("TradesPage account-switch races", () => {
     const emptyRouter = createTradesRouter({ accounts: [], initialEntry: "/" });
     render(<RouterProvider router={emptyRouter} />);
     expect(screen.getByRole("status").textContent).toContain("No accounts available yet");
-    expect(screen.getByRole("link", { name: "Go to Accounts" }).getAttribute("href")).toBe("/accounts");
+    expect(screen.getByRole("status").textContent).toContain("Health → Account records");
     expect(screen.queryByText("Choose an account from the header to load trades.")).toBeNull();
   });
 

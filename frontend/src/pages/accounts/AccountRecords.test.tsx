@@ -11,7 +11,7 @@ import {
 } from "../../lib/accountSelection";
 import { accountsApi } from "../../lib/api";
 import type { AccountInfo } from "../../lib/types";
-import { AccountsPage } from "./AccountsPage";
+import { AccountRecords } from "./AccountRecords";
 
 function account({
   id,
@@ -53,9 +53,9 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function renderAccountsPage(initialEntry = "/accounts") {
+function renderAccountRecords(initialEntry = "/health") {
   const router = createMemoryRouter(
-    [{ path: "/accounts", element: <AccountsPage /> }],
+    [{ path: "/health", element: <AccountRecords /> }],
     { initialEntries: [initialEntry] },
   );
   render(<RouterProvider router={router} />);
@@ -69,7 +69,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("AccountsPage local-first management", () => {
+describe("AccountRecords local-first management", () => {
   it("loads one archived-inclusive local snapshot without extra requests when dates are already present", async () => {
     const live = account({ id: 88001, name: "Live Funded", source: "csv_import", main: true });
     const express = account({ id: 7101, name: "Express Cached", source: "projectx" });
@@ -77,7 +77,7 @@ describe("AccountsPage local-first management", () => {
     const fetchSpy = vi.fn(() => Promise.reject(new Error("network must stay idle")));
     vi.stubGlobal("fetch", fetchSpy);
 
-    renderAccountsPage("/accounts?account=88001");
+    renderAccountRecords("/health?account=88001");
 
     const liveSelection = await screen.findByRole("button", { name: "Select Live Funded account" });
     expect(liveSelection).not.toBeNull();
@@ -105,7 +105,7 @@ describe("AccountsPage local-first management", () => {
       last_trade_at: "2026-11-10T16:39:00Z",
       source: "provider",
     });
-    const router = renderAccountsPage("/accounts?account=88001");
+    const router = renderAccountRecords("/health?account=88001");
 
     await waitFor(() => expect(lookup).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole("button", { name: "Lookup" })).toBeNull();
@@ -129,7 +129,7 @@ describe("AccountsPage local-first management", () => {
       .mockResolvedValueOnce({ account_id: empty.id, last_trade_at: null, source: "none" })
       .mockRejectedValueOnce(new Error("Provider unavailable"))
       .mockResolvedValueOnce({ account_id: failed.id, last_trade_at: "2026-11-10T16:39:00Z", source: "provider" });
-    renderAccountsPage();
+    renderAccountRecords();
 
     const retry = await screen.findByRole("button", { name: "Retry last trade for Failed" });
     expect(screen.getAllByText("No trades")).toHaveLength(1);
@@ -149,7 +149,7 @@ describe("AccountsPage local-first management", () => {
       .mockResolvedValueOnce([{ ...express, last_trade_at: "2026-11-10T17:47:00Z" }]);
     const pending = deferred<Awaited<ReturnType<typeof accountsApi.getLastTrade>>>();
     const lookup = vi.spyOn(accountsApi, "getLastTrade").mockReturnValue(pending.promise);
-    renderAccountsPage();
+    renderAccountRecords();
     await waitFor(() => expect(lookup).toHaveBeenCalledTimes(1));
     await userEvent.setup().click(screen.getByRole("button", { name: "Refresh Express Accounts" }));
     expect(await screen.findByText("Nov 10, 2026, 17:47 UTC")).not.toBeNull();
@@ -171,7 +171,7 @@ describe("AccountsPage local-first management", () => {
       .mockResolvedValueOnce([live])
       .mockReturnValueOnce(refresh.promise);
 
-    renderAccountsPage("/accounts?account=88001");
+    renderAccountRecords("/health?account=88001");
     const refreshButton = await screen.findByRole("button", { name: "Refresh Express Accounts" });
     await waitFor(() => expect((refreshButton as HTMLButtonElement).disabled).toBe(false));
 
@@ -200,7 +200,7 @@ describe("AccountsPage local-first management", () => {
       .mockResolvedValueOnce([live, express])
       .mockRejectedValueOnce(new Error("ProjectX unavailable"));
 
-    renderAccountsPage("/accounts?account=88001");
+    renderAccountRecords("/health?account=88001");
     await user.click(await screen.findByRole("button", { name: "Refresh Express Accounts" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain(
@@ -232,7 +232,7 @@ describe("AccountsPage local-first management", () => {
       .mockResolvedValueOnce([live, savedExpress])
       .mockResolvedValueOnce([live, fallbackExpress]);
 
-    renderAccountsPage("/accounts?account=88001");
+    renderAccountRecords("/health?account=88001");
     await user.click(await screen.findByRole("button", { name: "Refresh Express Accounts" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain(
@@ -243,7 +243,7 @@ describe("AccountsPage local-first management", () => {
   });
 });
 
-describe("AccountsPage accessibility and Live lifecycle", () => {
+describe("AccountRecords accessibility and Live lifecycle", () => {
   it("activates account selection with Enter and Space and exposes a narrow-width scroll region", async () => {
     const user = userEvent.setup();
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
@@ -255,7 +255,7 @@ describe("AccountsPage accessibility and Live lifecycle", () => {
       last_trade_at: second.last_trade_at,
       source: "local",
     });
-    const router = renderAccountsPage("/accounts?account=88001");
+    const router = renderAccountRecords("/health?account=88001");
 
     const scrollRegion = await screen.findByRole("region", { name: "Trading accounts table" });
     expect(scrollRegion.classList.contains("overflow-x-auto")).toBe(true);
@@ -301,7 +301,7 @@ describe("AccountsPage accessibility and Live lifecycle", () => {
       changes.push((event as CustomEvent<AccountListChangedDetail>).detail);
     };
     window.addEventListener(ACCOUNT_LIST_CHANGED_EVENT, listener);
-    const router = renderAccountsPage("/accounts?account=88001");
+    const router = renderAccountRecords("/health?account=88001");
 
     await user.click(await screen.findByRole("button", { name: "Archive Live Main" }));
 
@@ -349,7 +349,7 @@ describe("AccountsPage accessibility and Live lifecycle", () => {
     const changes: AccountListChangedDetail[] = [];
     const listener = (event: Event) => changes.push((event as CustomEvent<AccountListChangedDetail>).detail);
     window.addEventListener(ACCOUNT_LIST_CHANGED_EVENT, listener);
-    const router = renderAccountsPage("/accounts?account=88001");
+    const router = renderAccountRecords("/health?account=88001");
 
     await user.click(await screen.findByRole("button", { name: "Archive Live Active" }));
 

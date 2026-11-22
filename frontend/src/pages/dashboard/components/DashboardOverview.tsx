@@ -1,5 +1,4 @@
 import { formatProfitFactor } from "../../../utils/profitFactor";
-import { Link } from "react-router-dom";
 import { Icon, type IconName } from "../../../components/ui/Icon";
 import { Skeleton } from "../../../components/ui/Skeleton";
 import type { AccountSummary } from "../../../lib/types";
@@ -26,8 +25,7 @@ export function DashboardOverview({ summary, loading, error, hasAccount, maxDraw
   return <>
     {!hasAccount && !loading ? <div className="dashboard-welcome">
       <span className="dashboard-welcome-icon"><Icon name="link" /></span>
-      <div><h2>No account selected</h2><p>Connect a ProjectX account or import trade history.</p></div>
-      <Link className="workspace-primary-link" to="/accounts">Set up an account <Icon name="arrow" /></Link>
+      <div><h2>No account selected</h2><p>Choose an account in Active Account, or enable Live Account (CSV) to import trade history.</p></div>
     </div> : null}
     <div className="dashboard-overview" aria-label="Performance overview">
       {metrics.map((metric, index) => <section className={`overview-stat ${index === 0 ? "overview-stat-featured" : ""}`} key={metric.label}>

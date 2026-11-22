@@ -1,8 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Link } from "react-router-dom";
 import { Icon } from "../components/ui/Icon";
-import { buildAccountAwarePath } from "../lib/accountSelection";
 import type { AccountInfo } from "../lib/types";
 import { AccountActionDialog, type AccountEditAction } from "./AccountActionDialog";
 
@@ -26,6 +24,7 @@ export function DashboardAccountPicker({ rows, selectedId, loading, readOnly, on
   const target = edit && rows.find(row => row.account.id === edit.id)?.account;
   const caption = selected?.label ?? (loading ? "Loading accounts…" : rows.length ? "Choose an account" : "No accounts");
   const triggerLabel = selected?.note ? `${caption} — ${selected.note}` : caption;
+  const panelOpen = open && rows.length > 0;
 
   if (scope.selectedId !== selectedId || scope.readOnly !== readOnly) {
     setScope({ selectedId, readOnly });
@@ -36,17 +35,17 @@ export function DashboardAccountPicker({ rows, selectedId, loading, readOnly, on
   }
 
   useEffect(() => {
-    if (!open) return;
+    if (!panelOpen) return;
     const panel = root.current;
     const first = panel?.querySelector<HTMLElement>('[aria-current="true"]') ??
-      panel?.querySelector<HTMLElement>(".account-picker-select, .account-picker-manage");
+      panel?.querySelector<HTMLElement>(".account-picker-select");
     first?.focus();
     function outside(event: PointerEvent) {
       if (!panel?.contains(event.target as Node)) setOpen(false);
     }
     document.addEventListener("pointerdown", outside);
     return () => document.removeEventListener("pointerdown", outside);
-  }, [open]);
+  }, [panelOpen]);
 
   useEffect(() => {
     if (!edit && !loading && restoreFocus.current) {
@@ -80,14 +79,14 @@ export function DashboardAccountPicker({ rows, selectedId, loading, readOnly, on
     }}>
     <button ref={trigger} type="button" id="app-active-account" value={selectedId ?? ""}
       aria-label={`Active Account: ${triggerLabel}`}
-      aria-expanded={open} aria-controls={open ? panelId : undefined} disabled={loading}
+      aria-expanded={panelOpen} aria-controls={panelOpen ? panelId : undefined} disabled={loading || !rows.length}
       className="account-picker-trigger" title={triggerLabel}
       onClick={() => setOpen(!open)}>
       <span>{triggerLabel}</span><Icon name="chevron" />
     </button>
-    {open && <div id={panelId} className="account-picker-panel" role="group" aria-label="Choose or edit an account">
+    {panelOpen && <div id={panelId} className="account-picker-panel" role="group" aria-label="Choose or edit an account">
       {readOnly && <p className="account-picker-note">Demo accounts are read-only.</p>}
-      {rows.length > 0 && <ul className="account-picker-list">
+      <ul className="account-picker-list">
         {rows.map(({ account, label, note }) => {
           const active = account.id === selectedId;
           const locked = readOnly || loading || account.is_archived;
@@ -108,8 +107,7 @@ export function DashboardAccountPicker({ rows, selectedId, loading, readOnly, on
               onClick={() => editRow(account.id, "main")}><Icon name="star" /></button>
           </li>;
         })}
-      </ul>}
-      <Link className="account-picker-manage" to={buildAccountAwarePath("/accounts", selectedId)}>Manage accounts <Icon name="arrow" /></Link>
+      </ul>
     </div>}
     {edit && target && !target.is_archived && !readOnly && createPortal(<AccountActionDialog key={target.id}
       action={edit.action} account={target} onClose={() => {

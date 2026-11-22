@@ -33,7 +33,7 @@ Try **Demo mode** for sample data, or create a **Live Account (CSV)** and previe
 | Feature or area | Code entry points |
 | --- | --- |
 | Navigation and API requests | [Frontend guide](frontend/README.md) · [Router](frontend/src/app/routes.tsx) · [App shell and account picker](frontend/src/app/AppShell.tsx) · [Browser API client](frontend/src/lib/api.ts) · [FastAPI handlers and routers](backend/app/main.py) |
-| Accounts (`/accounts`) | [Accounts page](frontend/src/pages/accounts/AccountsPage.tsx) · [ProjectX account discovery](backend/app/services/projectx_accounts.py) |
+| Account controls (Dashboard and Health) | [Active Account](frontend/src/app/DashboardAccountPicker.tsx) · [Account records](frontend/src/pages/accounts/AccountRecords.tsx) · [ProjectX account discovery](backend/app/services/projectx_accounts.py) |
 | Dashboard (`/` and `/dashboard`) | [Dashboard page](frontend/src/pages/dashboard/DashboardPage.tsx) · [Account metrics](backend/app/services/projectx_metrics.py) · [Risk forecast](backend/app/services/account_risk_forecast.py) |
 | Trades (`/trades`) and Dashboard import | [Dashboard import panel](frontend/src/pages/dashboard/components/TradeImportPanel.tsx) · [File validation and import](backend/app/services/trade_imports.py) · [ProjectX trade ingestion](backend/app/services/projectx_trades.py) · [Trades page](frontend/src/pages/trades/TradesPage.tsx) |
 | Expenses (`/expenses`) | [Expenses and payouts](frontend/src/pages/expenses/ExpensesPage.tsx) · [Inferred combine fees](backend/app/services/combine_expenses.py) |

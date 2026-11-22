@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { Icon } from "../../../components/ui/Icon";
 
 import { Badge } from "../../../components/ui/Badge";
@@ -112,8 +111,7 @@ export function CopyTradePanel({
   if (!loading && !totals.hasLeader) {
     return <section className="copy-trade-setup">
       <span className="copy-trade-setup-icon"><Icon name="trades" /></span>
-      <div><h2>Copy Trade Mode <span className="copy-setup-status">Needs Leader</span></h2><p>Select a leader account to track combined performance across up to five Topstep accounts.</p></div>
-      <Link to="/accounts" className="workspace-text-link">Manage accounts <Icon name="arrow" /></Link>
+      <div><h2>Copy Trade Mode <span className="copy-setup-status">Needs Leader</span></h2><p>Choose a leader in Active Account to track combined performance across up to five Topstep accounts.</p></div>
     </section>;
   }
 

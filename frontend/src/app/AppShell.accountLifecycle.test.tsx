@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { accountsApi } from "../lib/api";
 import { TRADE_IMPORT_FILE_PICKER_REQUESTED_EVENT } from "../lib/tradeImportEvents";
 import type { AccountInfo } from "../lib/types";
-import { AccountsPage } from "../pages/accounts/AccountsPage";
+import { AccountRecords } from "../pages/accounts/AccountRecords";
 
 const {
   getSelectableAccountsLocalFirstMock,
@@ -93,7 +93,6 @@ describe("AppShell account lifecycle reconciliation", () => {
     const router = createMemoryRouter([{
       path: "/", element: <AppShell />, children: [
         { path: "dashboard", element: <div>Dashboard content</div> },
-        { path: "accounts", element: <div>Account management</div> },
       ],
     }], { initialEntries: ["/dashboard?range=all&account=7101"] });
     render(<RouterProvider router={router} />);
@@ -113,9 +112,8 @@ describe("AppShell account lifecycle reconciliation", () => {
     expect(setMain).toHaveBeenCalledExactlyOnceWith(7102);
     await user.click(picker);
     expect((await screen.findByRole("button", { name: "Main account: Daily" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("link", { name: "Manage accounts" })).toBeNull();
     expect(router.state.location.search).toBe("?range=all&account=7101");
-    await user.click(screen.getByRole("link", { name: "Manage accounts" }));
-    expect(router.state.location.pathname + router.state.location.search).toBe("/accounts?account=7101");
   });
 
   it.each(["9999", "", "bad", "7101&account=7102"])("does not fall back under an unavailable or invalid account URL: %s", async query => {
@@ -157,7 +155,7 @@ describe("AppShell account lifecycle reconciliation", () => {
     getSelectableAccountsMock.mockResolvedValue(discovered);
     const router = createMemoryRouter([{
       path: "/", element: <AppShell />,
-      children: [{ index: true, element: <div>Dashboard</div> }, { path: "accounts", element: <div>Accounts</div> }],
+      children: [{ index: true, element: <div>Dashboard</div> }, { path: "health", element: <div>Health</div> }],
     }]);
     render(<StrictMode><RouterProvider router={router} /></StrictMode>);
 
@@ -165,7 +163,7 @@ describe("AppShell account lifecycle reconciliation", () => {
     fireEvent.click(picker);
     fireEvent.click(screen.getByRole("button", { name: /^Express Second/ }));
     expect(router.state.location.search).toBe("?account=7102");
-    await act(async () => { await router.navigate("/accounts?account=7102"); });
+    await act(async () => { await router.navigate("/health?account=7102"); });
     expect((screen.getByRole("combobox", { name: "Active Account" }) as HTMLSelectElement).value).toBe("7102");
     expect(getSelectableAccountsMock).toHaveBeenCalledExactlyOnceWith({ refreshProvider: true });
   });
@@ -296,10 +294,10 @@ describe("AppShell account lifecycle reconciliation", () => {
         {
           path: "/",
           element: <AppShell />,
-          children: [{ path: "accounts", element: <AccountsPage /> }],
+          children: [{ path: "health", element: <AccountRecords /> }],
         },
       ],
-      { initialEntries: ["/accounts?account=88001"] },
+      { initialEntries: ["/health?account=88001"] },
     );
 
     render(<RouterProvider router={router} />);
@@ -342,9 +340,9 @@ describe("AppShell account lifecycle reconciliation", () => {
       [{
         path: "/",
         element: <AppShell />,
-        children: [{ path: "accounts", element: <AccountsPage /> }],
+        children: [{ path: "health", element: <AccountRecords /> }],
       }],
-      { initialEntries: ["/accounts"] },
+      { initialEntries: ["/health"] },
     );
 
     render(<RouterProvider router={router} />);

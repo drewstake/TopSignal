@@ -42,7 +42,7 @@
 .account-picker { flex: 1; min-width: 0; }
 .account-picker-trigger { width: 100%; min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 10px; color: rgb(var(--theme-text)); font-size: 14px; font-weight: 600; text-align: left; }
 .account-picker-trigger span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.account-picker-trigger svg, .account-picker-manage svg { width: 16px; flex: none; }
+.account-picker-trigger svg { width: 16px; flex: none; }
 .account-picker-trigger[aria-expanded="true"] svg { transform: rotate(180deg); }
 .account-picker-panel { position: absolute; z-index: 10; inset: calc(100% + 6px) auto auto 0; width: max(100%, 23rem); max-width: calc(100vw - 32px); background: rgb(var(--theme-surface)); color: rgb(var(--theme-text)); border: 1px solid rgb(var(--theme-border-strong)); border-radius: 12px; box-shadow: 0 10px 32px rgb(var(--theme-shadow-color) / .32); overflow: hidden; }
 .account-picker-list { overflow-y: auto; max-height: min(50dvh, 24rem); padding: 5px; }
@@ -57,9 +57,8 @@
 .account-picker-name { font-size: 15px; font-weight: 600; }
 .account-picker-meta, .account-picker-note { font-size: 13px; color: rgb(var(--theme-text-soft)); }
 .account-picker-note { padding: 8px 12px 2px; }
-.account-picker-manage { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-top: 1px solid rgb(var(--theme-border)); color: rgb(var(--theme-accent)); font-size: 14px; }
-.account-picker :is(button:enabled, a):hover { color: rgb(var(--theme-accent)); background-color: rgb(var(--theme-accent) / .08); }
-.account-picker :is(button, a):focus-visible { outline: 2px solid rgb(var(--theme-focus)); outline-offset: -2px; }
+.account-picker button:enabled:hover { color: rgb(var(--theme-accent)); background-color: rgb(var(--theme-accent) / .08); }
+.account-picker button:focus-visible { outline: 2px solid rgb(var(--theme-focus)); outline-offset: -2px; }
 @media (max-width: 639px) {
   .workspace-account:has(.account-picker), .account-picker-panel { width: 100%; max-width: 100%; }
   .account-picker-icon { width: 54px; min-height: 54px; }

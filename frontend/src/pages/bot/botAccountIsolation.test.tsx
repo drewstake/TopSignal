@@ -142,7 +142,7 @@ describe("Bot Live/ProjectX isolation", () => {
     }
     if (!accounts.length) {
       expect(screen.getByText(/No account is selected/)).not.toBeNull();
-      expect(screen.getByRole("link", { name: "Open Accounts" }).getAttribute("href")).toBe("/accounts");
+      expect(screen.getByText(/No ProjectX account connected/)).not.toBeNull();
       expect(screen.queryByText(/Live CSV account/)).toBeNull();
     }
     // No-account browsing may discover a market, but cannot start account/bot reads or mutations.

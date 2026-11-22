@@ -79,7 +79,6 @@ function AppShellRouteFallback() {
 const WORKSPACE_PAGE_LABELS: ReadonlyArray<readonly [string, string]> = [
   ["/dashboard", "Dashboard"],
   ["/", "Dashboard"],
-  ["/accounts", "Accounts"],
   ["/trades", "Trades"],
   ["/expenses", "Expenses"],
   ["/bot", "Bot"],

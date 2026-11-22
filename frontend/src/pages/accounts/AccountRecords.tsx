@@ -6,17 +6,13 @@ import { useDemoInteractionPolicy } from "../../components/demo/useDemoInteracti
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent } from "../../components/ui/Card";
-import { Input } from "../../components/ui/Input";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Toggle } from "../../components/ui/Toggle";
 import {
   ACCOUNT_QUERY_PARAM,
   dispatchAccountListChanged,
   parseAccountId,
-  readStoredAccountId,
-  readStoredMainAccountId,
   writeStoredAccountId,
-  writeStoredMainAccountId,
 } from "../../lib/accountSelection";
 import { logPerfInfo } from "../../lib/perf";
 import { useLatestRequestGuard } from "../../lib/latestRequest";
@@ -84,37 +80,7 @@ function accountStateBadgeVariant(state: AccountInfo["account_state"]) {
   return "negative" as const;
 }
 
-function PencilIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className} aria-hidden="true">
-      <path d="M12 20h9" strokeLinecap="round" strokeLinejoin="round" />
-      <path
-        d="M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function CheckIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className} aria-hidden="true">
-      <path d="m5 13 4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function XIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className} aria-hidden="true">
-      <path d="M18 6 6 18" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="m6 6 12 12" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-export function AccountsPage() {
+export function AccountRecords() {
   const { demoModeEnabled, demoDisabledTitle } = useDemoInteractionPolicy();
   const [searchParams, setSearchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
@@ -126,22 +92,15 @@ export function AccountsPage() {
   const [showHiddenAccounts, setShowHiddenAccounts] = useState(false);
   const [showMissingAccounts, setShowMissingAccounts] = useState(false);
   const [showArchivedAccounts, setShowArchivedAccounts] = useState(false);
-  const [settingMainAccountId, setSettingMainAccountId] = useState<number | null>(null);
   const [lifecycleAccountId, setLifecycleAccountId] = useState<number | null>(null);
   const [lastTradeOverridesById, setLastTradeOverridesById] = useState<Record<number, string | null>>({});
   const [lastTradeLoadingById, setLastTradeLoadingById] = useState<Record<number, boolean>>({});
   const [lastTradeResolvedById, setLastTradeResolvedById] = useState<Record<number, boolean>>({});
   const [lastTradeError, setLastTradeError] = useState<string | null>(null);
-  const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
-  const [editingName, setEditingName] = useState("");
-  const [renamingAccountId, setRenamingAccountId] = useState<number | null>(null);
-  const [renameErrorById, setRenameErrorById] = useState<Record<number, string | null>>({});
-  const editInputRef = useRef<HTMLInputElement | null>(null);
   const accountsVersionRef = useRef(0);
   const lastTradeRequestVersionByIdRef = useRef<Record<number, number>>({});
   const lastTradeInFlightByIdRef = useRef<Record<number, number>>({});
   const refreshExpressRequestRef = useRef(false);
-  const pendingLifecycleActiveAccountIdRef = useRef<number | null>(null);
   const beginAccountsRequest = useLatestRequestGuard();
 
   const setActiveAccount = useCallback(
@@ -185,9 +144,6 @@ export function AccountsPage() {
         return null;
       }
       setAccounts(savedAccounts);
-      setEditingAccountId(null);
-      setEditingName("");
-      setRenameErrorById({});
       setLastTradeOverridesById({});
       setLastTradeLoadingById({});
       setLastTradeResolvedById({});
@@ -295,40 +251,6 @@ export function AccountsPage() {
     }
   }, []);
 
-  const setMainAccount = useCallback(
-    async (accountId: number) => {
-      if (accounts.some((account) => account.id === accountId && account.is_archived)) {
-        setAccountsError("Restore this Live account before setting it as Main.");
-        return;
-      }
-      setSettingMainAccountId(accountId);
-      setAccountsError(null);
-      try {
-        await accountsApi.setMainAccount(accountId);
-        writeStoredMainAccountId(accountId);
-        setActiveAccount(accountId);
-        await loadAccounts();
-      } catch (err) {
-        setAccountsError(err instanceof Error ? err.message : "Failed to update main account");
-      } finally {
-        setSettingMainAccountId(null);
-      }
-    },
-    [accounts, loadAccounts, setActiveAccount],
-  );
-
-  const startEditingAccountName = useCallback((account: AccountInfo) => {
-    setAccountsError(null);
-    setRenameErrorById((prev) => ({ ...prev, [account.id]: null }));
-    setEditingAccountId(account.id);
-    setEditingName(account.name);
-  }, []);
-
-  const cancelEditingAccountName = useCallback(() => {
-    setEditingAccountId(null);
-    setEditingName("");
-  }, []);
-
   const changeLiveAccountArchiveState = useCallback(
     async (account: AccountInfo) => {
       if (account.trade_data_source !== "csv_import" || lifecycleAccountId !== null) {
@@ -391,14 +313,12 @@ export function AccountsPage() {
         if (!account.is_archived && accountFromQuery === account.id) {
           nextActiveAccountId = activeReplacement?.id ?? result.replacement_main_account_id;
           if (nextActiveAccountId !== null) {
-            pendingLifecycleActiveAccountIdRef.current = nextActiveAccountId;
             setActiveAccount(nextActiveAccountId);
           }
         }
 
         if (account.is_archived) {
           nextActiveAccountId = account.id;
-          pendingLifecycleActiveAccountIdRef.current = account.id;
           setActiveAccount(account.id);
         }
 
@@ -422,61 +342,9 @@ export function AccountsPage() {
     [accountFromQuery, accounts, lifecycleAccountId, loadAccounts, setActiveAccount],
   );
 
-  const saveAccountName = useCallback(
-    async (account: AccountInfo) => {
-      const trimmedName = editingName.trim();
-      if (trimmedName.length === 0) {
-        setRenameErrorById((prev) => ({
-          ...prev,
-          [account.id]: "Account name cannot be empty.",
-        }));
-        return;
-      }
-
-      setRenamingAccountId(account.id);
-      setAccountsError(null);
-      setRenameErrorById((prev) => ({ ...prev, [account.id]: null }));
-      try {
-        const payload = await accountsApi.renameAccountDisplayName(account.id, trimmedName);
-        setAccounts((prev) =>
-          prev.map((candidate) =>
-            candidate.id === account.id
-              ? {
-                  ...candidate,
-                  name: payload.name,
-                  provider_name: payload.provider_name,
-                  custom_display_name: payload.custom_display_name,
-                }
-              : candidate,
-          ),
-        );
-        setEditingAccountId(null);
-        setEditingName("");
-      } catch (err) {
-        setRenameErrorById((prev) => ({
-          ...prev,
-          [account.id]: err instanceof Error ? err.message : "Failed to update account name.",
-        }));
-        setEditingAccountId(null);
-        setEditingName("");
-      } finally {
-        setRenamingAccountId(null);
-      }
-    },
-    [editingName],
-  );
-
   useEffect(() => {
     void loadAccounts();
   }, [loadAccounts]);
-
-  useEffect(() => {
-    if (editingAccountId === null) {
-      return;
-    }
-    editInputRef.current?.focus();
-    editInputRef.current?.select();
-  }, [editingAccountId]);
 
   const visibleAccounts = useMemo(
     () => filterAccountManagementRows(freshnessAwareAccounts, {
@@ -500,67 +368,15 @@ export function AccountsPage() {
       void resolveLastTrade(nextAccount.id);
     }
   }, [accountsLoading, refreshingExpressAccounts, orderedAccounts, lastTradeLoadingById, lastTradeResolvedById, resolveLastTrade]);
-  const selectableAccounts = useMemo(
-    () => orderedAccounts.filter((account) => !account.is_archived),
-    [orderedAccounts],
-  );
-  useEffect(() => {
-    if (selectableAccounts.length === 0) {
-      return;
-    }
-
-    const pendingLifecycleActiveAccountId = pendingLifecycleActiveAccountIdRef.current;
-    if (pendingLifecycleActiveAccountId !== null) {
-      if (!selectableAccounts.some((account) => account.id === pendingLifecycleActiveAccountId)) {
-        return;
-      }
-      if (accountFromQuery !== pendingLifecycleActiveAccountId) {
-        setActiveAccount(pendingLifecycleActiveAccountId);
-        return;
-      }
-      writeStoredAccountId(pendingLifecycleActiveAccountId);
-      pendingLifecycleActiveAccountIdRef.current = null;
-      return;
-    }
-
-    if (accountFromQuery && selectableAccounts.some((account) => account.id === accountFromQuery)) {
-      writeStoredAccountId(accountFromQuery);
-      return;
-    }
-
-    const persistedMainAccountId = selectableAccounts.find((account) => account.is_main)?.id ?? null;
-    if (persistedMainAccountId) {
-      writeStoredMainAccountId(persistedMainAccountId);
-      setActiveAccount(persistedMainAccountId);
-      return;
-    }
-
-    const storedAccountId = readStoredAccountId();
-    const storedMainAccountId = readStoredMainAccountId();
-    if (storedMainAccountId && selectableAccounts.some((account) => account.id === storedMainAccountId)) {
-      setActiveAccount(storedMainAccountId);
-      return;
-    }
-
-    if (storedAccountId && selectableAccounts.some((account) => account.id === storedAccountId)) {
-      setActiveAccount(storedAccountId);
-      return;
-    }
-
-    setActiveAccount(selectableAccounts[0].id);
-  }, [selectableAccounts, accountFromQuery, setActiveAccount]);
-
   const selectedAccount = useMemo(
     () => accounts.find((account) => account.id === accountFromQuery && !account.is_archived) ?? null,
     [accounts, accountFromQuery],
   );
   return (
-    <div className="space-y-6 pb-10">
-      <h1>Accounts</h1>
+    <div className="mt-3 space-y-3">
       <DemoModeNotice>
         <p>
-          These are isolated sample accounts. Selecting an account and filtering rows are simulated locally;
-          provider refresh, renaming, Main-account changes, and archiving are disabled.
+          Demo Mode uses sample accounts. Provider refresh, archive and restore are disabled.
         </p>
       </DemoModeNotice>
       <section>
@@ -578,7 +394,7 @@ export function AccountsPage() {
                 >
                   {refreshingExpressAccounts ? "Refreshing Express Accounts..." : "Refresh Express Accounts"}
                 </Button>
-                <p className="mt-1 text-[11px] text-slate-500">
+                <p className="mt-1 text-[11px] text-app-muted">
                   Saved Live and Express rows load locally. Refresh contacts ProjectX only when requested.
                 </p>
               </div>
@@ -604,21 +420,21 @@ export function AccountsPage() {
               </div>
             </div>
             {accountsError ? (
-              <p className="rounded-lg border border-rose-400/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-200" role="alert">
+              <p className="rounded-lg border border-app-negative/25 bg-app-negative/10 px-3 py-2 text-xs text-app-negative" role="alert">
                 {accountsError}
               </p>
             ) : refreshingExpressAccounts ? (
-              <p className="rounded-lg border border-cyan-400/25 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100" role="status" aria-live="polite">
+              <p className="rounded-lg border border-app-accent/25 bg-app-accent/10 px-3 py-2 text-xs text-app-accent" role="status" aria-live="polite">
                 Refreshing ProjectX accounts… Saved rows remain available while the provider request is in progress.
               </p>
             ) : providerSyncNotice ? (
               <p
                 className={`rounded-lg border px-3 py-2 text-xs ${
                   providerSyncNotice.tone === "error"
-                    ? "border-rose-400/25 bg-rose-500/10 text-rose-200"
+                    ? "border-app-negative/25 bg-app-negative/10 text-app-negative"
                     : providerSyncNotice.tone === "warning"
-                      ? "border-amber-400/25 bg-amber-500/10 text-amber-200"
-                      : "border-emerald-400/20 bg-emerald-500/10 text-emerald-100"
+                      ? "border-app-warning/25 bg-app-warning/10 text-app-warning"
+                      : "border-app-positive/20 bg-app-positive/10 text-app-positive"
                 }`}
                 role={providerSyncNotice.tone === "error" ? "alert" : "status"}
                 aria-live="polite"
@@ -626,10 +442,10 @@ export function AccountsPage() {
                 {providerSyncNotice.message}
               </p>
             ) : null}
-            {lastTradeError ? <p className="text-xs text-amber-300">{lastTradeError}</p> : null}
+            {lastTradeError ? <p className="text-xs text-app-warning">{lastTradeError}</p> : null}
             <AccountTableScrollArea>
               <table className="w-full min-w-[680px] border-collapse text-sm">
-                <thead className="bg-slate-900/70 text-xs uppercase tracking-wide text-slate-400">
+                <thead className="bg-app-bg/70 text-xs uppercase tracking-wide text-app-muted">
                   <tr>
                     <th className="px-3 py-3 text-left font-medium">Name</th>
                     <th className="px-3 py-3 text-right font-medium">ID</th>
@@ -640,7 +456,7 @@ export function AccountsPage() {
                     <th className="px-3 py-3 text-right font-medium">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800/70">
+                <tbody className="divide-y divide-app-border/70">
                   {accountsLoading ? (
                     Array.from({ length: 5 }).map((_, index) => (
                       <tr key={`accounts-loading-${index}`}>
@@ -651,7 +467,7 @@ export function AccountsPage() {
                     ))
                   ) : orderedAccounts.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-3 py-6 text-center text-slate-400">
+                      <td colSpan={7} className="px-3 py-6 text-center text-app-muted">
                         No accounts found.
                       </td>
                     </tr>
@@ -660,9 +476,6 @@ export function AccountsPage() {
                       const accountDisplayName = getDemoAccountName(account);
                       const isActive = selectedAccount?.id === account.id;
                       const isMainAccount = account.is_main;
-                      const isEditingName = editingAccountId === account.id;
-                      const renameErrorMessage = renameErrorById[account.id];
-                      const savingName = renamingAccountId === account.id;
                       const availableBalance = getAvailableAccountBalance(account.balance);
                       const localLastTradeAt = account.last_trade_at;
                       const resolvedLastTradeAt =
@@ -675,110 +488,27 @@ export function AccountsPage() {
                         <tr
                           key={account.id}
                           className={`transition ${
-                            isActive ? "bg-cyan-500/10" : "hover:bg-slate-900/65"
+                            isActive ? "bg-app-accent/10" : "hover:bg-app-bg/65"
                           }`}
                         >
-                          <td className="px-3 py-3 text-left font-medium text-slate-100">
-                            {isEditingName ? (
-                              <div
-                                className="flex min-w-0 items-start gap-2"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                }}
-                              >
-                                <Input
-                                  ref={editInputRef}
-                                  value={editingName}
-                                  onChange={(event) => setEditingName(event.target.value)}
-                                  onKeyDown={(event) => {
-                                    if (event.key === "Enter") {
-                                      event.preventDefault();
-                                      void saveAccountName(account);
-                                      return;
-                                    }
-                                    if (event.key === "Escape") {
-                                      event.preventDefault();
-                                      cancelEditingAccountName();
-                                    }
-                                  }}
-                                  disabled={savingName}
-                                  aria-label={`Edit account name for ${accountDisplayName}`}
-                                  className="h-8 min-w-0 flex-1 px-2.5"
-                                />
-                                <div className="flex shrink-0 items-center gap-1">
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="h-11 w-11 rounded-lg px-0 text-emerald-300 hover:text-emerald-200 sm:h-8 sm:w-8"
-                                    disabled={savingName}
-                                    aria-label={`Save account name for ${accountDisplayName}`}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      void saveAccountName(account);
-                                    }}
-                                  >
-                                    <CheckIcon />
-                                  </Button>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="h-11 w-11 rounded-lg px-0 text-slate-400 hover:text-slate-200 sm:h-8 sm:w-8"
-                                    disabled={savingName}
-                                    aria-label={`Cancel editing account name for ${accountDisplayName}`}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      cancelEditingAccountName();
-                                    }}
-                                  >
-                                    <XIcon />
-                                  </Button>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="flex min-w-0 items-center gap-2">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-11 w-11 shrink-0 rounded-lg px-0 text-slate-400 hover:text-slate-100 sm:h-8 sm:w-8"
-                                  disabled={demoModeEnabled || renamingAccountId !== null}
-                                  title={demoDisabledTitle}
-                                  aria-label={`Edit account name for ${accountDisplayName}`}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    startEditingAccountName(account);
-                                  }}
-                                >
-                                  <PencilIcon />
-                                </Button>
-                                <AccountSelectionButton
-                                  accountName={accountDisplayName}
-                                  active={isActive}
-                                  disabled={account.is_archived}
-                                  onSelect={() => {
-                                    setActiveAccount(account.id);
-                                  }}
-                                />
-                              </div>
-                            )}
-                            {savingName ? <p className="mt-1 text-[11px] font-normal text-slate-500">Saving...</p> : null}
-                            {renameErrorMessage ? (
-                              <p className="mt-1 text-[11px] font-normal text-rose-300">{renameErrorMessage}</p>
-                            ) : null}
+                          <td className="px-3 py-3 text-left font-medium text-app-text">
+                            <AccountSelectionButton accountName={accountDisplayName} active={isActive}
+                              disabled={account.is_archived} onSelect={() => setActiveAccount(account.id)} />
                           </td>
-                          <td className="px-3 py-3 text-right text-slate-300">
+                          <td className="px-3 py-3 text-right text-app-text">
                             {account.trade_data_source === "csv_import" ? "—" : getDemoAccountId(account.id)}
                           </td>
-                          <td className="px-3 py-3 text-right font-mono text-slate-200">
-                            <span className={availableBalance === null ? "font-sans text-amber-300" : undefined}>
+                          <td className="px-3 py-3 text-right font-mono text-app-text">
+                            <span className={availableBalance === null ? "font-sans text-app-warning" : undefined}>
                               {formatAccountBalance(account.balance)}
                             </span>
                             {account.trade_data_source === "projectx" && account.provider_data_stale ? (
-                              <p className="mt-1 font-sans text-[10px] text-amber-300" title={account.last_seen_at ?? undefined}>
+                              <p className="mt-1 font-sans text-[10px] text-app-warning" title={account.last_seen_at ?? undefined}>
                                 {`Stale · ${formatProviderLastSeen(account.last_seen_at)}`}
                               </p>
                             ) : null}
                           </td>
-                          <td className="px-3 py-3 text-right text-slate-300">
+                          <td className="px-3 py-3 text-right text-app-text">
                             {resolvedLastTradeAt ? (
                               formatLastTrade(resolvedLastTradeAt)
                             ) : loadingLastTrade || !resolvedLastTrade ? (
@@ -789,7 +519,7 @@ export function AccountsPage() {
                               <button
                                 type="button"
                                 aria-label={`Retry last trade for ${accountDisplayName}`}
-                                className="text-xs text-cyan-300 underline decoration-cyan-400/60 underline-offset-2 hover:text-cyan-200"
+                                className="text-xs text-app-accent underline decoration-app-accent/60 underline-offset-2 hover:text-app-accent"
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   void resolveLastTrade(account.id, true);
@@ -818,26 +548,7 @@ export function AccountsPage() {
                               </>
                             )}
                           </td>
-                          <td className="px-3 py-3 text-right">
-                            {account.is_archived ? (
-                              <span className="text-xs text-slate-500">Unavailable</span>
-                            ) : isMainAccount ? (
-                              <Badge variant="accent">Main</Badge>
-                            ) : (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                disabled={demoModeEnabled || settingMainAccountId === account.id}
-                                title={demoDisabledTitle}
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void setMainAccount(account.id);
-                                }}
-                              >
-                                {settingMainAccountId === account.id ? "Saving..." : "Set Main"}
-                              </Button>
-                            )}
-                          </td>
+                          <td className="px-3 py-3 text-right">{isMainAccount && <Badge variant="accent">Main</Badge>}</td>
                           <td className="px-3 py-3 text-right">
                             {account.trade_data_source === "csv_import" ? (
                               <Button
@@ -857,7 +568,7 @@ export function AccountsPage() {
                                     : "Archive"}
                               </Button>
                             ) : (
-                              <span className="text-xs text-slate-600">—</span>
+                              <span className="text-xs text-app-muted">—</span>
                             )}
                           </td>
                         </tr>

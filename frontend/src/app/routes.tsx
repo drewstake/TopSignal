@@ -12,9 +12,6 @@ const RecordersPage = lazy(() => import("../pages/recorders/RecordersPage").then
 const DashboardPage = lazy(() =>
   import("../pages/dashboard/DashboardPage").then((module) => ({ default: module.DashboardPage })),
 );
-const AccountsPage = lazy(() =>
-  import("../pages/accounts/AccountsPage").then((module) => ({ default: module.AccountsPage })),
-);
 const TradesPage = lazy(() =>
   import("../pages/trades/TradesPage").then((module) => ({ default: module.TradesPage })),
 );
@@ -53,8 +50,7 @@ export const router = createBrowserRouter([
       },
       {
         path: "accounts",
-        element: <AccountsPage />,
-        errorElement: <RouteErrorPage />,
+        loader: ({ request }) => redirect(`/dashboard${new URL(request.url).search}`),
       },
       {
         path: "trades",
