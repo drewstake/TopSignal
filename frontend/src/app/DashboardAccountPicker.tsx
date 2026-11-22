@@ -17,6 +17,7 @@ export function DashboardAccountPicker({ rows, selectedId, loading, readOnly, on
 }) {
   const [open, setOpen] = useState(false);
   const [edit, setEdit] = useState<{ id: number; action: AccountEditAction } | null>(null);
+  const [scope, setScope] = useState({ selectedId, readOnly });
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const restoreFocus = useRef(false);
@@ -26,14 +27,13 @@ export function DashboardAccountPicker({ rows, selectedId, loading, readOnly, on
   const caption = selected?.label ?? (loading ? "Loading accounts…" : rows.length ? "Choose an account" : "No accounts");
   const triggerLabel = selected?.note ? `${caption} — ${selected.note}` : caption;
 
-  useEffect(() => {
+  if (scope.selectedId !== selectedId || scope.readOnly !== readOnly) {
+    setScope({ selectedId, readOnly });
     setEdit(null);
     setOpen(false);
-  }, [selectedId, readOnly]);
-
-  useEffect(() => {
-    if (edit && (!target || target.is_archived)) setEdit(null);
-  }, [edit, target]);
+  } else if (edit && (!target || target.is_archived)) {
+    setEdit(null);
+  }
 
   useEffect(() => {
     if (!open) return;
