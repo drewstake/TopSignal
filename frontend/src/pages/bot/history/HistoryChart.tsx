@@ -87,7 +87,7 @@ export const HistoryChart = memo(function HistoryChart({ points, range, selected
           const y = geometry.y(value, index);
           return <g key={fraction}>
             <line x1={LEFT} x2={W-RIGHT} y1={y} y2={y} stroke="currentColor" opacity={.1} strokeDasharray={index === 2 && fraction === .5 ? "5 4" : undefined} />
-            <text x={LEFT-12} y={y+4} textAnchor="end" fill="currentColor" opacity={.65} fontSize="11">
+            <text x={LEFT-12} y={y+4} textAnchor="end" fill="currentColor" className="text-app-muted" fontSize="14">
               {index === 2 ? `${Math.round(value*100)}%` : value.toLocaleString("en-US", { maximumFractionDigits: index === 0 ? 2 : 0 })}
             </text>
           </g>;
@@ -95,7 +95,7 @@ export const HistoryChart = memo(function HistoryChart({ points, range, selected
       </g>)}
       {geometry.paths.map((d,i) => <path key={i} d={d} fill="none" stroke={["#60a5fa", "#34d399", "#fb7185", "#a78bfa"][i]} strokeWidth={i===0 ? 1.8 : 1.5} vectorEffect="non-scaling-stroke" />)}
       {geometry.dots.map(({point,field,index},i) => <circle key={i} cx={x(point.time)} cy={geometry.y(point[field]!,index === 3 ? 2 : index === 0 ? 0 : 1)} r={1.6} fill={["#60a5fa","#34d399","#fb7185","#a78bfa"][index]} />)}
-      {Array.from({ length: 6 }, (_, i) => { const t = range[0] + (range[1]-range[0])*i/5; return <text key={i} x={x(t)} y={578} textAnchor={i===0 ? "start" : i===5 ? "end" : "middle"} fill="currentColor" opacity={.65} fontSize="11">{clock(t)}</text>; })}
+      {Array.from({ length: 6 }, (_, i) => { const t = range[0] + (range[1]-range[0])*i/5; return <text key={i} x={x(t)} y={578} textAnchor={i===0 ? "start" : i===5 ? "end" : "middle"} fill="currentColor" className="text-app-muted" fontSize="14">{clock(t)}</text>; })}
       {selected && selected.time >= range[0] && selected.time <= range[1] && <line x1={x(selected.time)} x2={x(selected.time)} y1={20} y2={550} stroke="currentColor" opacity={.6} strokeDasharray="4 4" />}
       {drag && <rect x={x(Math.min(...drag))} width={Math.max(1,Math.abs(x(drag[1])-x(drag[0])))} y={20} height={530} fill="#60a5fa" opacity={.2} />}
     </svg>

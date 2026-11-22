@@ -1746,11 +1746,13 @@ export function BotSignalChart({ monitorOnly = false, bot: savedBot, market, dem
     const theme = readBotChartThemeColors();
     let appScale = getAppScale();
 
+    const axisFontSize = 15;
     const chart = createChart(container, {
       width: Math.max(container.clientWidth, 1),
       height: Math.max(container.clientHeight, 320 * appScale),
       layout: {
-        fontSize: 12 * appScale,
+        fontFamily: getComputedStyle(container).fontFamily,
+        fontSize: axisFontSize * appScale,
         background: { type: ColorType.Solid, color: "transparent" },
         textColor: theme.label,
       },
@@ -1900,7 +1902,7 @@ export function BotSignalChart({ monitorOnly = false, bot: savedBot, market, dem
       const nextScale = getAppScale();
       if (nextScale !== appScale) {
         chart.applyOptions({
-          layout: { fontSize: 12 * nextScale },
+          layout: { fontSize: axisFontSize * nextScale },
           timeScale: { barSpacing: chart.timeScale().options().barSpacing * nextScale / appScale },
         });
         appScale = nextScale;

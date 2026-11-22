@@ -78,11 +78,13 @@ export interface HeatmapGeometry {
 
 const SIDE_NAMES = ["unknown", "buy", "sell"] as const;
 const MAX_DRAWN_BUBBLES = 6_000;
+const AXIS_FONT_SIZE = 15;
+const CHART_MONO_FONT = '"JetBrains Mono Variable", ui-monospace, monospace';
 
 /** Axis font and width sized to the widest price label, so labels never clip on phones. */
 export function heatmapLayout(width: number, height: number, profile: boolean, widestLabel = "00,000.00") {
-  const profileWidth = profile && width >= 720 ? 96 : 0;
-  const charWidth = width < 520 ? 6.1 : 6.7;
+  const profileWidth = profile && width >= 720 ? 132 : 0;
+  const charWidth = AXIS_FONT_SIZE * 0.62;
   const axis = Math.ceil(widestLabel.length * charWidth + 14);
   return { left: 6, top: 6, right: Math.max(60, width - axis - profileWidth), bottom: Math.max(60, height - 24), profileWidth, axis };
 }
@@ -178,7 +180,6 @@ export function drawLiquidityHeatmap(canvas: HTMLCanvasElement, input: HeatmapRe
     canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
   }
   const layout = heatmapLayout(width, height, input.profile, heatmapPrice(Math.max(Math.abs(input.highTick), Math.abs(input.lowTick)) * input.tickSize, input.tickSize));
-  const fontSize = width < 520 ? 10 : 11;
   const g: HeatmapGeometry = { left: layout.left, right: layout.right, top: layout.top, bottom: layout.bottom,
     start: input.start, end: input.end, lowTick: input.lowTick, highTick: input.highTick, tickSize: input.tickSize,
     bubbles: [], bubblesCapped: false, bubbleMinVolume: null, profileLeft: layout.profileWidth ? layout.right + layout.axis : null, drawMs: 0 };
@@ -210,7 +211,7 @@ export function drawLiquidityHeatmap(canvas: HTMLCanvasElement, input: HeatmapRe
   drawQuotes(ctx, input, g, x, y);
   if (input.showTrades) drawBubbles(ctx, input, g, x, y);
   ctx.restore();
-  drawAxes(ctx, input, g, x, y, width, height, fontSize);
+  drawAxes(ctx, input, g, x, y, height);
   if (g.profileLeft !== null) drawProfile(ctx, input, g, y, layout.profileWidth);
   g.drawMs = Math.round(((typeof performance === "undefined" ? Date.now() : performance.now()) - started) * 10) / 10;
   return g;
@@ -335,7 +336,7 @@ function drawBubbles(ctx: Ctx, input: HeatmapRenderInput, g: HeatmapGeometry, x:
     g.bubbleMinVolume = items.at(-1)!.volume;
   }
   items.sort((a, b) => a.volume - b.volume);  // Large prints on top.
-  ctx.font = "600 10px ui-monospace, SFMono-Regular, Menlo, monospace"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.font = `600 10px ${CHART_MONO_FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
   for (const item of items) {
     const color = BUBBLE_COLORS[item.side];
     ctx.beginPath(); ctx.arc(item.x, item.y, item.radius, 0, Math.PI * 2);
@@ -352,9 +353,9 @@ function drawBubbles(ctx: Ctx, input: HeatmapRenderInput, g: HeatmapGeometry, x:
 }
 
 function drawAxes(ctx: Ctx, input: HeatmapRenderInput, g: HeatmapGeometry, x: (t: number) => number, y: (tick: number) => number,
-  width: number, height: number, fontSize: number) {
+  height: number) {
   const plotH = g.bottom - g.top, plotW = g.right - g.left;
-  ctx.font = `${fontSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+  ctx.font = `${AXIS_FONT_SIZE}px ${CHART_MONO_FONT}`;
   // Price labels: nice tick multiples at least 22 px apart.
   const pxPerTick = plotH / (g.highTick - g.lowTick);
   const step = niceStep(TICK_STEPS, 22 / pxPerTick);
@@ -363,19 +364,21 @@ function drawAxes(ctx: Ctx, input: HeatmapRenderInput, g: HeatmapGeometry, x: (t
     const py = Math.round(y(tick)) + 0.5;
     ctx.strokeStyle = "rgba(160,175,195,0.10)"; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(g.left, py); ctx.lineTo(g.right, py); ctx.stroke();
-    ctx.fillStyle = "#b6c2d1"; ctx.fillText(heatmapPrice(tick * input.tickSize, input.tickSize), g.right + 7, py);
+    ctx.fillStyle = "#d5dce6"; ctx.fillText(heatmapPrice(tick * input.tickSize, input.tickSize), g.right + 7, py);
   }
   // Time labels in New York time, aligned to local multiples of a nice step.
   const msPerPx = (g.end - g.start) / plotW;
-  const timeStep = niceStep(TIME_STEPS, (width < 520 ? 74 : 96) * msPerPx);
+  const timeStep = niceStep(TIME_STEPS, (ctx.measureText(heatmapTime(g.start)).width + 16) * msPerPx);
   const offset = newYorkOffset(g.start);
   ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
   for (let t = Math.ceil((g.start + offset) / timeStep) * timeStep - offset; t <= g.end; t += timeStep) {
     const px = Math.round(x(t)) + 0.5;
     ctx.strokeStyle = "rgba(160,175,195,0.08)";
     ctx.beginPath(); ctx.moveTo(px, g.top); ctx.lineTo(px, g.bottom); ctx.stroke();
-    if (px < g.left + 26 || px > g.right - 26) continue;
-    ctx.fillStyle = "#b6c2d1"; ctx.fillText(timeStep < 60_000 ? heatmapTime(t) : heatmapMinute(t), px, height - 7);
+    const label = timeStep < 60_000 ? heatmapTime(t) : heatmapMinute(t);
+    const halfWidth = ctx.measureText(label).width / 2;
+    if (px < g.left + halfWidth || px > g.right - halfWidth) continue;
+    ctx.fillStyle = "#d5dce6"; ctx.fillText(label, px, height - 7);
   }
   if (input.sessionStart !== null && input.sessionStart > g.start && input.sessionStart < g.end) {
     const px = Math.round(x(input.sessionStart)) + 0.5;
@@ -426,7 +429,7 @@ function drawProfile(ctx: Ctx, input: HeatmapRenderInput, g: HeatmapGeometry, y:
   const left = g.profileLeft!;
   const at = input.profileTime ?? Math.min(g.end, input.now) - 1;
   const book = bookAt(input, at);
-  ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace"; ctx.textAlign = "left"; ctx.fillStyle = "#93a1b3";
+  ctx.font = `${AXIS_FONT_SIZE}px ${CHART_MONO_FONT}`; ctx.textAlign = "left"; ctx.fillStyle = "#d5dce6";
   ctx.fillText(book ? `BOOK ${heatmapTime(book.time)}` : "BOOK", left, g.top + 10);
   ctx.save(); ctx.beginPath(); ctx.rect(left, g.top + 16, width - 4, g.bottom - g.top - 16); ctx.clip();
   if (!book) {
@@ -439,7 +442,7 @@ function drawProfile(ctx: Ctx, input: HeatmapRenderInput, g: HeatmapGeometry, y:
       ctx.fillStyle = level.side === 1 ? "#2fb592" : level.side === 2 ? "#d65d72" : "#8b97a8";
       ctx.fillRect(left, y(level.tick) - rowHeight / 2, (width - 10) * level.qty / maximum, rowHeight);
     }
-    if (book.bucketMs > HEATMAP_SAMPLE_MS) { ctx.fillStyle = "#93a1b3"; ctx.fillText(`avg ${book.bucketMs / 1000}s`, left, g.bottom - 4); }
+    if (book.bucketMs > HEATMAP_SAMPLE_MS) { ctx.fillStyle = "#d5dce6"; ctx.fillText(`avg ${book.bucketMs / 1000}s`, left, g.bottom - 4); }
   }
   ctx.restore();
 }
@@ -529,7 +532,7 @@ export function drawHeatmapOverlay(canvas: HTMLCanvasElement, g: HeatmapGeometry
   ctx.strokeStyle = "rgba(235,240,248,0.55)"; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
   ctx.beginPath(); ctx.moveTo(g.left, py); ctx.lineTo(g.right, py); ctx.moveTo(px, g.top); ctx.lineTo(px, g.bottom); ctx.stroke();
   ctx.setLineDash([]);
-  ctx.font = "600 11px ui-monospace, SFMono-Regular, Menlo, monospace"; ctx.textBaseline = "middle";
+  ctx.font = `600 ${AXIS_FONT_SIZE}px ${CHART_MONO_FONT}`; ctx.textBaseline = "middle";
   const price = heatmapPrice(tick * tickSize, tickSize);
   const priceWidth = ctx.measureText(price).width + 10;
   ctx.fillStyle = "#e9eef5"; ctx.fillRect(g.right + 2, py - 9, priceWidth, 18);

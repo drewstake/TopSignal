@@ -35,6 +35,11 @@
   --font-display: "Bricolage Grotesque Variable", "Instrument Sans Variable", "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
 
+  --type-detail: 0.9375rem;
+  --type-body: 1rem;
+  --type-section: 1.125rem;
+  --text-secondary: color-mix(in srgb, rgb(var(--theme-text-soft)) 75%, rgb(var(--theme-text)));
+
   --sd-radius-lg: 8px;
   --sd-radius: 6px;
   --sd-radius-sm: 4px;
@@ -105,7 +110,7 @@ html {
 }
 .copy-trade-confirmation-eyebrow {
   color: rgb(var(--theme-accent));
-  font: 500 10px/1.6 var(--font-mono);
+  font: 500 var(--type-detail)/1.35 var(--font-ui);
   letter-spacing: 1.5px;
 }
 .copy-trade-confirmation h2 {
@@ -115,8 +120,8 @@ html {
 }
 .copy-trade-confirmation-description {
   margin-top: 14px;
-  color: rgb(var(--theme-muted));
-  font-size: 14px;
+  color: var(--text-secondary);
+  font-size: var(--type-body);
   line-height: 1.7;
 }
 .copy-trade-confirmation-notice {
@@ -127,8 +132,8 @@ html {
   border: 1px solid rgb(var(--theme-border) / 0.7);
   border-radius: var(--sd-radius-sm);
   background: var(--sd-surface-inset);
-  color: rgb(var(--theme-muted));
-  font-size: 12px;
+  color: var(--text-secondary);
+  font-size: var(--type-detail);
   line-height: 1.7;
 }
 .copy-trade-confirmation-notice svg { flex-shrink: 0; margin-top: 2px; color: rgb(var(--theme-accent)); }
@@ -141,7 +146,7 @@ html {
   border-top: 1px solid rgb(var(--theme-border) / 0.7);
   background: var(--sd-surface-inset);
 }
-.copy-trade-confirmation-actions .ui-button { min-height: 44px; height: auto; font-size: 12px; }
+.copy-trade-confirmation-actions .ui-button { min-height: 44px; height: auto; font-size: var(--type-detail); }
 @media (max-width: 480px) {
   .copy-trade-confirmation-body { padding: 22px; }
   .copy-trade-confirmation-actions { padding: 16px 22px; }
@@ -158,7 +163,7 @@ html {
   --workspace-sidebar-width: 210px;
   position: relative;
   isolation: isolate;
-  font-size: 14px;
+  font-size: var(--type-body);
   word-spacing: 0.04em;
 }
 
@@ -227,10 +232,10 @@ html {
 .app-workspace .workspace-brand-caption {
   margin-top: 4px;
   font-family: var(--font-mono);
-  font-size: 8.5px;
+  font-size: var(--type-detail);
   font-weight: 500;
   letter-spacing: 0.22em;
-  color: rgb(var(--theme-muted-strong));
+  color: var(--text-secondary);
 }
 
 .app-workspace .workspace-nav-label {
@@ -238,10 +243,10 @@ html {
   align-items: center;
   gap: 10px;
   margin: 24px 12px 8px;
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font-family: var(--font-ui);
+  font-size: var(--type-detail);
   font-weight: 500;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.015em;
 }
 
 .app-workspace .workspace-nav-label::after {
@@ -262,9 +267,9 @@ html {
   padding: 10px 12px;
   border: 1px solid transparent;
   border-radius: 11px;
-  font-size: 13.5px;
+  font-size: var(--type-body);
   font-weight: 520;
-  color: rgb(var(--theme-muted));
+  color: var(--text-secondary);
   transition: color 0.2s, background-color 0.25s var(--sd-ease), border-color 0.25s, transform 0.25s var(--sd-ease);
 }
 
@@ -326,9 +331,9 @@ html {
   border: 1px solid rgb(var(--theme-border) / 0.6);
   border-radius: 11px;
   background: rgb(var(--theme-bg) / 0.35);
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.02em;
+  font-family: var(--font-ui);
+  font-size: var(--type-detail);
+  letter-spacing: 0.015em;
   color: rgb(var(--theme-text-soft));
 }
 
@@ -342,13 +347,13 @@ html {
   border: 1px solid rgb(var(--theme-border) / 0.6);
   border-radius: 11px;
   background: rgb(var(--theme-surface-raised) / 0.35);
-  font-size: 11.5px;
+  font-size: var(--type-detail);
   color: rgb(var(--theme-text-soft));
 }
 
 .app-workspace .workspace-identity button {
   min-height: 24px;
-  font-size: 11.5px;
+  font-size: var(--type-detail);
   font-weight: 600;
   color: rgb(var(--theme-accent-text));
 }
@@ -362,10 +367,10 @@ html {
 .app-workspace .workspace-footer {
   padding: 12px 8px 0;
   font-family: var(--font-display);
-  font-size: 11.5px;
+  font-size: var(--type-detail);
   font-style: normal;
   letter-spacing: -0.005em;
-  color: rgb(var(--theme-muted-strong));
+  color: var(--text-secondary);
 }
 
 /* ------------------------------------------------------------------ */
@@ -398,11 +403,11 @@ html {
 
 .workspace-crumb::before {
   content: "Workspace";
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: rgb(var(--theme-muted-strong));
+  font-family: var(--font-ui);
+  font-size: var(--type-detail);
+  letter-spacing: 0.015em;
+  text-transform: none;
+  color: var(--text-secondary);
 }
 
 .workspace-crumb::after {
@@ -446,11 +451,11 @@ html {
   gap: 8px;
   height: 36px;
   padding: 0 4px 0 12px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: rgb(var(--theme-muted-strong));
+  font-family: var(--font-ui);
+  font-size: var(--type-detail);
+  letter-spacing: 0.015em;
+  text-transform: none;
+  color: var(--text-secondary);
 }
 
 
@@ -460,7 +465,7 @@ html {
   border: 0;
   background-color: transparent;
   box-shadow: none;
-  font-size: 13px;
+  font-size: var(--type-body);
   font-weight: 600;
 }
 
@@ -473,14 +478,14 @@ html {
   height: 38px;
   padding: 0 16px;
   border-radius: 11px;
-  font-size: 12.5px;
+  font-size: var(--type-detail);
 }
 
 .app-workspace .workspace-controls [role="switch"] {
   height: 38px;
   gap: 8px;
   padding: 0 6px;
-  font-size: 12px;
+  font-size: var(--type-detail);
   color: rgb(var(--theme-text-soft));
 }
 
@@ -507,7 +512,7 @@ html {
     repeating-linear-gradient(-45deg, rgb(var(--theme-accent) / 0.07) 0 10px, transparent 10px 20px),
     rgb(var(--theme-bg) / 0.9);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-detail);
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -554,14 +559,14 @@ html {
 }
 
 .app-workspace .demo-notice .text-xs {
-  font-size: 12.5px;
+  font-size: var(--type-detail);
   line-height: 1.6;
 }
 
 .app-workspace .demo-notice-tag {
   border-radius: 6px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--type-detail);
   letter-spacing: 0.12em;
 }
 
@@ -613,7 +618,9 @@ html {
 }
 
 .app-workspace .ui-card-title {
-  font-size: 16px;
+  font-family: var(--font-ui);
+  font-size: var(--type-section);
+  line-height: 1.3;
 }
 
 /* ------------------------------------------------------------------ */
@@ -738,10 +745,10 @@ html {
   gap: 6px;
   border-radius: 7px;
   padding: 3px 8px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-family: var(--font-ui);
+  font-size: var(--type-detail);
   font-weight: 600;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.015em;
   box-shadow: var(--sd-edge);
 }
 
@@ -769,12 +776,12 @@ html {
 :root .app-workspace thead th {
   background: rgb(var(--theme-surface-raised) / 0.72);
   border-bottom: 1px solid rgb(var(--theme-border) / 0.9);
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-family: var(--font-ui);
+  font-size: var(--type-detail);
   font-weight: 500;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: rgb(var(--theme-muted-strong));
+  letter-spacing: 0.015em;
+  text-transform: none;
+  color: var(--text-secondary);
 }
 
 :root[data-app-theme] .app-workspace thead {
@@ -863,7 +870,7 @@ html {
   align-items: center;
   gap: 10px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-detail);
   font-weight: 500;
   letter-spacing: 0.18em;
   color: rgb(var(--theme-accent-text));
@@ -893,8 +900,8 @@ html {
 
 .app-workspace .dashboard-subtitle {
   margin-top: 10px;
-  font-size: 14px;
-  color: rgb(var(--theme-muted));
+  font-size: var(--type-body);
+  color: var(--text-secondary);
 }
 
 .app-workspace .dashboard-range-label {
@@ -903,7 +910,7 @@ html {
   border-radius: 999px;
   background: rgb(var(--theme-surface) / 0.6);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--type-detail);
   letter-spacing: 0.04em;
   color: rgb(var(--theme-text-soft));
   box-shadow: var(--sd-edge);
@@ -943,7 +950,7 @@ html {
   min-width: 40px;
   border-radius: 8px;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--type-detail);
   font-weight: 500;
   transition: color 0.2s, background-color 0.25s var(--sd-ease), box-shadow 0.25s;
 }
@@ -961,11 +968,11 @@ html {
 .app-workspace .dashboard-toolbar input {
   height: 36px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--type-detail);
 }
 
 .app-workspace .dashboard-toolbar > div > div > span {
-  font-size: 9.5px;
+  font-size: var(--type-detail);
 }
 
 /* ------------------------------------------------------------------ */
@@ -990,12 +997,12 @@ html {
 }
 
 .app-workspace .overview-stat-heading h2 {
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-ui);
+  font-size: var(--type-detail);
   font-weight: 500;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: rgb(var(--theme-muted));
+  letter-spacing: 0.015em;
+  text-transform: none;
+  color: var(--text-secondary);
 }
 
 .app-workspace .overview-stat-heading svg {
@@ -1006,7 +1013,7 @@ html {
   border: 1px solid rgb(var(--theme-border) / 0.8);
   border-radius: 9px;
   background: rgb(var(--theme-bg) / 0.4);
-  color: rgb(var(--theme-muted));
+  color: var(--text-secondary);
 }
 
 .app-workspace .overview-stat-featured .overview-stat-heading svg {
@@ -1040,8 +1047,8 @@ html {
 }
 
 .app-workspace .overview-stat-caption {
-  font-size: 12px;
-  color: rgb(var(--theme-muted));
+  font-size: var(--type-detail);
+  color: var(--text-secondary);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1063,7 +1070,7 @@ html {
 .app-workspace .dashboard-balance-card > header p,
 .app-workspace .dashboard-recent-trades > header p,
 .app-workspace .section-description {
-  font-size: 12.5px;
+  font-size: var(--type-detail);
 }
 
 .app-workspace .dashboard-balance-card > header > .grid {
@@ -1084,14 +1091,14 @@ html {
 
 .app-workspace .dashboard-balance-card > header > .grid p:first-child {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--type-detail);
   letter-spacing: 0.14em;
 }
 
 .app-workspace .dashboard-balance-card > header > .grid p:last-child {
   margin-top: 3px;
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: var(--type-body);
   font-weight: 600;
 }
 
@@ -1114,7 +1121,7 @@ html {
 }
 
 .app-workspace .profile-trade-count > span {
-  font-size: 12.5px;
+  font-size: var(--type-detail);
 }
 
 .app-workspace .profile-outcome-bar {
@@ -1135,7 +1142,7 @@ html {
 }
 
 .app-workspace .profile-outcomes span {
-  font-size: 11.5px;
+  font-size: var(--type-detail);
 }
 
 .app-workspace .profile-outcomes i {
@@ -1150,7 +1157,7 @@ html {
 }
 
 .app-workspace .profile-stat-list {
-  font-size: 12.5px;
+  font-size: var(--type-detail);
 }
 
 .app-workspace .profile-stat-list > div {
@@ -1170,7 +1177,7 @@ html {
 }
 
 .app-workspace .profile-note {
-  font-size: 11.5px;
+  font-size: var(--type-detail);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1191,7 +1198,7 @@ html {
 .app-workspace .metric-title {
   color: rgb(var(--theme-text));
   font-family: var(--font-ui);
-  font-size: 1.125rem;
+  font-size: var(--type-section);
   font-weight: 600;
   line-height: 1.3;
 }
@@ -1208,13 +1215,12 @@ html {
   font-size: 1rem;
 }
 
-.dashboard-insights :is(.text-app-muted, .text-app-muted-strong) {
-  color: color-mix(in srgb, rgb(var(--theme-text-soft)) 75%, rgb(var(--theme-text)));
+:is(.text-app-muted, .text-app-muted-strong) {
+  color: var(--text-secondary);
 }
 
-.dashboard-insights .metric-details-content dl > div,
-.dashboard-insights .analytics-metric :is(.text-\[9px\], .text-\[10px\], .text-\[11px\], .text-xs) {
-  font-size: 0.9375rem;
+.dashboard-insights .metric-details-content dl > div {
+  font-size: var(--type-detail);
   line-height: 1.35;
 }
 
@@ -1229,12 +1235,12 @@ html {
 
 .app-workspace .dashboard-recent-trades th {
   padding: 12px 12px;
-  font-size: 10.5px;
+  font-size: var(--type-detail);
 }
 
 .app-workspace .dashboard-recent-trades td {
   padding: 13px 12px;
-  font-size: 12.5px;
+  font-size: var(--type-detail);
 }
 
 .app-workspace .empty-state-icon {
@@ -1256,17 +1262,17 @@ html {
 
 .app-workspace .dashboard-welcome p,
 .app-workspace .copy-trade-setup p {
-  font-size: 12.5px;
+  font-size: var(--type-detail);
 }
 
 .app-workspace .workspace-primary-link {
   border-radius: 10px;
-  font-size: 12.5px;
+  font-size: var(--type-detail);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.25), 0 10px 24px -14px rgb(var(--theme-accent) / 0.9);
 }
 
 .app-workspace .workspace-text-link {
-  font-size: 12.5px;
+  font-size: var(--type-detail);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1353,7 +1359,7 @@ html {
   }
 
   .app-workspace .workspace-identity button {
-    font-size: 10px;
+    font-size: var(--type-detail);
     line-height: 1.3;
   }
 
@@ -1398,7 +1404,7 @@ html {
   .app-workspace .workspace-navigation a {
     min-height: 38px;
     padding: 8px 12px;
-    font-size: 12.5px;
+    font-size: var(--type-detail);
   }
 
   .app-workspace .workspace-navigation a[aria-current="page"]::before {
@@ -1425,7 +1431,7 @@ html {
   }
 
   .app-workspace .workspace-demo-ribbon {
-    font-size: 10px;
+    font-size: var(--type-detail);
     letter-spacing: 0.04em;
   }
 

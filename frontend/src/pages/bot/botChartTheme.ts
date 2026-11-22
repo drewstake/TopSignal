@@ -28,7 +28,7 @@ export function readBotChartThemeColors(): BotChartThemeColors {
     positive: color("--theme-positive", "rgb(34,197,94)"),
     negative: color("--theme-negative", "rgb(244,63,94)"),
     warning: color("--theme-warning", "rgb(250,204,21)"),
-    label: color("--theme-chart-label", "rgb(148,163,184)"),
+    label: color("--theme-text-soft", "rgb(213,220,230)"),
     grid: color("--theme-chart-grid", "rgba(51,65,85,0.35)", 0.35),
     border: color("--theme-border-strong", "rgba(71,85,105,0.55)", 0.55),
   };

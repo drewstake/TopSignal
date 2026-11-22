@@ -3,6 +3,10 @@ export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
+      fontSize: {
+        xs: ["var(--type-detail)", { lineHeight: "1.35" }],
+        sm: ["var(--type-body)", { lineHeight: "1.45" }],
+      },
       fontFamily: {
         sans: ["var(--font-ui)"],
         mono: ["var(--font-mono)"],

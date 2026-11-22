@@ -51,16 +51,16 @@
 }
 
 .expenses-workspace .expenses-table-scroll th {
-  font-size: 10px;
+  font-size: var(--type-detail);
   letter-spacing: 0.07em;
 }
 
 .expenses-workspace .expenses-table-scroll td {
-  font-size: 12px;
+  font-size: var(--type-detail);
 }
 
 .expenses-workspace .expenses-delete {
-  color: rgb(var(--theme-muted));
+  color: var(--text-secondary);
   border-color: transparent;
   background: transparent;
 }
@@ -78,7 +78,7 @@
 }
 
 .expenses-form label {
-  color: rgb(var(--theme-muted));
+  color: var(--text-secondary);
   letter-spacing: normal;
   text-transform: none;
 }

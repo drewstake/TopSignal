@@ -2,6 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer utilities {
+  .text-\[9px\], .text-\[10px\], .text-\[11px\] {
+    font-size: var(--type-detail);
+    line-height: 1.35;
+  }
+}
+
 /* Full-page layouts must still cover the viewport after document scaling. */
 body, #root, .min-h-screen {
   min-height: calc(100vh / var(--app-scale));
@@ -762,11 +769,11 @@ body, #root, .min-h-screen {
 
   :root[data-app-theme] .text-slate-300,
   :root[data-app-theme] .text-slate-400 {
-    color: rgb(var(--theme-muted) / var(--tw-text-opacity, 1));
+    color: var(--text-secondary);
   }
 
   :root[data-app-theme] .text-slate-500 {
-    color: rgb(var(--theme-muted-strong) / var(--tw-text-opacity, 1));
+    color: var(--text-secondary);
   }
 
   :root[data-app-theme] .text-slate-900,

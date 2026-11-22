@@ -70,11 +70,11 @@
     .workspace-brand { justify-content: center; }
     .workspace-brand-name { display: none; }
     .workspace-navigation { margin-top: 16px; }
-    .workspace-navigation a { flex-direction: column; justify-content: center; gap: 3px; padding: 6px 2px; font-size: 11px; }
+    .workspace-navigation a { flex-direction: column; justify-content: center; gap: 3px; padding: 6px 2px; font-size: var(--type-detail); }
     .workspace-navigation a > span { display: inline; }
     .workspace-navigation a[aria-current="page"]::before { left: 0; }
     .workspace-sidebar-bottom { padding-top: 12px; }
-    .workspace-connection { margin: 0; padding: 6px 3px; border: 0; font-size: 9px; }
+    .workspace-connection { margin: 0; padding: 6px 3px; border: 0; font-size: var(--type-detail); }
     .workspace-identity { align-items: center; padding: 6px 2px; margin: 0; }
   }
 }

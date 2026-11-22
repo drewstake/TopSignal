@@ -144,15 +144,15 @@ export function TradeProgressChart({ data }: { data: ProgressTimeline }) {
       })}
     </div>
     <div ref={chartContainer}>{observations.length || extremes.length ? <svg viewBox={`0 0 ${chartWidth} 280`} role="img" aria-label="Signed unrealized points over elapsed minutes. Amber bands show missing coverage." className="w-full rounded-xl border border-slate-800 bg-slate-950">
-      {[0,1,2,3,4].map(i => { const v=low-pad+(high-low+2*pad)*i/4; return <g key={i}><line x1="64" x2={right} y1={y(v)} y2={y(v)} stroke="#1e293b"/><text x="54" y={y(v)+4} textAnchor="end" fill="#94a3b8" fontSize="11">{fmt(v,1)}</text></g>; })}
+      {[0,1,2,3,4].map(i => { const v=low-pad+(high-low+2*pad)*i/4; return <g key={i}><line x1="64" x2={right} y1={y(v)} y2={y(v)} stroke="#1e293b"/><text x="54" y={y(v)+4} textAnchor="end" fill="var(--text-secondary)" fontSize="14">{fmt(v,1)}</text></g>; })}
       <line x1="64" x2={right} y1={y(0)} y2={y(0)} stroke="#64748b" strokeDasharray="4 4"/>
       {gaps.map((g,i) => <rect key={i} x={x(g.start)} y="30" width={Math.max(2,x(g.end)-x(g.start))} height="200" fill="#fbbf24" opacity=".12"><title>Missing coverage {time(g.start)}–{time(g.end)} ET</title></rect>)}
       {segments.map((segment,i) => <polyline key={i} fill="none" stroke="#22d3ee" strokeWidth="2.5" points={segment.map(s => `${x(s.ts)},${y(s.points!)}`).join(" ")}/>)}
       {observations.map((s,i) => <circle key={i} cx={x(s.ts)} cy={y(s.points!)} r="3" fill="#22d3ee" opacity=".6" onMouseEnter={() => setSelected(s)}><title>{time(s.ts)} ET · {fmt(s.points)} pts · basis {fmt(s.average_entry)}</title></circle>)}
       {events.map((s,i) => <g key={`event-${i}`} onMouseEnter={() => setSelected(s)}><line x1={x(s.ts)} x2={x(s.ts)} y1="30" y2="230" stroke="#94a3b8" strokeDasharray="3 5"/><circle tabIndex={0} onFocus={() => setSelected(s)} cx={x(s.ts)} cy={s.points === null ? 32 : y(s.points)} r="5" fill="#e2e8f0"><title>{label(s.kind)} · {time(s.ts)} ET · basis {fmt(s.average_entry)}</title></circle></g>)}
       {extremes.map((s,i) => <g key={`extreme-${i}`} onMouseEnter={() => setSelected(s)}><circle tabIndex={0} onFocus={() => setSelected(s)} cx={x(s.ts)} cy={y(s.points!)} r="5" fill={i===0 ? "#34d399" : "#fb7185"}/><text x={Math.max(105,Math.min(right-40,x(s.ts)))} y={y(s.points!)-12} textAnchor="middle" fontSize="11" fill={i===0 ? "#6ee7b7" : "#fda4af"}>{i===0 ? "Best" : "Worst"} {fmt(s.points)} pts</text></g>)}
-      {[0,1,2,3,4].map(i => <text key={i} x={64+i*plotWidth/4} y="252" textAnchor="middle" fill="#94a3b8" fontSize="11">{fmt((end-start)/60*i/4,1)}m</text>)}
-      <text x="64" y="18" fill="#94a3b8" fontSize="11">Signed points</text><text x={right} y="273" textAnchor="end" fill="#94a3b8" fontSize="11">Elapsed from entry</text>
+      {[0,1,2,3,4].map(i => <text key={i} x={64+i*plotWidth/4} y="252" textAnchor="middle" fill="var(--text-secondary)" fontSize="14">{fmt((end-start)/60*i/4,1)}m</text>)}
+      <text x="64" y="18" fill="var(--text-secondary)" fontSize="14">Signed points</text><text x={right} y="273" textAnchor="end" fill="var(--text-secondary)" fontSize="14">Elapsed from entry</text>
     </svg> : <div className="rounded-xl border border-dashed border-slate-700 p-8 text-center text-sm text-slate-400">No valid price observations. This does not mean the position was flat.</div>}</div>
     <p className="text-xs text-slate-400">Cyan: periodic observations · white: position changes · green/rose: extremes on incoming prices · amber: missing coverage. Lines break when the entry basis changes.</p>
     {detail && <div className="rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3 text-xs text-slate-300" aria-live="polite">
