@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from ..models import Account, Expense, ExpenseSuppression
-from .topstep_labs import is_labs_account_name, lab_drop_from_account_name
+from .topstep_labs import is_labs_account_name, one_time_fee_from_account_name
 
 # Keep aligned with the application's combineTracker/expensePresets defaults.
 # These are inferred fees, not provider billing transactions.
@@ -22,18 +22,22 @@ def add_missing_combine_expenses(
     """Caller holds the account mutation lock through commit; never delete rows."""
     eligible = {}
     for account in accounts:
-        name = (account.name or "").strip().upper()
-        match = re.match(r"^(50|100|150)KTC", name)
-        lab_drop = lab_drop_from_account_name(name)
-        if is_labs_account_name(name) and lab_drop is None:
-            continue
         if (
-            (not match and lab_drop is None) or account.user_id != user_id
+            account.user_id != user_id
             or account.trade_data_source != "projectx" or account.archived_at is not None
             or account.account_state not in {"ACTIVE", "LOCKED_OUT"}
         ):
             continue
-        eligible[int(account.external_id)] = (account, match[1] + "k" if match else None, name, lab_drop)
+        name = (account.name or "").strip().upper()
+        first_seen = account.first_seen_at or observed_at
+        if first_seen.tzinfo is None:
+            first_seen = first_seen.replace(tzinfo=timezone.utc)
+        purchase_date = first_seen.astimezone(_NEW_YORK).date()
+        match = re.match(r"^(50|100|150)KTC", name)
+        fee = one_time_fee_from_account_name(name, purchase_date)
+        if fee is None and (not match or is_labs_account_name(name)):
+            continue
+        eligible[int(account.external_id)] = (purchase_date, match[1] + "k" if match else None, name, fee)
     if not eligible:
         return 0
 
@@ -52,28 +56,25 @@ def add_missing_combine_expenses(
         ).all()
     }
     created = 0
-    for account_id, (account, plan_size, name, lab_drop) in eligible.items():
+    for account_id, (purchase_date, plan_size, name, fee) in eligible.items():
         if account_id in recorded or account_id in suppressed:
             continue
         dll = bool(re.search(r"(?:^|[^A-Z0-9])DLL(?:$|[^A-Z0-9])", name)) or "DAILY LOSS LIMIT" in name
-        first_seen = account.first_seen_at or observed_at
-        if first_seen.tzinfo is None:
-            first_seen = first_seen.replace(tzinfo=timezone.utc)
         db.add(Expense(
             user_id=user_id, account_id=account_id, provider="topstep",
-            expense_date=first_seen.astimezone(_NEW_YORK).date(),
-            amount_cents=lab_drop.fee_cents if lab_drop else (_DLL_CENTS if dll else _STANDARD_CENTS)[plan_size],
+            expense_date=purchase_date,
+            amount_cents=fee.fee_cents if fee else (_DLL_CENTS if dll else _STANDARD_CENTS)[plan_size],
             currency="USD", category="evaluation_fee",
-            account_type=None if lab_drop else "no_activation" if dll else "standard",
-            plan_size=None if lab_drop else plan_size,
-            source_id=f"topstep_labs:account:{account_id}" if lab_drop else None,
+            account_type=None if fee else "no_activation" if dll else "standard",
+            plan_size=None if fee else plan_size,
+            source_id=f"{fee.source}:account:{account_id}" if fee else None,
             description=(
-                f"Auto tracked Topstep Labs Drop #{lab_drop.id} - {lab_drop.name}; one-time fee (inferred)"
-                if lab_drop else f"Auto tracked combine purchase ({plan_size.upper()}{' DLL' if dll else ''})"
+                f"Auto tracked {fee.label}; one-time fee (inferred)"
+                if fee else f"Auto tracked combine purchase ({plan_size.upper()}{' DLL' if dll else ''})"
             ),
             tags=["combine_tracker", "auto", *(
-                ["topstep_labs", f"lab_drop_{lab_drop.id}", "one_time_fee", "quantity_1"]
-                if lab_drop else ["dll"] if dll else []
+                [fee.source, fee.product_tag, "one_time_fee", "quantity_1"]
+                if fee else ["dll"] if dll else []
             )],
         ))
         created += 1

@@ -159,3 +159,36 @@ def test_lab_expenses_obey_account_eligibility(db, attrs):
     db.add(Account(**values))
     db.flush()
     assert add_missing_combine_expenses(db, db.query(Account).all(), user_id=USER, observed_at=NOW) == 0
+
+
+def test_permanent_challenge_discovery_charges_each_purchased_account_once(db):
+    now = datetime(2026, 11, 24, 2, tzinfo=timezone.utc)
+    names = {
+        1: "Topstep $500 Challenge - 101", 2: "$1.5K Challenge", 3: "Challenge $3,000",
+        4: "$6K_Challenge_Round_104", 5: "CHALLENGE-9000-105", 6: "$1,500 Challenge",
+        7: "$1.5K Challenge - Payout Round", 8: "$500 Payout Round",
+        9: "$6K Challenge - Round 2", 10: "PRACTICE $9K Challenge",
+        11: "Topstep Labs $3K Challenge", 12: "50KTC-PAYOUT-ROUND-111",
+        13: "Challenge $4,000", 14: "50KTC-CHALLENGE-UNKNOWN",
+    }
+    assert discover(db, names, now=now) == 6
+    assert discover(db, names, now=now) == 0
+    rows = db.query(Expense).order_by(Expense.account_id).all()
+    assert [row.amount_cents for row in rows] == [4900, 9900, 19900, 39900, 59900, 9900]
+    for row, target in zip(rows, [500, 1500, 3000, 6000, 9000, 1500], strict=True):
+        assert row.expense_date == date(2026, 11, 23)
+        assert row.category == "evaluation_fee" and row.plan_size is None and row.account_type is None
+        assert row.source_id == f"topstep_challenge:account:{row.account_id}"
+        assert f"challenge_{target}" in row.tags and "one_time_fee" in row.tags
+        assert f"Topstep ${target:,} Challenge" in row.description
+
+
+def test_challenge_refresh_preserves_legacy_accounts_manual_receipts_and_suppressions(db):
+    assert discover(db, {1: "$3K Challenge"}) == 0  # Ambiguous historical Labs account.
+    db.add(Expense(user_id=USER, account_id=2, expense_date=NOW.date(), category="evaluation_fee",
+                   amount_cents=8900, tags=["topstep_challenge"]))
+    db.add(ExpenseSuppression(user_id=USER, source="combine_tracker", account_id=3))
+    db.commit()
+    now = datetime(2026, 11, 24, tzinfo=timezone.utc)
+    assert discover(db, {1: "$3K Challenge", 2: "$1.5K Challenge", 3: "$6K Challenge"}, now=now) == 0
+    assert db.query(Expense).one().amount_cents == 8900

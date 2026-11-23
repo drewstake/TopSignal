@@ -32,6 +32,7 @@ import {
 import {
   EXPENSE_ACCOUNT_TYPES,
   EXPENSE_PLAN_SIZES,
+  TOPSTEP_CHALLENGES,
   getExpenseAccountTypeLabel,
   getExpensePresetAmountCents,
   type ExpenseAccountPresetType,
@@ -180,7 +181,8 @@ function formatCombineReconciliationError(error: unknown): string {
 }
 
 interface AddExpenseState {
-  mode: "preset" | "general" | "labs";
+  mode: "preset" | "general" | "labs" | "challenge";
+  challengeTarget: number;
   labDropId: TopstepLabDropId;
   quantity: string;
   sourceId: string;
@@ -198,6 +200,7 @@ interface AddExpenseState {
 function buildInitialAddExpenseState(accountId: string): AddExpenseState {
   return {
     mode: "preset",
+    challengeTarget: TOPSTEP_CHALLENGES[0].target,
     labDropId: "001",
     quantity: "1",
     sourceId: crypto.randomUUID(),
@@ -633,6 +636,13 @@ export function ExpensesPage() {
     setAddState((current) => ({ ...current, amount: (drop.feeCents / 100).toFixed(2) }));
   }, [addState.mode, addState.labDropId]);
 
+  const challenge = TOPSTEP_CHALLENGES.find((item) => item.target === addState.challengeTarget)!;
+  useEffect(() => {
+    if (addState.mode === "challenge") {
+      setAddState((current) => ({ ...current, amount: (challenge.feeCents / 100).toFixed(2) }));
+    }
+  }, [addState.mode, challenge]);
+
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const currentPage = Math.floor(offset / limit) + 1;
   const payoutTotalPages = Math.max(1, Math.ceil(payoutTotal / PAYOUT_PAGE_SIZE));
@@ -734,7 +744,8 @@ export function ExpensesPage() {
       return;
     }
 
-    const expenseCategory = addState.mode === "labs" ? "evaluation_fee" : addState.mode === "preset" ? addState.stage : addState.category;
+    const expenseCategory = addState.mode === "general" ? addState.category
+      : addState.mode === "preset" ? addState.stage : "evaluation_fee";
     const amount = parseStrictFiniteNumber(addState.amount);
     if (amount === null || amount < 0) {
       setAddError("Amount must be a non-negative number.");
@@ -756,7 +767,17 @@ export function ExpensesPage() {
         accountId: parsedModalAccountId,
         description: addState.description,
         tags: splitTags(addState.tags),
-      }) : {
+      }) : addState.mode === "challenge" ? {
+        source_id: `topstep_challenge:${addState.sourceId}`,
+        provider: "topstep",
+        category: "evaluation_fee",
+        expense_date: addState.expenseDate,
+        amount_cents: Math.round(amount * 100),
+        account_id: parsedModalAccountId,
+        description: [`Topstep $${challenge.target.toLocaleString("en-US")} Challenge`, addState.description.trim()].filter(Boolean).join(" — "),
+        tags: Array.from(new Set(["topstep_challenge", `challenge_${challenge.target}`, "one_time_fee", ...splitTags(addState.tags)])),
+        currency: "USD",
+      } : {
         expense_date: addState.expenseDate,
         amount: expenseCategory === "refund" ? -amount : amount,
         category: expenseCategory,
@@ -1337,6 +1358,7 @@ export function ExpensesPage() {
             <label htmlFor="expense-entry-type" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Entry type</label>
             <Select id="expense-entry-type" value={addState.mode} onChange={(event) => setAddState((current) => ({ ...current, mode: event.target.value as AddExpenseState["mode"], amount: "" }))}>
               <option value="preset">Topstep fee preset</option>
+              <option value="challenge">Topstep Challenge</option>
               <option value="labs">Topstep Labs</option>
               <option value="general">Expense or refund</option>
             </Select>
@@ -1348,6 +1370,16 @@ export function ExpensesPage() {
                 {CATEGORY_OPTIONS.map((value) => <option key={value} value={value}>{formatCategoryLabel(value)}</option>)}
               </Select>
               {addState.category === "refund" ? <p className="mt-2 text-xs text-app-muted">Enter the amount received as a positive number. It will reduce recorded spend.</p> : null}
+            </div>
+          ) : addState.mode === "challenge" ? (
+            <div>
+              <label htmlFor="expense-challenge" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Challenge</label>
+              <Select id="expense-challenge" value={challenge.target} onChange={(event) => setAddState((current) => ({ ...current, challengeTarget: Number(event.target.value) }))}>
+                {TOPSTEP_CHALLENGES.map(({ target, feeCents }) => (
+                  <option key={target} value={target}>${target.toLocaleString("en-US")} Challenge — {formatCurrency(feeCents / 100)} one time</option>
+                ))}
+              </Select>
+              <p className="mt-2 text-xs text-app-muted">Recognized purchases appear after a ProjectX account refresh. For a manual entry, link the Account ID to count the fee once. Payout Round activation is free.</p>
             </div>
           ) : addState.mode === "labs" ? <>
             <div>

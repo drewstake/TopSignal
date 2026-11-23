@@ -286,6 +286,13 @@ offers these presets for manual entry; link an individual purchase to its Accoun
 to prevent discovery from adding it again. Unlinked or bulk manual entries cannot be
 matched automatically to provider accounts.
 
+Permanent Topstep Challenges follow the same one-time purchase flow. The $500,
+$1,500, $3,000, $6,000 and $9,000 targets cost $49, $99, $199, $399 and $599
+respectively. Account discovery uses identifiable Challenge names first seen
+from November 23, 2026. Payout Round activation is free. To enter a purchase
+from a receipt, choose **Expenses → Add Expense → Topstep Challenge**, select
+the target, enter the amount paid, and link the purchased account ID when available.
+
 The optional combine reconciliation helper is separate from automatic discovery:
 
 - it lives in browser storage

@@ -104,6 +104,17 @@ def test_expense_schema_rejects_values_outside_postgres_integer_range(payload):
         )
 
 
+def test_linked_challenge_purchase_cannot_duplicate_an_existing_fee(db_session):
+    _create_auto_combine_expense(db_session, expense_date=date(2026, 11, 23), account_id=123)
+    with pytest.raises(HTTPException) as error:
+        create_expense(ExpenseCreateIn(
+            expense_date=date(2026, 11, 24), account_id=123, category="evaluation_fee",
+            amount_cents=9900, tags=["topstep_challenge"],
+        ), db=db_session)
+    assert error.value.status_code == 409
+    assert db_session.query(Expense).count() == 1
+
+
 def test_expense_database_range_error_is_mapped_to_422(db_session):
     db_session.commit = lambda: (_ for _ in ()).throw(
         DataError("insert", {}, ValueError("integer out of range"))

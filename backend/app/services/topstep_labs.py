@@ -1,11 +1,12 @@
-"""Lab prices supplied November 2026; account-derived fees are estimates.
+"""Topstep one-time purchase prices; account-derived fees are estimates.
 
 Only explicit drop IDs or identifiable product names qualify. Provider naming
 is not a billing feed: ambiguous Lab accounts must never use standard pricing.
-Keep prices aligned with frontend/src/lib/topstepLabs.ts (including old drops).
+Keep prices aligned with the frontend Labs and Challenge presets.
 """
 
 from dataclasses import dataclass
+from datetime import date
 import re
 
 
@@ -32,18 +33,32 @@ LAB_DROPS = {
 }
 
 
+@dataclass(frozen=True)
+class OneTimeFee:
+    label: str
+    fee_cents: int
+    source: str
+    product_tag: str
+
+
+CHALLENGE_FEES = {500: 4900, 1500: 9900, 3000: 19900, 6000: 39900, 9000: 59900}
+_TARGET = r"(?:\d{1,2}(?:\.5)?K|\d{1,2},\d{3}|\d{1,5})"
+_CHALLENGE_LABEL = re.compile(
+    r"(?:TOPSTEP )?(?:THE )?(?:"
+    rf"\$?(?P<before>{_TARGET}) (?:REWARD )?CHALLENGE"
+    rf"|CHALLENGE(?: ROUND)? \$?(?P<after>{_TARGET})"
+    r")(?: (?:CHALLENGE ROUND|ROUND 1|ROUND))?(?: \d+)?"
+)
+
+
 def is_labs_account_name(name: str) -> bool:
     return bool(re.search(
-        r"\b(?:LABS?|DROP|STATIC|FREEDOM|CHALLENGE|DAILY[\s_-]+PAYOUTS)\b",
+        r"\b(?:LABS?|DROP|STATIC|FREEDOM|CHALLENGE|DAILY[\s_-]+PAYOUTS|PAYOUT(?:[\s_-]*ROUND)?)\b",
         name.replace("_", " "), re.I,
     ))
 
 
-def lab_drop_from_account_name(name: str) -> LabDrop | None:
-    name = re.sub(r"[\s_-]+", " ", name.upper()).strip()
-    # Funded successors and practice accounts are not new purchases.
-    if re.search(r"\b(?:\d+K)?(?:XFA|LFA|EXPRESS|LIVE|FUNDED|PRACTICE)\b", name):
-        return None
+def _lab_drop_from_account_name(name: str) -> LabDrop | None:
     ids = re.findall(r"\b(?:LABS?(?: DROP)?|DROP)\s*#?\s*(\d{1,3})\b", name)
     if ids:
         unique_ids = {item.zfill(3) for item in ids}
@@ -71,3 +86,28 @@ def lab_drop_from_account_name(name: str) -> LabDrop | None:
             elif "REVENGE" in name and "RETURN" not in name:
                 drop_id = "009"
     return LAB_DROPS.get(drop_id) if drop_id else None
+
+
+def one_time_fee_from_account_name(name: str, first_seen: date) -> OneTimeFee | None:
+    name = re.sub(r"[\s_-]+", " ", name.upper()).strip()
+    if re.search(
+        r"\b(?:(?:\d+K)?(?:XFA|LFA|EXPRESS|LIVE|FUNDED|PRACTICE)|PAYOUT(?: ?ROUND)?|(?:ROUND|PHASE) (?:2|TWO))\b",
+        name,
+    ):
+        return None
+
+    # Earlier Labs offers reused the same targets at different prices.
+    if first_seen >= date(2026, 11, 23) and (match := _CHALLENGE_LABEL.fullmatch(name)):
+        amount = (match["before"] or match["after"]).replace(",", "")
+        target = int(float(amount[:-1]) * 1000) if amount.endswith("K") else int(amount)
+        if target in CHALLENGE_FEES:
+            return OneTimeFee(
+                f"Topstep ${target:,} Challenge", CHALLENGE_FEES[target],
+                "topstep_challenge", f"challenge_{target}",
+            )
+        return None
+
+    if drop := _lab_drop_from_account_name(name):
+        return OneTimeFee(f"Topstep Labs Drop #{drop.id} - {drop.name}", drop.fee_cents,
+                          "topstep_labs", f"lab_drop_{drop.id}")
+    return None

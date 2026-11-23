@@ -3,6 +3,15 @@ import type { ExpenseAccountType, ExpenseCategory, ExpensePlanSize } from "./typ
 export type ExpenseStage = Extract<ExpenseCategory, "evaluation_fee" | "activation_fee">;
 export type ExpenseAccountPresetType = ExpenseAccountType | "no_activation_dll";
 
+// Permanent Challenges are separate products from the historical Labs drops.
+export const TOPSTEP_CHALLENGES = [
+  { target: 500, feeCents: 4_900 },
+  { target: 1500, feeCents: 9_900 },
+  { target: 3000, feeCents: 19_900 },
+  { target: 6000, feeCents: 39_900 },
+  { target: 9000, feeCents: 59_900 },
+];
+
 interface PlanPreset {
   evaluation_fee: number;
   activation_fee?: number;

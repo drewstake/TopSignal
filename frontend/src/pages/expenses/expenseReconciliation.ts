@@ -242,7 +242,8 @@ function isAutoTrackedCombineExpense(expense: ExpenseRecord): boolean {
 function isManualCombineExpense(expense: ExpenseRecord): boolean {
   return !isAutoTrackedCombineExpense(expense) && (
     isTrackedCombinePurchaseExpense(expense)
-    || (expense.category === "evaluation_fee" && expense.tags.includes("topstep_labs"))
+    || (expense.category === "evaluation_fee"
+      && (expense.tags.includes("topstep_labs") || expense.tags.includes("topstep_challenge")))
   );
 }
 

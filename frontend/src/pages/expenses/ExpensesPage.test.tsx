@@ -689,6 +689,31 @@ it("rejects a zero refund before submission", async () => {
   expect(create).not.toHaveBeenCalled();
 });
 
+it.each([
+  [500, 49], [1500, 99], [3000, 199], [6000, 399], [9000, 599],
+])("records a single $%i Topstep Challenge purchase", async (target, fee) => {
+  mockExpenseStartup(financialSummary(0));
+  const create = vi.spyOn(api, "createExpense").mockResolvedValue({} as ExpenseRecord);
+  const user = userEvent.setup();
+  render(<ExpensesPage />);
+  await user.click(screen.getByRole("button", { name: "Add Expense" }));
+  await user.selectOptions(screen.getByLabelText("Entry type"), "challenge");
+  await user.selectOptions(screen.getByLabelText("Challenge"), String(target));
+  expect((screen.getByLabelText("Amount (USD)") as HTMLInputElement).value).toBe(fee.toFixed(2));
+  await user.type(screen.getByLabelText("Account ID (Optional)"), "123");
+  await user.click(screen.getByRole("button", { name: "Save Expense" }));
+  await waitFor(() => expect(create).toHaveBeenCalledOnce());
+  const payload = create.mock.calls[0][0];
+  expect(payload).toMatchObject({
+    category: "evaluation_fee", amount_cents: fee * 100, account_id: 123,
+    source_id: expect.stringMatching(/^topstep_challenge:/),
+    description: `Topstep $${target.toLocaleString("en-US")} Challenge`,
+    tags: ["topstep_challenge", `challenge_${target}`, "one_time_fee"],
+  });
+  expect(payload.plan_size).toBeUndefined();
+  expect(payload.account_type).toBeUndefined();
+});
+
 describe("Topstep Labs expenses", () => {
   it.each([
     ["001", "$25K Static", "75.00", 7500],

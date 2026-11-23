@@ -21,7 +21,7 @@ export type TopstepLabDropId = typeof TOPSTEP_LAB_DROPS[number]["id"];
 // browser's standard-combine tracker price a Lab as an ordinary 50/100/150K.
 // Unknown Lab variants must also stay out of standard pricing.
 export function isTopstepLabsAccountName(name: string): boolean {
-  return /\b(?:LABS?|DROP|STATIC|FREEDOM|CHALLENGE|DAILY[\s_-]+PAYOUTS)\b/i.test(name.replaceAll("_", " "));
+  return /\b(?:LABS?|DROP|STATIC|FREEDOM|CHALLENGE|DAILY[\s_-]+PAYOUTS|PAYOUT(?:[\s_-]*ROUND)?)\b/i.test(name.replaceAll("_", " "));
 }
 
 export function buildTopstepLabsExpense(input: {

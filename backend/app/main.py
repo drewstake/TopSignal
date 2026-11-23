@@ -6,7 +6,7 @@ import os
 import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -1108,15 +1108,26 @@ def create_expense(
         description=description,
         tags=tags,
     )
-    db.add(row)
-    try:
-        db.commit()
-    except DataError as exc:
-        db.rollback()
-        raise HTTPException(status_code=422, detail="amount_cents_out_of_range") from exc
-    except IntegrityError as exc:
-        db.rollback()
-        raise _to_expense_integrity_http_exception(exc) from exc
+    linked_challenge = (
+        payload.account_id is not None and payload.category == "evaluation_fee"
+        and _expense_has_tag(tags, "topstep_challenge")
+    )
+    # Serialize a linked receipt with automatic account discovery and other submissions.
+    with serialize_account_main_mutation(db, user_id=user_id) if linked_challenge else nullcontext():
+        if linked_challenge and db.query(Expense.id).filter_by(
+            user_id=user_id, account_id=payload.account_id, category="evaluation_fee",
+        ).first():
+            db.rollback()
+            raise HTTPException(status_code=409, detail="A purchase fee is already recorded for this account.")
+        db.add(row)
+        try:
+            db.commit()
+        except DataError as exc:
+            db.rollback()
+            raise HTTPException(status_code=422, detail="amount_cents_out_of_range") from exc
+        except IntegrityError as exc:
+            db.rollback()
+            raise _to_expense_integrity_http_exception(exc) from exc
 
     db.refresh(row)
     return ExpenseOut.model_validate(row)
@@ -1477,7 +1488,7 @@ def delete_expense(
     if (
         suppress_auto_recreation
         and row.account_id is not None
-        and _expense_has_tag(row.tags, "combine_tracker")
+        and (_expense_has_tag(row.tags, "combine_tracker") or _expense_has_tag(row.tags, "topstep_challenge"))
     ):
         _upsert_expense_suppression(
             db,
