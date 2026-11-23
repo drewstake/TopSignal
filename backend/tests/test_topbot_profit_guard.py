@@ -285,3 +285,44 @@ def test_account_limit_eight_hundred_preserves_session_latch(trigger_pnl, code):
     assert "800" in guard.risk_block(observed).message
     assert guard.observe(USER_A, 9001, 0, limit=800, now=NOW + timedelta(seconds=10))["trigger"] == code
     assert guard.observe(USER_A, 9002, 500, now=NOW)["trigger"] == "daily_profit_target_reached"
+
+
+def test_daily_stop_display_reconciles_broker_without_changing_latch(dom_entry, db_session, monkeypatch):
+    from fastapi import HTTPException, Response
+    from app import main
+    result, _, _ = dom_entry
+    client = RecordingClient()
+    config_id = result.config.id
+    monkeypatch.setattr(main, "get_authenticated_user_id", lambda: USER_A)
+    monkeypatch.setattr(main, "_projectx_client_for_user_without_open_transaction", lambda *a, **kw: client)
+    monkeypatch.setattr(bot_service, "_fetch_account_daily_pnl", lambda *a, **kw: (-798.74, 0, None))
+    def snapshot():
+        return main.get_daily_stop_account(config_id, Response(), db_session)
+
+    with pytest.raises(HTTPException) as inactive:
+        snapshot()
+    assert inactive.value.status_code == 409
+    stop = guard.observe(USER_A, 9001, -1335.30, limit=(800, 1200))
+    guard.observe(USER_A, 9001, -798.74, limit=(800, 1400))
+    assert guard.public_status(USER_A, 9001)["trigger_pnl"] == -1335.30
+    flat = snapshot()
+    assert (flat["position"], flat["realized_pnl"], flat["triggered_at"]) == ("flat", -798.74, stop["triggered_at"])
+    client.positions = [dict(account_id=9001, contract_id=CONTRACT_ID, signed_size=1)]
+    assert snapshot()["position"] == "open"
+    entry = result.order_attempt
+    plan = {**entry.raw_request["timeExit"], "profit_stop_reason": stop["trigger"],
+            "position_observed_at": stop["triggered_at"]}
+    entry.raw_request = {**entry.raw_request, "timeExit": plan}
+    db_session.commit()
+    assert snapshot()["position"] == "exit_pending"
+    entry.raw_request = {**entry.raw_request, "timeExit": {**plan, "outcome": "verified_flat"}}
+    db_session.commit()
+    assert snapshot()["position"] == "open"
+    client.positions[0]["account_id"] = 9002
+    assert snapshot()["position"] == "unknown"
+    monkeypatch.setattr(main, "get_authenticated_user_id", lambda: USER_B)
+    with pytest.raises(HTTPException) as other:
+        snapshot()
+    assert other.value.status_code == 404
+    assert guard.read(USER_A, 9001)["triggered_at"] == stop["triggered_at"]
+    assert not client.place_order_calls and not client.close_position_calls and not client.cancel_order_calls

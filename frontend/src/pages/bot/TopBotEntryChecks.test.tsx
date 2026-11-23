@@ -122,13 +122,27 @@ it("shows the daily thresholds and the measured account P&L", () => {
   expect(screen.getByText(/Daily account P&L: \+\$150.00 · Highest observed: \+\$220.00/)).toBeTruthy();
 });
 
-it("shows a latched daily loss stop as blocking new entries", () => {
+it("distinguishes the recorded loss from current realized P&L and broker position", () => {
   const state = monitor();
   state.activity!.profit_guard = { available: true, trigger: "daily_loss_limit_reached",
-    observed_at: at, pnl: -500, peak_pnl: 0 };
-  render(<TopBotEntryChecks {...props} monitor={state} />);
+    triggered_at: episode, observed_at: at, trigger_pnl: -1335.30, pnl: -800 };
+  state.stopAccount = { account_id: 2, triggered_at: episode, as_of: at, realized_pnl: -798.74, position: "flat" };
+  const view = render(<TopBotEntryChecks {...props} monitor={state} />);
   expect(row("Daily profit protection").getByText("Blocking")).toBeTruthy();
-  expect(screen.getByText(/−\$500 loss limit reached/)).toBeTruthy();
+  expect(screen.getByText(/Flat\. Daily loss stop triggered.*9:59:15 AM EST.*−\$1,335\.30.*Current realized P&L: −\$798\.74.*6:00 p\.m\. ET/)).toBeTruthy();
+  state.stopAccount.position = "open";
+  view.rerender(<TopBotEntryChecks {...props} monitor={state} />);
+  expect(screen.getByText(/Account position open\. Daily loss stop/)).toBeTruthy();
+  state.stopAccount.position = "exit_pending";
+  view.rerender(<TopBotEntryChecks {...props} monitor={state} />);
+  expect(screen.getByText(/Position open\. TopBot exit pending/)).toBeTruthy();
+  state.stopAccount.account_id = 9;
+  view.rerender(<TopBotEntryChecks {...props} monitor={state} />);
+  expect(screen.getByText(/Current position unverified.*Current realized P&L: unavailable/)).toBeTruthy();
+  state.stopAccount.account_id = 2;
+  state.stopAccount.as_of = new Date(now - 31_000).toISOString();
+  view.rerender(<TopBotEntryChecks {...props} monitor={state} />);
+  expect(screen.getByText(/Current position unverified.*Current realized P&L: unavailable/)).toBeTruthy();
 });
 
 it("keeps a triggered daily stop blocking even after price observations go stale", () => {
@@ -137,7 +151,7 @@ it("keeps a triggered daily stop blocking even after price observations go stale
     observed_at: new Date(now - 120_000).toISOString(), pnl: 500, peak_pnl: 500 };
   render(<TopBotEntryChecks {...props} monitor={state} fresh={false} />);
   expect(row("Daily profit protection").getByText("Blocking")).toBeTruthy();
-  expect(screen.getByText(/\+\$500 target reached/)).toBeTruthy();
+  expect(screen.getByText(/Daily profit target triggered.*Entries paused/)).toBeTruthy();
 });
 
 it("shows an unavailable profit monitor as an entry blocker", () => {

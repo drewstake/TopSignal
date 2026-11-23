@@ -1541,10 +1541,18 @@ export interface BotLogs {
   };
 }
 
+export interface DailyStopAccount {
+  account_id: number;
+  triggered_at: string;
+  as_of: string;
+  position: "flat" | "open" | "exit_pending" | "unknown";
+  realized_pnl: number | null;
+}
+
 export interface BotActivity {
   profit_guard?: {
     available: boolean; trading_day?: string; target?: number; loss_limit?: number; arm_at?: number | null; floor?: number | null;
-    armed?: boolean; trigger?: string | null; triggered_at?: string | null;
+    armed?: boolean; trigger?: string | null; triggered_at?: string | null; trigger_pnl?: number | null;
     observed_at?: string | null; pnl?: number | null; peak_pnl?: number | null;
     error?: string | null; message?: string;
   } | null;

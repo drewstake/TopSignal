@@ -165,6 +165,45 @@ def poll(owner, account_id, contract_id, client, limit=TARGET, *, now=None):
 
 def public_status(owner, account_id, *, limit=TARGET, now=None):
     try:
-        return {**read(owner, account_id, now=now, limit=limit), "available": True}
+        state = read(owner, account_id, now=now, limit=limit)
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
         return {"available": False, "message": "Daily profit protection state is unavailable; new entries are blocked."}
+    if state.get("triggered_at") and state["observed_at"] == state["triggered_at"]:
+        state["trigger_pnl"] = state["pnl"]
+    elif state.get("triggered_at"):
+        # Later observations and settings edits can change the live state. The
+        # transition event, including for existing stops, keeps the original P&L.
+        try:
+            with connection(owner) as db:
+                event = db.execute(
+                    "SELECT payload FROM events WHERE account=? AND kind='daily_profit_stop' AND at=? ORDER BY seq DESC LIMIT 1",
+                    (int(account_id), state["triggered_at"]),
+                ).fetchone()
+            state["trigger_pnl"] = json.loads(event[0])["pnl"] if event else None
+        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+            state["trigger_pnl"] = None
+    return {**state, "available": True}
+
+
+def stopped_account_snapshot(client, *, account_id, contract_id, state, pending_exit):
+    """Display-only broker reads. A failed read cannot affect the latched stop."""
+    from . import bot_service as service
+    from .projectx_client import ProjectXClientError
+    as_of = datetime.now(timezone.utc)
+    try:
+        realized, _, _ = service._fetch_account_daily_pnl(client, account_id=account_id, observed_at=as_of)
+    except (ProjectXClientError, ValueError):
+        realized = None
+    position = "unknown"
+    try:
+        rows = client.search_open_positions(account_id=account_id)
+        qty = service._provider_contract_position_qty(rows, account_id=account_id, contract_id=contract_id)
+        position = "open" if rows else "flat"
+        if qty and pending_exit:
+            position = "exit_pending"
+    except (ProjectXClientError, ValueError):
+        pass
+    if trading_day_key(datetime.now(timezone.utc)) != state["trading_day"] or trading_day_key(as_of) != state["trading_day"]:
+        raise ValueError("Trading session changed")
+    return dict(account_id=account_id, triggered_at=state["triggered_at"], as_of=as_of,
+                position=position, realized_pnl=realized)

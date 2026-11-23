@@ -2,6 +2,7 @@ import { TradeRefreshCache } from "./tradeRefreshCache";
 import { parseMarketTradeBatch, type MarketTradeBatch } from "./marketTradeTypes";
 import type { ForwardResults } from "../pages/bot/BotForwardResultsPanel";
 import type { ManualOrderInput, ManualOrderResult, ManualOrderState } from "./manualOrderTypes";
+import type { DailyStopAccount } from "./types";
 import { ACCOUNT_EXPENSES_UPDATED_EVENT } from "./financialEvents";
 
 import type { AccountEmergencyFlattenResult, AccountAutomationClassification, AccountArchiveUpdateResult, AccountMainUpdateResult, AccountInfo, AccountLastTradeInfo, AccountRenameResult, AuthMe, LiveImportAccountInput, AccountPnlCalendarDay, AccountSummary, AccountSummaryWithPointBases, AccountTrade, AccountTradeRefreshResult, BehaviorMetrics, CombineTrackerSuppressionsResponse, DayPnlPoint, ExpenseCreateInput, ExpenseListQuery, ExpenseListResponse, ExpenseRange, ExpenseRecord, ExpenseTotals, ExpenseUpdateInput, FinancialSummary, PayoutCreateInput, PayoutListQuery, PayoutListResponse, PayoutRecord, PayoutTotals, HourPnlPoint, StreakMetrics, SummaryMetrics, SymbolPnlPoint, TradeRecord, TradeImportConfirmResult, TradeImportPreview, TradeImportStatus, ProjectXCredentialsInput, ProjectXCredentialsStatus, BotActivity, BotLogs, BotConfig, BotConfigInput, BotConfigListResponse, BotConfigUpdateInput, BotEvaluation, BotEmergencyFlattenResult, BotRuntimeStatus, BotTimeframeUnit, ProjectXContract, ProjectXMarketCandle, ProjectXMarketDepthConnectionState, ProjectXMarketDepthSnapshot, ProjectXMarketDepthState, ProjectXMarketDepthUpdate, ProjectXMarketPrice, TradeEvaluationResult, TradePlanEvaluationInput } from "./types";
@@ -2525,6 +2526,8 @@ export const botsApi = {
     }),
   getForwardResults: (botId: number, days = 7, options: RequestSignalOptions = {}) =>
     requestJson<ForwardResults>(`/api/bots/${botId}/forward-results`, { query: { days }, signal: options.signal }),
+  getDailyStopAccount: (botConfigId: number, options: RequestSignalOptions = {}) =>
+    requestJson<DailyStopAccount>(`/api/bots/${botConfigId}/daily-stop-account`, { signal: options.signal }),
   getActivity: (botConfigId: number, limit = 50, options: RequestSignalOptions = {},
     filters: { start?: string; end?: string; run_id?: number; execution_mode?: "dry_run" | "live"; signals_only?: boolean } = {}) =>
     requestJson<BotActivity>(`/api/bots/${botConfigId}/activity`, {

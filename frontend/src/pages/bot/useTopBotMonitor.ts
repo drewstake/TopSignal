@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { botsApi } from "../../lib/api";
-import type { BotActivity, BotConfig } from "../../lib/types";
+import type { BotActivity, BotConfig, DailyStopAccount } from "../../lib/types";
 import { loadBotConfigsForProviderAccount } from "./botAccountIsolation";
 import { boundedBotRequest } from "./botPageRequests";
 import { botRunStatus } from "./botRunPresentation";
@@ -9,6 +9,7 @@ import { usePageVisibility } from "./usePageVisibility";
 export type MonitorStatus = { color: "green" | "yellow" | "red"; label: string };
 const checking: MonitorStatus = { color: "yellow", label: "Checking bot status" };
 export type MonitorSnapshot = {
+  stopAccount?: DailyStopAccount | null;
   bot: BotConfig | null; activity: BotActivity | null; scope: string | null;
   status: MonitorStatus; updatedAt: string | null; error: string | null;
 };
@@ -17,6 +18,7 @@ const empty: MonitorSnapshot = { bot: null, activity: null, scope: null, status:
 /** Read-only monitoring. Never evaluates, starts, or places orders. */
 export function useTopBotMonitor(accountId: number | null, pending: boolean, unavailable: boolean, demoMode: boolean, refreshToken = 0) {
   const [snapshot, setSnapshot] = useState<MonitorSnapshot>(empty);
+  const [stopAccount, setStopAccount] = useState<DailyStopAccount | null>(null);
   const visible = usePageVisibility();
   useEffect(() => {
     if (pending || unavailable || accountId === null || demoMode || !visible) return;
@@ -75,9 +77,23 @@ export function useTopBotMonitor(accountId: number | null, pending: boolean, una
     void refresh();
     return () => { disposed = true; clearTimeout(timer); controller?.abort(); };
   }, [accountId, demoMode, pending, unavailable, visible, refreshToken]);
+  const stopAt = snapshot.activity?.profit_guard?.triggered_at;
+  const botId = snapshot.activity?.config.id;
+  const currentAccount = snapshot.activity?.config.account_id;
+  useEffect(() => {
+    if (!visible || pending || unavailable || demoMode || snapshot.error || !stopAt || !botId || currentAccount !== accountId) return;
+    // Refresh alongside the monitor. Slow broker reads must never delay the stop warning.
+    const controller = new AbortController();
+    let disposed = false;
+    void boundedBotRequest(botsApi.getDailyStopAccount(botId, { signal: controller.signal }),
+      controller, "Daily stop account check timed out", 12_000)
+      .then(value => { if (!disposed) setStopAccount(value.account_id === accountId && value.triggered_at === stopAt ? value : null); })
+      .catch(() => { if (!disposed) setStopAccount(null); });
+    return () => { disposed = true; controller.abort(); };
+  }, [accountId, currentAccount, botId, stopAt, snapshot.updatedAt, snapshot.error, visible, pending, unavailable, demoMode]);
   const status: MonitorStatus = demoMode ? { color: "yellow", label: "Demo mode · live bot status not checked" }
     : pending ? checking : unavailable ? { color: "yellow", label: "Account status unavailable" }
     : accountId === null ? { color: "red", label: "Inactive · no trading account selected" }
     : !visible ? checking : snapshot.status;
-  return { ...snapshot, status };
+  return { ...snapshot, status, stopAccount };
 }

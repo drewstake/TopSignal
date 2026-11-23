@@ -3650,6 +3650,39 @@ def get_trading_bot_activity(
     }
 
 
+@app.get("/api/bots/{bot_config_id}/daily-stop-account")
+def get_daily_stop_account(bot_config_id: int, response: Response, db: Session = Depends(get_db)):
+    from .models import BotOrderAttempt
+    from .services.bot_service import _require_bot_config
+    from .services.topbot_profit_guard import configured_limits, public_status, stopped_account_snapshot
+    from .services.topbot_time_exit import pending_exits
+    owner = get_authenticated_user_id()
+    try:
+        config = _require_bot_config(db, user_id=owner, bot_config_id=bot_config_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Bot not found.") from exc
+    account_id, contract_id = config.account_id, config.contract_id
+    _require_owned_projectx_account(db, user_id=owner, account_id=account_id)
+    state = public_status(owner, account_id, limit=configured_limits(config.strategy_params or {}))
+    if not state.get("triggered_at"):
+        raise HTTPException(status_code=409, detail="No verified daily stop for this session.")
+    plan = BotOrderAttempt.raw_request["timeExit"]
+    pending = pending_exits(db).filter(
+        BotOrderAttempt.user_id == owner, BotOrderAttempt.account_id == account_id,
+        BotOrderAttempt.bot_config_id == bot_config_id, BotOrderAttempt.contract_id == contract_id,
+        BotOrderAttempt.status == "submitted", plan["profit_stop_reason"].as_string() == state["trigger"],
+        plan["position_observed_at"].as_string().is_not(None),
+        plan["outcome"].as_string().is_distinct_from("verified_flat"),
+    ).with_entities(BotOrderAttempt.id).first() is not None
+    client = _projectx_client_for_user_without_open_transaction(db, user_id=owner)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return stopped_account_snapshot(client, account_id=account_id, contract_id=contract_id,
+                                        state=state, pending_exit=pending)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Daily stop snapshot expired.") from exc
+
+
 @app.get("/api/accounts/{account_id}/session-order-flow")
 def get_session_order_flow(
     account_id: int,

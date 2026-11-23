@@ -1,10 +1,10 @@
 import type { BotActivity } from "../../lib/types";
 import type { MonitorSnapshot } from "./useTopBotMonitor";
-import { timeLabel } from "./topBotPresentation";
+import { priceLabel, timeLabel } from "./topBotPresentation";
 
 type Status = "passed" | "blocked" | "unknown" | "stale";
 type Check = { id: string; label: string; status: Status; detail: string };
-export type EntryMonitor = Pick<MonitorSnapshot, "activity" | "status" | "updatedAt" | "error">;
+export type EntryMonitor = Pick<MonitorSnapshot, "activity" | "status" | "updatedAt" | "error" | "stopAccount">;
 const groups = [
   ["account", "Practice account eligible"], ["position", "Position and working orders"],
   ["loss", "Daily loss budget and stop risk"], ["count", "Daily entry limit"],
@@ -16,6 +16,20 @@ const object = (value: unknown): Record<string, unknown> => value !== null && ty
   ? value as Record<string, unknown> : {};
 const recent = (at: unknown, now: number) => typeof at === "string" && now - Date.parse(at) >= 0 && now - Date.parse(at) <= 30_000;
 const labels: Record<Status, string> = { passed: "Passing", blocked: "Blocking", unknown: "Not checked", stale: "Stale" };
+const money = (value: number | null | undefined) => typeof value === "number" && Number.isFinite(value)
+  ? `${value >= 0 ? "+" : "−"}$${priceLabel(Math.abs(value))}` : "unavailable";
+
+function stopDetail(guard: NonNullable<BotActivity["profit_guard"]>, account: EntryMonitor["stopAccount"]) {
+  const reason = guard.trigger === "daily_loss_limit_reached" ? "Daily loss stop"
+    : guard.trigger === "daily_profit_target_reached" ? "Daily profit target" : "Daily protection";
+  const position = account?.position === "flat" ? "Flat." : account?.position === "exit_pending"
+    ? "Position open. TopBot exit pending." : account?.position === "open"
+    ? "Account position open." : "Current position unverified.";
+  const pnl = guard.trigger_pnl ?? (guard.observed_at === guard.triggered_at ? guard.pnl : null);
+  const when = guard.triggered_at ? ` at ${timeLabel(guard.triggered_at)}` : "";
+  const amount = pnl == null ? "" : ` when realized and open P&L totaled ${money(pnl)}`;
+  return `${position} ${reason} triggered${when}${amount}. Current realized P&L: ${money(account?.realized_pnl)}. Entries paused until 6:00 p.m. ET.`;
+}
 
 function evidence(activity: BotActivity | null | undefined, contractId: string) {
   const config = activity?.config;
@@ -41,14 +55,13 @@ export function TopBotEntryChecks({ monitor, contractId, fresh, ready, qualified
   const current = monitoring && fresh && sameEpisode && recent(snapshot.checked_at, now);
   const guard = activity?.profit_guard;
   const guardChecked = Boolean(monitoring && guard?.available && !guard.error && recent(guard.observed_at, now));
-  const money = (value: number | null | undefined) => typeof value === "number" && Number.isFinite(value)
-    ? `${value >= 0 ? "+" : "−"}$${Math.abs(value).toFixed(2)}` : "not yet measured";
+  const account = monitor?.stopAccount;
+  const verified = monitoring && account && account.account_id === activity?.config.account_id
+    && account.triggered_at === guard?.triggered_at && recent(account.as_of, now) ? account : null;
   const profitCheck: Check | null = guard ? {
     id: "profit", label: "Daily profit protection",
     status: !monitoring ? "unknown" : guard.trigger || !guard.available || guard.error ? "blocked" : guardChecked ? "passed" : "unknown",
-    detail: guard.trigger === "daily_profit_target_reached" ? `+$${guard.target ?? 500} target reached. Closing the TopBot position; entries paused until the next session.`
-      : guard.trigger === "daily_loss_limit_reached" ? `−$${guard.loss_limit ?? 500} loss limit reached. Closing the TopBot position; entries paused until the next session.`
-      : guard.trigger === "daily_profit_breakeven_stop" ? "Returned to $0 after reaching +$200. Closing the TopBot position; entries paused until the next session."
+    detail: guard.trigger ? stopDetail(guard, verified)
       : guard.error || guard.message || `Daily profit target +$${guard.target ?? 500} and loss stop −$${guard.loss_limit ?? 500}. Resets at 18:00 New York.`,
   } : null;
   const local: Check[] = [
@@ -107,7 +120,7 @@ export function TopBotEntryChecks({ monitor, contractId, fresh, ready, qualified
     detail: `${attempt.status.replaceAll("_", " ")}${attempt.rejection_reason ? `: ${attempt.rejection_reason}` : ""} · ${timeLabel(attempt.updated_at)}` });
   return <section className="topbot-entry-checks" aria-label="Entry checks">
     <div className="topbot-section-heading"><h4>Entry checks</h4><span>Live depth · recorded broker checks</span></div>
-    {guard && <p className="topbot-muted">Daily account P&amp;L: {money(guard.pnl)} · Highest observed: {money(guard.peak_pnl)}.
+    {guard && !guard.trigger && <p className="topbot-muted">Daily account P&amp;L: {money(guard.pnl)} · Highest observed: {money(guard.peak_pnl)}.
       {guard.observed_at ? ` Observed ${timeLabel(guard.observed_at)}${guardChecked ? "" : " · last recorded"}.` : " Waiting for the worker’s P&L check."}
       {" "}Includes realized net P&amp;L and unrealized P&amp;L. Daily protection resets at 6 p.m. New York.</p>}
     <ul>{checks.map(check => <li key={check.id} data-status={check.status}>
