@@ -9,7 +9,15 @@ from sqlalchemy.orm import Session
 from app.scanner import ai, routes, store
 from app.scanner.config import Options
 from app.scanner.prices import Bar, Rules, evaluate
-from app.scanner.sources import Item, Source, matches, parse, sources
+from app.scanner.sources import (
+    NVIDIA_NEWSROOM,
+    NVIDIA_WIRE,
+    Item,
+    Source,
+    matches,
+    parse,
+    sources,
+)
 from app.scanner.worker import Worker
 from tools.replay_scanner_amd import NEWS, NEWS_URL, TITLE, WEB, WEB_URL, rss
 
@@ -31,6 +39,80 @@ def scanner(tmp_path):
     worker = Worker(engine, cfg, lambda: now[0])
     yield worker, now
     engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "first,second", [(NVIDIA_WIRE, NVIDIA_NEWSROOM), (NVIDIA_NEWSROOM, NVIDIA_WIRE)]
+)
+def test_nvidia_release_dispatches_once_in_either_order(
+    scanner, monkeypatch, first, second
+):
+    w, now = scanner
+    assert all(s in list(sources(["NVDA"])) for s in (first, second))
+    assert NVIDIA_WIRE not in list(sources(["AMD"]))
+    published = int(NEWS // 60) * 60
+    title = "NVIDIA Board Reinstates Jensen Huang as President, CEO and Board Director"
+
+    def release(source, when):
+        body = rss(title, source.url + "/release", "a", when)
+        return list(parse(source, body, ["NVDA"]))
+
+    for s in (first, second):
+        w.ingest(s, [], now[0], {}, {})
+    now[0] = published + 60
+    w.ingest(first, release(first, published), now[0], w.state(first.name), {})
+    messages = []
+
+    def post(url, **kwargs):
+        messages.append(kwargs["json"]["content"])
+        return SimpleNamespace(status_code=204)
+
+    monkeypatch.setattr(requests, "post", post)
+    assert w.deliver() and title in messages[0] and first.name in messages[0]
+    # The second transaction may commit later with an earlier receipt time.
+    w = Worker(w.engine, w.cfg, lambda: now[0])
+    for _ in range(2):
+        w.ingest(
+            second, release(second, published + 2), now[0] - 1, w.state(second.name), {}
+        )
+    assert not w.deliver()
+    with w.engine.connect() as c:
+        rows = store.feed(c)
+        assert len(rows) == 2
+        original = next(e for e in rows if e["source"] == first.name)
+        assert original["updates"][0]["source"] == second.name
+        assert original["updates"][0]["relation"] == "Related coverage"
+        assert c.scalar(select(func.count()).select_from(store.jobs)) == 2
+
+
+def test_wire_baseline_and_repeated_body_do_not_hide_a_live_release(
+    scanner, monkeypatch
+):
+    w, now = scanner
+    body = rss("NVIDIA update", "https://www.globenewswire.com/release", "wire", NEWS)
+    monkeypatch.setattr("app.scanner.worker.fetch", lambda *args: (200, {}, body))
+    now[0] = NEWS + 1
+    assert w.poll(NVIDIA_WIRE) == 30
+    with monkeypatch.context() as m:
+        m.setattr(
+            "app.scanner.worker.parse", lambda *args: pytest.fail("Repeated feed body")
+        )
+        now[0] += 30
+        assert w.poll(NVIDIA_WIRE) == 30
+        assert w.state(NVIDIA_WIRE.name)["success"] == now[0]
+    item = Item(
+        "newsroom",
+        "NVIDIA update",
+        "https://nvidianews.nvidia.com/release",
+        NEWS,
+        ("NVDA",),
+    )
+    with w.engine.begin() as c:
+        eid = store.headline(c, NVIDIA_NEWSROOM, item, now[0])
+        assert next(e for e in store.feed(c) if e["id"] == eid)["urgent"]
+        later = Item("new", item.title, item.link + "-2", NEWS + 86400, item.tickers)
+        eid = store.headline(c, NVIDIA_WIRE, later, now[0] + 86400)
+        assert next(e for e in store.feed(c) if e["id"] == eid)["urgent"]
 
 
 def test_reconnect_restart_dispatch_and_related_coverage(scanner, monkeypatch):

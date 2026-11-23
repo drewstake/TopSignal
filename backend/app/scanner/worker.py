@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import logging
 import os
 import re
@@ -73,6 +74,7 @@ class Worker:
         self.sec_lock = threading.Lock()
         self.sec_next = 0.0
         self.raw_ready = threading.Event()
+        self.feed_digests = {}
 
     def state(self, name):
         with self.engine.connect() as c:
@@ -160,13 +162,26 @@ class Worker:
         try:
             status, returned, body = fetch(source.url, headers)
             received = self.clock()
-            if status == 304 and previous.get("since") is not None:
+            # The wire returns full bodies without conditional HTTP validators.
+            digest = None if status == 304 else hashlib.sha256(body).digest()
+            if previous.get("since") is not None and (
+                status == 304 or digest == self.feed_digests.get(source.name)
+            ):
+                validators = (
+                    {}
+                    if status == 304
+                    else {
+                        "etag": returned.get("ETag"),
+                        "modified": returned.get("Last-Modified"),
+                    }
+                )
                 self.status(
                     source.name,
                     "Healthy",
                     success=received,
                     failures=0,
                     next_check=received + source.interval,
+                    **validators,
                 )
             else:
                 self.ingest(
@@ -176,6 +191,7 @@ class Worker:
                     previous,
                     returned,
                 )
+                self.feed_digests[source.name] = digest
             return source.interval
         except (
             requests.RequestException,

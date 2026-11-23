@@ -64,18 +64,33 @@ class Source:
     ticker: str = ""
 
 
+NVIDIA_WIRE = Source(
+    "NVDA GlobeNewswire",
+    "https://rss.globenewswire.com/rssfeed/organization/Z9ZspHFg7E0Lf8obA4Udeg==",
+    30,
+    ticker="NVDA",
+)
+NVIDIA_NEWSROOM = Source(
+    "NVDA investor relations", ISSUERS["NVDA"].releases, 30, ticker="NVDA"
+)
+
+
 def sources(watch):
     yield Source("Hunterbrook newsletter", "https://newsletter.hntrbrk.com/feed", 30)
     yield Source("Hunterbrook website", "https://hntrbrk.com/feed", 60)
     for ticker in watch:
         issuer = ISSUERS[ticker]
-        yield Source(
-            f"{ticker} investor relations",
-            issuer.releases,
-            120,
-            {"TSM": "tsmc", "AVGO": "broadcom"}.get(ticker, "rss"),
-            ticker,
-        )
+        if ticker == "NVDA":
+            yield NVIDIA_NEWSROOM
+            yield NVIDIA_WIRE
+        else:
+            yield Source(
+                f"{ticker} investor relations",
+                issuer.releases,
+                120,
+                {"TSM": "tsmc", "AVGO": "broadcom"}.get(ticker, "rss"),
+                ticker,
+            )
         if ticker == "AVGO":
             yield Source(
                 "AVGO product releases",

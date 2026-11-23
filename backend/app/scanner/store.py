@@ -27,6 +27,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from .sources import NVIDIA_NEWSROOM, NVIDIA_WIRE
+
 meta = MetaData(schema="topsignal_local")
 events = Table(
     "scanner_event",
@@ -162,6 +164,28 @@ def ticker_filter(tickers):
     return or_(*(events.c.tickers.like(f"% {t} %") for t in tickers))
 
 
+def nvidia_release_copy(c, source, item, title, baseline):
+    other = NVIDIA_WIRE if source == NVIDIA_NEWSROOM else NVIDIA_NEWSROOM
+    # The wire timestamps items to the minute. Match only NVIDIA's own releases.
+    minute = item.published // 60 * 60
+    query = select(events).where(
+        events.c.source == other.name,
+        events.c.published >= minute,
+        events.c.published < minute + 60,
+    )
+    if not baseline:
+        query = query.where(events.c.urgent)
+    normalized = " ".join(title.casefold().split())
+    return next(
+        (
+            e
+            for e in c.execute(query).mappings()
+            if " ".join(e.title.casefold().split()) == normalized
+        ),
+        None,
+    )
+
+
 def headline(c, source, item, received, baseline=False):
     serial(c)
     ids = [key(source.name + "\n" + item.uid)]
@@ -207,17 +231,21 @@ def headline(c, source, item, received, baseline=False):
             .order_by(events.c.received.desc(), events.c.id.desc())
         ).mappings()
     )
-    copy = next(
-        (
-            e
-            for e in nearby
-            if source.name.startswith("Hunterbrook")
-            and e.source.startswith("Hunterbrook")
-            and e.source != source.name
-            and e.title.casefold() == title.casefold()
-        ),
-        None,
-    )
+    copy = None
+    if source in (NVIDIA_NEWSROOM, NVIDIA_WIRE):
+        # Receipt timestamps can be out of order across independent pollers.
+        copy = nvidia_release_copy(c, source, item, title, baseline)
+    elif source.name.startswith("Hunterbrook"):
+        copy = next(
+            (
+                e
+                for e in nearby
+                if e.source.startswith("Hunterbrook")
+                and e.source != source.name
+                and e.title.casefold() == title.casefold()
+            ),
+            None,
+        )
     urgent = item.urgent and not baseline and not copy
     eid = c.scalar(
         insert(events)

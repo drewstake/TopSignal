@@ -47,12 +47,14 @@ A database transaction saves the raw event, its notification and its independent
 | --- | --- | --- |
 | Hunterbrook | Newsletter RSS and main website RSS, GUID and canonical article URL | 30 s / 60 s |
 | AMD, Intel | Official IR press-release RSS | 120 s |
-| NVIDIA | Investor Relations' linked NVIDIA Newsroom press-release RSS | 120 s |
+| NVIDIA | NVIDIA's own GlobeNewswire distribution feed and NVIDIA Newsroom press-release RSS, polled independently | 30 s each |
 | Broadcom | Official newsroom financial and product-release JSON listings, release ID and publication time | 120 s / 300 s |
 | TSMC | Official Latest News HTML listing, article node and machine-readable publication time | 120 s |
 | SEC | Per-CIK EDGAR submissions JSON, accession and acceptance timestamp. Material 8-K, 10-K, 10-Q, 6-K, 20-F and amendments alert. Routine forms remain browseable. | 90 s/CIK, shared limiter below 3 requests/s |
 
 Sources use ETag and Last-Modified when available. Failures are isolated and exponential backoff respects Retry-After. SEC blocks trigger a shared cooldown of at least ten minutes. Initial baselines are silent. After restart the collector reprocesses available feed history and deduplicates. A publisher's finite feed limits recovery after extended outages. Delay flags use the larger of five minutes or two poll periods. Publication, first receipt and dispatch are separate UTC instants. The UI displays Eastern time. A timestamped related headline establishes available coverage, not proof of causation.
+
+On November 23, NVIDIA dated its Jensen Huang announcement at 8:55 a.m. ET. Its GlobeNewswire feed reported a build at 8:55:41 and its newsroom feed at 8:58:09. The scanner then polled only the newsroom for NVIDIA releases, at 120-second intervals. Peteamdpc received the headline at 9:00:52 and recorded successful Discord dispatch at 9:00:53. These build times identify publisher-side work. The exact instant each feed became visible to peteamdpc was not recorded. The scanner now alerts on the first live copy from either source. A matching title in the same publication minute links the other copy as related coverage. [NVIDIA wire feed](https://rss.globenewswire.com/rssfeed/organization/Z9ZspHFg7E0Lf8obA4Udeg==) · [NVIDIA newsroom announcement](https://nvidianews.nvidia.com/news/nvidia-board-reinstates-jensen-huang-as-president-ceo-and-board-director)
 
 Alpaca historical bars are fetched directly with an explicit feed and a bounded regular-session warm-up window. The default `window_minutes=1` compares first open to last close, in either direction. `price_percent=1` and `relative_volume=2` must both be met. Relative volume compares mean per-minute volume over the move to the previous `baseline_minutes=20` consecutive completed minutes for the same ticker, feed and session. The default requires 21 contiguous valid bars. SOXX uses the identical move window when available. `cooldown_minutes=15` suppresses follow-on events/searches per ticker across restarts. Gaps, stale or incomplete bars and delayed SIP cannot create live price alerts. Same-session trailing volume is sensitive to an already elevated tape.
 
