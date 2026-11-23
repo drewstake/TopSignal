@@ -11134,6 +11134,7 @@ def evaluate_risk_gates(
     instrument_spec: InstrumentSpec | None = None,
     perform_live_preflight: bool = True,
     reconcile_live_submissions: bool = True,
+    observe_daily_guard: bool = True,
     now: datetime | None = None,
 ) -> list[RiskBlock]:
     # Explicit clocks remain deterministic for replay/tests. Live DOM must read
@@ -11545,7 +11546,7 @@ def evaluate_risk_gates(
         try:
             limit = profit_guard.configured_limits(config.strategy_params)
             profit_state = profit_guard.read(user_id, int(config.account_id), limit=limit, now=now)
-            if authoritative_entry_risk_required and not profit_state["trigger"]:
+            if observe_daily_guard and authoritative_entry_risk_required and not profit_state["trigger"]:
                 if (not preflight.unrealized_pnl_complete
                         or trading_day_date(preflight.observed_at) != trading_day_date(now)):
                     raise ValueError("Complete current-session P&L is required")
@@ -11629,6 +11630,8 @@ def evaluate_risk_gates(
     if (decision is not None and str(config.strategy_type) == "topbot_adaptive"
             and dom_selected(config.strategy_params) and not position_reducing):
         from .topbot_entry_checks import snapshot
+        if authoritative_entry_risk_required and blocks:
+            decision.raw_payload["depth_recheck"]["account_entries_today"] = trades_today
         decision.raw_payload = {**(decision.raw_payload or {}), "entry_checks": snapshot(
             blocks, checked_at=now,
             episode_at=(decision.raw_payload or {}).get("depth_entry", {}).get("episode_at"),

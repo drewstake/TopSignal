@@ -15,6 +15,7 @@ import { TopBotActivity, TopBotEvaluation, TopBotThinking } from "./TopBotEvalua
 import { TopBotPosition } from "./TopBotPosition";
 import { BotRunControl, TopBotStrategyPanel } from "./TopBotStrategyPanel";
 import { TopBotEdgePanel } from "./TopBotEdgePanel";
+import { BlockedTradesPanel } from "./BlockedTradesPanel";
 import { OrderflowSettings } from "./OrderflowSettings";
 import { useImbalanceReport } from "./imbalanceReport";
 import { TopBotLiveImbalance } from "./TopBotLiveImbalance";
@@ -157,6 +158,8 @@ function TopBotDashboard({ accountId, pending, unavailable, demoMode }: {
         <h2 id="bot-evaluation-history">Evaluation history</h2>
         <TopBotEvaluation activity={strategyActivity} now={now} failed={Boolean(monitor.error)} strategyUnconfigured={strategyUnconfigured} />
         {reportAccount != null && <TopBotEdgePanel state={edge} now={now} />}
+        {reportAccount != null && monitor.bot?.account_id === reportAccount && monitor.bot.strategy_params?.revision === "dom_contrarian_v1" &&
+          <BlockedTradesPanel key={monitor.bot.id} account={reportAccount} config={monitor.bot.id} />}
       </section>
     </div>
   </div>;

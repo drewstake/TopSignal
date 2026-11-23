@@ -348,6 +348,8 @@ async def app_lifespan(_: FastAPI):
     from .services.topbot_study_worker import StudyRecorder
     study_recorder = StudyRecorder(SessionLocal, _projectx_client_for_user_without_open_transaction)
     study_recorder.start()
+    from .services.blocked_replay_worker import supervise as supervise_blocked_replay
+    blocked_replay_task = asyncio.create_task(supervise_blocked_replay(), name="blocked-trade-reader")
     from .services.liquidity_heatmap_history import HeatmapDeriverSupervisor
     heatmap_deriver = HeatmapDeriverSupervisor()
     try:
@@ -383,7 +385,8 @@ async def app_lifespan(_: FastAPI):
         finally:
             cleanup_task.cancel()
             loop_monitor_task.cancel()
-            for task in (cleanup_task, loop_monitor_task):
+            blocked_replay_task.cancel()
+            for task in (cleanup_task, loop_monitor_task, blocked_replay_task):
                 try:
                     await task
                 except asyncio.CancelledError:
@@ -3114,6 +3117,16 @@ def list_recorded_signals(account_id: int, owner: str = Depends(_recorded_signal
         return signals(owner, account_id, day, before)
     except (sqlite3.Error, OSError) as exc:
         raise HTTPException(503, "recorded_signals_unavailable") from exc
+
+
+@app.get("/api/accounts/{account_id}/topbot/{config_id}/blocked-trades")
+def get_blocked_trades(account_id: int, config_id: int, owner: str = Depends(_recorded_signal_owner),
+                       before: int | None = Query(None, gt=0, le=MAX_DATABASE_ID)):
+    from .services.blocked_trades import report
+    try:
+        return report(owner, account_id, config_id, before=before)
+    except (sqlite3.Error, OSError) as exc:
+        raise HTTPException(503, "blocked_trade_report_unavailable") from exc
 
 
 _SIGNAL_REPLAY_SLOT = BoundedSemaphore(1)

@@ -70,7 +70,7 @@ def signals(owner, account, day: date | None, before: int | None, limit=25):
     return result
 
 
-def _sweep(book, best, quantity, buy):
+def sweep_price(book, best, quantity, buy):
     """One or two marketable MNQ contracts at demonstrated book sizes."""
     if book[best] >= quantity:
         return best
@@ -83,8 +83,12 @@ def _sweep(book, best, quantity, buy):
 @dataclass
 class Bracket:
     stop: float
-    target: float
+    target: float | None
     triggered: datetime | None = None
+
+    def target_price(self, sign, entry):
+        if self.target is not None:
+            return sign * math.ceil((sign*entry + self.target) / TICK) * TICK
 
     def exit(self, now, start, sign, entry, best, size, sweep, quantity):
         if self.triggered is None and sign * (best-entry) <= -self.stop:
@@ -92,8 +96,8 @@ class Bracket:
         if self.triggered is not None:
             if now >= self.triggered:
                 return "Stop", sweep - sign*TICK
-        elif now >= start + LATENCY and size >= quantity:
-            target = sign * math.ceil((sign*entry + self.target) / TICK) * TICK
+        elif self.target is not None and now >= start + LATENCY and size >= quantity:
+            target = self.target_price(sign, entry)
             if sign * (best-target) >= TICK:
                 return "Target", target
         return None
@@ -103,18 +107,23 @@ class CoverageEnd(Exception):
     """An unresolved exit has no further usable quotes in this capture."""
 
 
-def _quotes(cap, anchor, gap_at, start, cutoff):
-    book = DepthState(anchor["contract"])
-    # Seed from a full snapshot. Only the original durable qualification can start a replay.
-    batch, digest, index = batch_before(cap, anchor["at"])
+def seed_before(cap, contract, stamp):
+    """Find a verified full snapshot preceding the first executable observation."""
+    batch, digest, index = batch_before(cap, stamp)
     while batch:
         prior = cap.db.execute("SELECT id,hash,last_index FROM batches WHERE id=?", (batch-1,)).fetchone()
         prior = tuple(prior) if prior else (0, cap.meta_hash, 0)
         _, _, records = next(cap.batches(*prior))
         batch, digest, index = prior
-        if any(r["event"]["event"] == "snapshot" and r["event"]["data"].get("contract_id") == anchor["contract"]
+        if any(r["event"]["event"] == "snapshot" and r["event"]["data"].get("contract_id") == contract
                and not r["event"]["data"].get("reset") for r in records):
             break
+    return batch, digest, index
+
+
+def _quotes(cap, anchor, gap_at, start, cutoff):
+    book = DepthState(anchor["contract"])
+    batch, digest, index = seed_before(cap, anchor["contract"], anchor["at"])
     previous = None
     seeded = False
     for _, _, records in cap.batches(batch, digest, index):
@@ -170,11 +179,11 @@ def _run(cap, anchor, gap_at, brackets, direction, quantity, timed, result):
         for now, book, bid, ask in _quotes(cap, anchor, gap_at, start, cutoff):
             if result["entry"] is None:
                 entry_book, entry_best = (book.asks, ask) if sign == 1 else (book.bids, bid)
-                result["entry"] = _sweep(entry_book, entry_best, quantity, sign == 1)
+                result["entry"] = sweep_price(entry_book, entry_best, quantity, sign == 1)
                 if result["entry"] is None:
                     return "Insufficient displayed entry size"
             levels, best = (book.bids, bid) if sign == 1 else (book.asks, ask)
-            sweep = _sweep(levels, best, quantity, sign == -1)
+            sweep = sweep_price(levels, best, quantity, sign == -1)
             if sweep is None:
                 return "Insufficient displayed exit size"
             for key, bracket in brackets.items():
@@ -182,12 +191,12 @@ def _run(cap, anchor, gap_at, brackets, direction, quantity, timed, result):
                     continue
                 fill = bracket.exit(now, start, sign, result["entry"], best, levels[best], sweep, quantity)
                 if fill:
-                    result["exits"][key] = _fill(*fill, now, sign, quantity, result["entry"])
+                    result["exits"][key] = simulated_fill(*fill, now, sign, quantity, result["entry"])
             if timed:
                 elapsed = (now-start).total_seconds()
                 for h in HORIZONS:
                     if str(h) not in result["exits"] and h <= elapsed <= h+2:
-                        result["exits"][str(h)] = _fill("Timed", sweep, now, sign, quantity, result["entry"])
+                        result["exits"][str(h)] = simulated_fill("Timed", sweep, now, sign, quantity, result["entry"])
             if all(k in result["exits"] for k in brackets) and (not timed or (now-start).total_seconds() >= 302
                     or all(str(h) in result["exits"] for h in HORIZONS)):
                 return None
@@ -195,7 +204,7 @@ def _run(cap, anchor, gap_at, brackets, direction, quantity, timed, result):
         return str(exc)
 
 
-def _fill(reason, price, at, sign, quantity, entry):
+def simulated_fill(reason, price, at, sign, quantity, entry):
     gross = (price-entry)*sign*POINT_VALUE*quantity
     fees = ROUND_TURN*quantity
     return dict(reason=reason, price=price, at=at.isoformat(), gross=gross, fees=fees, net=round(gross-fees, 2))

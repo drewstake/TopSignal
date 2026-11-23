@@ -223,6 +223,7 @@ class BotWorkerRuntime:
         self._last_provider_probe = float("-inf")
         self._retry_not_before_by_run: dict[int, float] = {}
         self._retry_failures_by_run: dict[int, int] = {}
+        self._blocked_episodes: dict[int, str] = {}
         self._provider_retry_not_before_by_user: dict[str, float] = {}
         self._provider_retry_failures_by_user: dict[str, int] = {}
         self._reconcile_retry_not_before = 0.0
@@ -466,6 +467,7 @@ class BotWorkerRuntime:
                 ).distinct().all()
             }
         active_run_ids = set(run_ids)
+        self._blocked_episodes = {k: v for k, v in self._blocked_episodes.items() if k in active_run_ids}
         self._retry_not_before_by_run = {
             run_id: retry_at
             for run_id, retry_at in self._retry_not_before_by_run.items()
@@ -637,6 +639,61 @@ class BotWorkerRuntime:
             "unresolved": unresolved,
         }
 
+    def _observe_daily_block(self, run_id, owner, contract, params, guard, last_live_episode, client):
+        """Evaluate an armed, latched run without creating an order or a live decision."""
+        from .services import blocked_trades, bot_service, topbot_strategy
+        from .services.instruments import load_instrument_specs
+        from .services.topbot_depth import feed, utc
+        from .services.topbot_instrument_pause import snapshot as instrument_pause
+        from .models import BotDecision
+
+        depth = feed.snapshot(owner, contract)
+        episode = depth.get("episode_at")
+        if (not episode or episode in (last_live_episode, self._blocked_episodes.get(run_id))
+                or not depth.get("evidence", {}).get("capture_id")):
+            return
+        at = utc(depth["checked_at"])
+        signal = topbot_strategy.evaluate([], strategy_params=params, observation=depth, now=at, contract_id=contract)
+        if (signal.action == "HOLD" or not guard.get("triggered_at")
+                or utc(episode) + timedelta(seconds=params.get("persistence_seconds", 30)) < utc(guard["triggered_at"])):
+            return
+        with self.session_factory() as db:
+            run = db.get(BotRun, run_id)
+            config = db.get(BotConfig, run.bot_config_id) if run else None
+            if (not config or _run_disarm_reason(run, config) or run.dry_run or instrument_pause(run)
+                    or config.contract_id != contract or config.strategy_params != params):
+                return
+            account = bot_service._require_owned_account(db, user_id=owner, account_id=config.account_id)
+            spec = load_instrument_specs(db).get("MNQ")
+            if bot_service._strategy_protection_block(db, config=config, signal=signal, contract_id=contract,
+                                                      symbol="MNQ", instrument_spec=spec):
+                return
+            version = bot_service._bot_config_evaluation_snapshot(config)
+            decision = BotDecision(action=signal.action, price=signal.price, raw_payload=signal.raw_payload,
+                                   quantity=params.get("entry_contracts", 1))
+            started = monotonic()
+            blocks = bot_service.evaluate_risk_gates(
+                db, user_id=owner, config=config, account=account, latest_candle=None, contract_id=contract,
+                symbol="MNQ", action=signal.action, target_position_qty=signal.raw_payload["target_position_qty"],
+                dry_run=False, confirm_live_order_routing=True, client=client, instrument_spec=spec,
+                decision=decision, reconcile_live_submissions=False, observe_daily_guard=False)
+            if (monotonic() - started > bot_service._LIVE_PREFLIGHT_MAX_DURATION_SECONDS
+                    or guard["trigger"] not in {b.code for b in blocks}):
+                return
+            # Recheck operator and configuration changes after the broker reads.
+            db.refresh(run)
+            db.refresh(config)
+            if (_run_disarm_reason(run, config) or instrument_pause(run)
+                    or bot_service._bot_config_evaluation_snapshot(config) != version
+                    or db.query(BotOrderAttempt.id).filter_by(user_id=owner, account_id=config.account_id,
+                        execution_mode="live").filter(BotOrderAttempt.status.in_(("pending","submission_unknown"))).first()
+                    or bot_service._recent_live_submission_count(db, user_id=owner, account_id=config.account_id)):
+                return
+            receipt = blocked_trades.candidate(config, decision, blocks, run_id=run_id)
+        if receipt:
+            blocked_trades.enqueue(receipt)
+        self._blocked_episodes[run_id] = episode
+
     def _process_run(
         self,
         *,
@@ -658,6 +715,8 @@ class BotWorkerRuntime:
             if row is None:
                 return {"evaluated": False, "provider_ok": False}
             run, config = row
+            if run.status != "running":  # An operator can stop it after the scheduling query.
+                return {"evaluated": False, "provider_ok": False}
             invalid_reason = _run_disarm_reason(run, config)
             if invalid_reason is not None:
                 transition_bot_run(run, "blocked", reason=invalid_reason, now=now)
@@ -756,8 +815,11 @@ class BotWorkerRuntime:
                     logger.warning("topbot_profit_guard_unavailable", extra={"bot_run_id": run_id})
                     return {"evaluated": False, "provider_ok": False}
                 if guard["trigger"]:
-                    # Keep the run armed for the next session, without creating
-                    # repeated decisions or consuming another depth episode.
+                    try:
+                        self._observe_daily_block(run_id, user_id, archive_contract, dom_params,
+                                                  guard, last_dom_episode, client)
+                    except Exception:
+                        logger.exception("blocked_trade_observation_failed", extra={"bot_run_id": run_id})
                     return {"evaluated": False, "provider_ok": True}
             from .services.topbot_session import runner_entry_pause_reason
             if runner_entry_pause_reason(now, symbol=archive_contract or "MNQ"):
@@ -850,6 +912,14 @@ class BotWorkerRuntime:
                 # writes only AFTER a successful execution commit and lease check.
                 prepared_forward = None
                 prepared_archive = None
+                blocked_receipt = None
+                halt = (current_run.raw_state or {}).get("instrument_pause") if dom_run and live_run else None
+                if dom_run and live_run and not lease_lost and not halt and result.status == "risk_blocked":
+                    try:
+                        from .services.blocked_trades import candidate
+                        blocked_receipt = candidate(current_config, result.decision, result.risk_events, run_id=run_id)
+                    except Exception:
+                        logger.exception("blocked_trade_prepare_failed", extra={"bot_run_id": run_id})
                 if not lease_lost:
                     try:
                         from .services.market_archive import prepare_decision, failure
@@ -874,6 +944,18 @@ class BotWorkerRuntime:
                     submit_archive_decision(prepared_archive, committed=False)
                     raise
                 commit_ms = round((monotonic() - commit_started) * 1000, 3)
+                if halt and not lease_lost:
+                    try:
+                        from .services.blocked_trades import record_halt
+                        record_halt(user_id, account_id, config_id, halt)
+                    except Exception:
+                        logger.exception("blocked_trade_halt_record_failed", extra={"bot_run_id": run_id})
+                if blocked_receipt:
+                    try:
+                        from .services.blocked_trades import enqueue
+                        enqueue(blocked_receipt)
+                    except Exception:
+                        logger.exception("blocked_trade_record_failed", extra={"bot_run_id": run_id})
                 if dom_run:
                     from .services.topbot_audit import record
                     record(user_id, account_id, "evaluation_committed", **committed_context)

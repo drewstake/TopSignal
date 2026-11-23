@@ -68,6 +68,34 @@ Unresolved exits show the coverage limitation. Each signal is an independent
 hypothetical trade. Portfolio daily limits, overlapping positions and live bot
 settings do not enter this comparison.
 
+## Simulated while blocked
+
+The Bot page follows each armed MNQ Orderflow Imbalance configuration prospectively.
+After a daily profit or loss latch the host worker checks fresh episodes at its
+normal cadence, using a transient decision and the same broker-read risk gates.
+An actual final preflight blocked solely by remaining stop-risk budget also
+supplies an entry candidate. Each receipt pins the direction, size, entry and
+exit settings, session deadline and exact preflight book reference. Confirmed
+instrument pauses, operator stops and unavailable depth prevent new entries.
+
+A release-owned, below-normal-priority reader processes each account and
+configuration in order, including with the dashboard closed. It uses verified
+worker capture batches, the executable spread, displayed one- or two-contract
+sweep, one-tick target trade-through, 250 ms latency, one adverse stop tick
+and $1.22 round-trip fees per contract. Trailing stops use the runner's
+five-second management model. A session flatten uses the saved runner deadline.
+An interrupted recording censors the outcome and reserves the possible position
+through its session deadline. A restart reads the original entry and subsequent
+batches again. The same episode can enter only once.
+
+The compact local ledger lives at
+`TOPSIGNAL_DATABENTO_CACHE_DIR/blocked-trades-v1/sessions.sqlite3`.
+It stores signal receipts and outcomes, with quotes remaining in worker evidence.
+Allow roughly 2–4 KiB per candidate, or 2–4 MiB per thousand candidates.
+New enrollments stop at the 512 MiB review threshold or 10 GiB free-space floor.
+Win rate divides profitable simulated exits by all resolved simulated exits,
+including flat exits. Open and unresolved cases have separate counts.
+
 ## Operations
 
 The study reads local PostgreSQL using read-only transactions and tails verified
