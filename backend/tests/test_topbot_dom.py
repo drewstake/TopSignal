@@ -176,9 +176,52 @@ def dom_entry(db_session, monkeypatch, open_exchange_session, request):
     result = bot_service.evaluate_bot_config(db_session,user_id=USER_A,config=config,account=account,client=client,
         run=result.run,dry_run=False,confirm_live_order_routing=True,worker_lease_token=token)
     assert result.order_attempt is not None, [(r.code,r.message) for r in result.risk_events]
-    assert result.order_attempt.status == "submitted", [(r.code,r.message) for r in result.risk_events]
+    expected = "blocked" if policy == "dispatch_reset" else "submitted"
+    assert result.order_attempt.status == expected, [(r.code,r.message) for r in result.risk_events]
     db_session.commit()
     return result, client, token
+
+
+@pytest.fixture
+def reset_after_entry_audit(monkeypatch):
+    from app.services import topbot_audit as audit
+    record = audit.record
+
+    def record_then_reset(*args, **kwargs):
+        seq = record(*args, **kwargs)
+        if kwargs.get("kind") == "broker_request" and kwargs.get("action") == "place_order":
+            prior = kwargs["entry_evidence"]["pre_submit"]
+            # Same direction and above threshold again; the qualified episode ended.
+            restarted = {**prior, "episode_at": prior["observed_at"], "persistence_seconds": 0.01}
+            monkeypatch.setattr(feed, "snapshot", lambda *a, **kw: restarted)
+        return seq
+
+    monkeypatch.setattr(audit, "record", record_then_reset)
+
+
+@pytest.mark.parametrize("dom_entry", ["dispatch_reset"], indirect=True)
+def test_entry_reset_after_durable_intent_skips_order_and_keeps_run_active(reset_after_entry_audit, dom_entry):
+    from app.services import topbot_audit as audit
+    result, client, _ = dom_entry
+    attempt = result.order_attempt
+    assert client.place_order_calls == []
+    assert attempt.provider_order_id is None and "submissionTiming" not in attempt.raw_request
+    assert result.run.status == "running"
+    assert [r.code for r in result.risk_events] == ["dom_signal_expired"]
+    check = attempt.raw_request["entryEvidence"]["dispatch"]
+    assert check["failed_checks"] == ["episode_changed", "persistence_too_short"]
+    events = [e for e in audit.page(USER_A, attempt.account_id)["items"] if e["kind"].startswith("broker_")]
+    assert [e["kind"] for e in events] == ["broker_request_withheld", "broker_request"]
+    assert events[0]["operation"] == events[1]["operation"]
+    assert events[0]["details"]["dispatch_check"] == check
+
+
+def test_uninterrupted_signal_reaches_broker_once(dom_entry):
+    result, client, _ = dom_entry
+    evidence = result.order_attempt.raw_request["entryEvidence"]
+    assert evidence["dispatch"]["failed_checks"] == []
+    assert evidence["dispatch"]["episode_at"] == evidence["signal"]["episode_at"]
+    assert len(client.place_order_calls) == 1
 
 
 @pytest.mark.parametrize("value,expected", [

@@ -83,14 +83,20 @@ def page(owner, account_id, *, before=None, limit=100):
                 storage='Worker persistent audit; retained until explicitly removed')
 
 
+class EntrySignalExpired(RuntimeError):
+    """The audited entry intent was withheld before calling the broker."""
+
+
 class AuditedClient:
     MUTATIONS = {'place_order', 'modify_stop_order', 'cancel_order', 'close_position'}
     FIELDS = {'account_id','contract_id','order_id','order_type','side','size','stop_price','limit_price',
               'custom_tag','stop_loss_bracket','take_profit_bracket'}
 
-    def __init__(self, client, context):
+    def __init__(self, client, context, *, entry_check=None):
         self.client = client.client if isinstance(client, AuditedClient) else client
         self.context = context
+        self.entry_check = entry_check
+        self.last_entry_check = None
         self.last_operation = None
         self.last_call = None
         self.request_started = None
@@ -107,6 +113,16 @@ class AuditedClient:
             intent_started = perf_counter()
             record(**self.context, kind='broker_request', operation=operation, action=name, request=request)
             audit_ms = (perf_counter()-intent_started)*1000
+            if name == "place_order" and self.entry_check is not None:
+                try:
+                    check = self.entry_check()
+                except Exception as exc:
+                    check = {"failed_checks": ["depth_unavailable"], "error_type": type(exc).__name__}
+                self.last_entry_check = check
+                if check["failed_checks"]:
+                    record(**self.context, kind="broker_request_withheld", operation=operation,
+                           action=name, dispatch_check=check)
+                    raise EntrySignalExpired(", ".join(check["failed_checks"]))
             started = perf_counter()
             self.request_started = started
             submitted_at = datetime.now(timezone.utc).isoformat()
@@ -131,5 +147,5 @@ class AuditedClient:
         return call
 
 
-def client_for(client, subject, **details):
-    return AuditedClient(client, {**scope(subject), **details})
+def client_for(client, subject, *, entry_check=None, **details):
+    return AuditedClient(client, {**scope(subject), **details}, entry_check=entry_check)

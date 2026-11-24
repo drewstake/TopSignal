@@ -111,6 +111,24 @@ def qualifying_action(observation, params):
     return imbalance_action(imbalance, params)
 
 
+def entry_recheck_failures(depth, episode_at, action, params):
+    if not depth.get("ready"):
+        return ["depth_unavailable"]
+    failures = []
+    if not depth.get("episode_at"):
+        failures.append("no_qualifying_episode")
+    elif depth["episode_at"] != episode_at:
+        failures.append("episode_changed")
+    imbalance = depth.get("imbalance", 0)
+    if abs(imbalance) < params["imbalance_threshold"]:
+        failures.append("imbalance_below_threshold")
+    if depth.get("persistence_seconds", 0) < params["persistence_seconds"]:
+        failures.append("persistence_too_short")
+    if action != imbalance_action(imbalance, params):
+        failures.append("direction_changed")
+    return failures
+
+
 def evaluate(candles, *, strategy_params=None, owner=None, contract_id=None, observation=None, now=None):
     from .bot_service import SignalResult
     from .topbot_depth import feed

@@ -1873,6 +1873,7 @@ def _evaluate_bot_config_impl(
                                 # rows remain locked until the caller commits the
                                 # provider outcome and audit writeback.
                                 mutation_fence.require()
+                                _submit_order_attempt(client=client, order_attempt=order_attempt, decision=decision)
                             except _ProviderMutationBlocked as exc:
                                 final_blocks = [exc.block]
                         if final_blocks:
@@ -1910,8 +1911,6 @@ def _evaluate_bot_config_impl(
                         else:
                             # Config, refreshed account, and worker lease locks are
                             # held through the provider call and audit writeback.
-                            if not broker_flatten_completed:
-                                _submit_order_attempt(client=client, order_attempt=order_attempt, decision=decision)
                             if order_attempt.status == "submitted":
                                 evaluation_status = "submitted"
                                 from .topbot_instrument_pause import clear_pause
@@ -11491,24 +11490,11 @@ def evaluate_risk_gates(
         signal_depth = (decision.raw_payload or {}).get("depth_entry", {}) if decision is not None else {}
         latest_candle_age_seconds = (now-utc(depth["observed_at"])).total_seconds() if depth.get("ready") else None
         params = _normalize_strategy_params("topbot_adaptive", config.strategy_params)
-        from .topbot_strategy import exit_mode, imbalance_action
+        from .topbot_strategy import exit_mode, entry_recheck_failures
         if decision is not None and (decision.raw_payload or {}).get("exit_mode", "trailing") != exit_mode(params, now):
             additional_blocks.append(RiskBlock(code="dom_exit_policy_changed",
                 message="The session exit settings changed; wait for a fresh entry signal."))
-        failed_checks = []
-        if not depth.get("ready"):
-            failed_checks.append("depth_unavailable")
-        else:
-            if not depth.get("episode_at"):
-                failed_checks.append("no_qualifying_episode")
-            elif depth.get("episode_at") != signal_depth.get("episode_at"):
-                failed_checks.append("episode_changed")
-            if abs(depth.get("imbalance", 0)) < params["imbalance_threshold"]:
-                failed_checks.append("imbalance_below_threshold")
-            if depth.get("persistence_seconds", 0) < params["persistence_seconds"]:
-                failed_checks.append("persistence_too_short")
-            if action != imbalance_action(depth.get("imbalance", 0), params):
-                failed_checks.append("direction_changed")
+        failed_checks = entry_recheck_failures(depth, signal_depth.get("episode_at"), action, params)
         if decision is not None:
             decision.raw_payload = {**(decision.raw_payload or {}), "depth_recheck": {
                 "checked_at": now.isoformat(), "observed_at": depth.get("observed_at"),
@@ -13075,10 +13061,11 @@ def _create_order_attempt(
 
 
 def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAttempt, decision=None) -> None:
+    from .topbot_audit import EntrySignalExpired, client_for
     request_payload = order_attempt.raw_request or {}
     if isinstance(request_payload.get("timeExit", {}).get("runner"), dict):
-        from .topbot_audit import client_for
         from .topbot_depth import feed
+        from .topbot_strategy import entry_recheck_failures, normalize_params
         evidence = dict(request_payload.get("entryEvidence") or {})
         if decision is not None:
             evidence["recheck"] = (decision.raw_payload or {}).get("depth_recheck")
@@ -13088,7 +13075,19 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
             evidence["pre_submit"] = {"ready": False, "error_type": type(exc).__name__}
         request_payload = {**request_payload, "entryEvidence": evidence}
         order_attempt.raw_request = request_payload
-        client = client_for(client, order_attempt, reason="Confirmed DOM entry", entry_evidence=evidence,
+        def check_at_dispatch():
+            rules = request_payload["strategySnapshot"]["rules"]["entry"]
+            depth = feed.snapshot(order_attempt.user_id, order_attempt.contract_id)
+            signal_episode = evidence["signal"]["episode_at"]
+            failures = entry_recheck_failures(depth, signal_episode, order_attempt.side, normalize_params(rules))
+            check = {key: depth.get(key) for key in ("checked_at", "observed_at", "ready", "episode_at",
+                                                      "imbalance", "persistence_seconds", "bid", "ask")}
+            ref = depth.get("evidence") or {}
+            return {**check, "signal_episode_at": signal_episode, "failed_checks": failures,
+                    "capture_id": ref.get("capture_id"), "event_index": ref.get("event_index")}
+
+        client = client_for(client, order_attempt, entry_check=check_at_dispatch,
+                            reason="Confirmed DOM entry", entry_evidence=evidence,
                             strategy_snapshot=request_payload.get("strategySnapshot"))
     started = perf_counter()
     diagnostic_context = {
@@ -13124,6 +13123,10 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
         order_attempt.provider_order_id = provider_order_id
         order_attempt.rejection_reason = None
         order_attempt.raw_response = response.get("raw_payload")
+    except EntrySignalExpired as exc:
+        order_attempt.status = "blocked"
+        raise _ProviderMutationBlocked(RiskBlock(code="dom_signal_expired",
+            message=f"Depth signal expired before broker dispatch: {exc}.")) from exc
     except Exception as exc:
         safe_error = sanitize_error(exc)
         diagnostic_context.update(error_type=type(exc).__name__,
@@ -13147,6 +13150,9 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
         if isinstance(exc, ProjectXClientError) and not submission_outcome_unknown:
             order_attempt.raw_response["reason_code"] = exc.reason_code
     finally:
+        if isinstance(request_payload.get("timeExit", {}).get("runner"), dict) and client.last_entry_check:
+            order_attempt.raw_request = {**order_attempt.raw_request,
+                                         "entryEvidence": {**evidence, "dispatch": client.last_entry_check}}
         if isinstance(request_payload.get("timeExit", {}).get("runner"), dict) and getattr(client, "last_call", None):
             order_attempt.raw_request = {**(order_attempt.raw_request or {}), "submissionTiming": dict(client.last_call)}
         diagnostic_event(logger, "bot_order_submission_finished", **diagnostic_context,

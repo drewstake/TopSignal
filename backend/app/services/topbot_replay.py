@@ -111,7 +111,7 @@ def trade_timeline(path, *, account_id, entry_id):
         operations, stages = {}, []
         for item in items:
             if item["kind"] == "broker_request": operations[item["operation"]] = item
-            elif item["kind"] in {"broker_acknowledged", "broker_outcome_unconfirmed", "stop_change_verified"}:
+            elif item["kind"] in {"broker_acknowledged", "broker_outcome_unconfirmed", "broker_request_withheld", "stop_change_verified"}:
                 start = operations.get(item["operation"])
                 if start:
                     a, b = start["details"], item["details"]
