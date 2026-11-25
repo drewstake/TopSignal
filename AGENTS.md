@@ -63,3 +63,9 @@ or deployment storage.
 - Check backup scope as well as freshness: a focused recording snapshot does not
   replace full-cache or PostgreSQL disaster recovery. Do not enable disabled
   schedules or launch heavy backup scans during read-only health checks.
+
+# Trading clip editing style
+
+- Keep the full trade in chronological order. Speed up the stretches between the entry and exit to fit the requested runtime.
+- Ease down to slightly faster than real time around the entry so viewers can see the pending order fill and the position open. For the exit, return to real time before price reaches the stop-loss or take-profit and stay there through the fill so viewers can see the position close.
+- Finish with the original P&L calendar screenshot for exactly three seconds, without added text. Start fading the background music on the first calendar frame and reach silence on the final frame.
