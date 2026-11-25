@@ -514,6 +514,12 @@ describe("Live CSV daily-flow production page bridge", () => {
 
     await screen.findByText(/Imported 2 trades from fresh\.csv/);
     await waitFor(() => expect(summaryReadTradeCounts.at(-1)).toBe(2));
+    for (const name of ["Performance", "Swing", "Risk Control", "Direction", "Payoff", "Edge", "Activity", "Sustainability", "Hold Time"]) {
+      expect(await screen.findByRole("heading", { name, level: 3 })).toBeTruthy();
+    }
+    expect(screen.getAllByText("Awaiting history").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Very Controlled")).toBeNull();
+    expect(screen.queryByText("Score Gauge")).toBeNull();
     expect(getSummaryWithPointBases.mock.calls.length).toBeGreaterThan(initialSummaryReads);
     expect(getTrades.mock.calls.length).toBeGreaterThan(initialTradeReads);
     expect(getPnlCalendar.mock.calls.length).toBeGreaterThan(initialCalendarReads);

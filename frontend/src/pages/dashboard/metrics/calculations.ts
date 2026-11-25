@@ -183,8 +183,8 @@ function computePayoffMetrics(input: DashboardMetricsInput, breakevenWinRate: Me
   });
 
   return {
-    averageWin: metric(input.summary.avg_win),
-    averageLoss: metric(input.summary.avg_loss),
+    averageWin: input.summary.win_count > 0 ? metric(input.summary.avg_win) : missingMetric("needs a winning trade"),
+    averageLoss: input.summary.loss_count > 0 ? metric(input.summary.avg_loss) : missingMetric("needs a losing trade"),
     avgPointGain: metricOrMissing(input.summary.avgPointGain, "needs winning closed trades with point values"),
     avgPointLoss: metricOrMissing(input.summary.avgPointLoss, "needs losing closed trades with point values"),
     breakevenWinRate,

@@ -3803,24 +3803,7 @@ export function DashboardPage() {
             <p className="text-sm text-app-negative">{summaryError}</p>
           </Card>
         ) : (
-          <div className={gradeReady ? "dashboard-analytics-grid" : "grid gap-3 lg:grid-cols-2"}>
-            {!gradeReady ? <>
-              {sampleCount > 0 && <MetricCard title={copyTradeStatsActive ? "Leader direction" : "Direction"}
-                primaryValue={directionPrimaryValue} subtitle="Long vs short trade mix.">
-                {directionRing}
-              </MetricCard>}
-              <Card className={cn("space-y-2 p-4", sampleCount === 0 && "col-span-full")}>
-              <h3 className="font-semibold text-app-text">Observed results</h3>
-              <p className="text-sm text-app-muted-text">Performance grades begin at {PERFORMANCE_SAMPLE_MINIMUM} on the selected account.</p>
-              <MiniStatList items={[
-                { label: "Long / short closes", value: `${formatMetricValue(derivedMetrics.direction.longTrades, formatInteger)} / ${formatMetricValue(derivedMetrics.direction.shortTrades, formatInteger)}` },
-                { label: "Selected account net", value: formatPnl(summary.net_pnl) },
-                { label: "Fees and commissions", value: formatCurrency(summary.fees) },
-                { label: "Average net per closed trade", value: sampleCount ? formatPnl(summary.expectancy_per_trade) : "—" },
-                { label: "Average winning hold", value: summary.win_count && summary.avg_win_duration_minutes > 0 ? formatMinutes(summary.avg_win_duration_minutes) : "—" },
-                { label: "Recorded max drawdown", value: sampleCount ? formatPnl(-Math.abs(summary.max_drawdown)) : "—" },
-              ]} />
-            </Card></> : <>
+          <div className="dashboard-analytics-grid">
             <MetricCard
               title={copyTradeStatsActive ? "Copy Trade Net" : "Performance"}
               primaryValue={formatMetricValue(netPnlMetric, formatPnl)}
@@ -3841,7 +3824,7 @@ export function DashboardPage() {
               <div aria-hidden="true" className={cn("pointer-events-none absolute -right-8 -top-10 h-24 w-24 rounded-full blur-2xl", performanceGlowClassName)} />
               <div className="relative">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <Badge variant={performanceSignalVariant}>{performanceSignalLabel}</Badge>
+                  {gradeReady && <Badge variant={performanceSignalVariant}>{performanceSignalLabel}</Badge>}
                   <Badge variant="accent">
                     {copyTradeStatsActive ? `${formatInteger(copyTradeTotals.activeCopiedAccountCount)} Accounts` : `${formatInteger(displayTradeCount)} Trades`}
                   </Badge>
@@ -3849,6 +3832,9 @@ export function DashboardPage() {
                     {copyTradeStatsActive ? `Leader ${formatPnl(copyTradeTotals.leaderNetPnl)}` : `Win ${formatPercent(summary.win_rate, 1)}`}
                   </span>
                 </div>
+                <p className="mt-2 text-xs text-app-muted-text">
+                  {copyTradeStatsActive ? "Leader fees and commissions" : "Fees and commissions"} · {formatCurrency(summary.fees)}
+                </p>
                 {copyTradeStatsActive ? (
                   <div className="mt-2.5 grid grid-cols-2 gap-2">
                     <div className="min-w-0">
@@ -3902,12 +3888,12 @@ export function DashboardPage() {
                     />
                   </div>
                   <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                    <Badge
+                    {gradeReady && <Badge
                       variant={sizingBenchmarkBadgeVariant(summary.sizingBenchmark.benchmarkLabel)}
                       className="max-w-full normal-case tracking-normal"
                     >
                       {summary.sizingBenchmark.benchmarkLabel}
-                    </Badge>
+                    </Badge>}
                     <span className="text-[10px] text-app-muted">
                       {formatSizingBenchmarkSubtitle(
                         summary.sizingBenchmark.benchmarkSizeUsed,
@@ -3967,7 +3953,7 @@ export function DashboardPage() {
               title="Swing"
               primaryValue={formatMetricValue(derivedMetrics.stability.dailyPnlVolatility, formatCurrency)}
               primaryClassName="bg-gradient-to-r from-app-secondary via-app-accent to-app-secondary bg-clip-text text-transparent"
-              subtitle="Daily PnL volatility ($)."
+              subtitle={sampleDays === 1 ? "Daily P&L volatility across one observed trading day." : "Daily PnL volatility ($)."}
               info="Stability uses worst-day % of net PnL; lower worst-day concentration implies higher stability."
               accentClassName="bg-gradient-to-r from-app-secondary/80 via-app-accent/30 to-app-secondary/80"
               className="relative overflow-hidden p-3"
@@ -4039,16 +4025,18 @@ export function DashboardPage() {
                   className="border-app-secondary/30 bg-app-secondary/10 text-app-secondary"
                 />
               </div>
-              <GaugeBar
-                label="Stability"
-                value={stabilityScore.value}
-                valueLabel={formatMetricValue(stabilityScore, (value) => `${formatNumber(value, 0)}%`)}
-                className="space-y-1.5 rounded-md border border-app-border/70 bg-app-bg/35 p-2"
-                fillClassName="bg-gradient-to-r from-app-accent/85 via-app-secondary/80 to-app-secondary/80"
-              />
-              <p className="rounded-md border border-app-secondary/30 bg-[linear-gradient(120deg,rgb(var(--theme-accent-secondary)/0.15),rgb(var(--theme-surface)/0.48)_45%,rgb(var(--theme-accent)/0.12)_100%)] px-2 py-1 text-[11px] text-app-text-soft">
-                <span className="font-semibold text-app-accent">Insight:</span> {derivedMetrics.stability.insight}
-              </p>
+              {gradeReady && <>
+                <GaugeBar
+                  label="Stability"
+                  value={stabilityScore.value}
+                  valueLabel={formatMetricValue(stabilityScore, (value) => `${formatNumber(value, 0)}%`)}
+                  className="space-y-1.5 rounded-md border border-app-border/70 bg-app-bg/35 p-2"
+                  fillClassName="bg-gradient-to-r from-app-accent/85 via-app-secondary/80 to-app-secondary/80"
+                />
+                <p className="rounded-md border border-app-secondary/30 bg-[linear-gradient(120deg,rgb(var(--theme-accent-secondary)/0.15),rgb(var(--theme-surface)/0.48)_45%,rgb(var(--theme-accent)/0.12)_100%)] px-2 py-1 text-[11px] text-app-text-soft">
+                  <span className="font-semibold text-app-accent">Insight:</span> {derivedMetrics.stability.insight}
+                </p>
+              </>}
             </MetricCard>
 
             <MetricCard
@@ -4066,7 +4054,7 @@ export function DashboardPage() {
             >
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <Badge variant={riskSignalVariant}>{riskSignalLabel}</Badge>
+                  {gradeReady && <Badge variant={riskSignalVariant}>{riskSignalLabel}</Badge>}
                   <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">Account Risk</span>
                 </div>
                 <div className="mt-2.5 space-y-1.5">
@@ -4243,9 +4231,9 @@ export function DashboardPage() {
                 leftBarClassName="bg-gradient-to-r from-app-positive/95 to-app-positive/80"
                 rightBarClassName="bg-gradient-to-l from-app-negative/90 to-app-negative/80"
               />
-              <p className="rounded-md border border-app-accent/20 bg-[linear-gradient(120deg,rgb(var(--theme-positive)/0.12),rgb(var(--theme-surface)/0.48)_48%,rgb(var(--theme-negative)/0.1)_100%)] px-2 py-1 text-[10px] text-app-text-soft">
+              {gradeReady && <p className="rounded-md border border-app-accent/20 bg-[linear-gradient(120deg,rgb(var(--theme-positive)/0.12),rgb(var(--theme-surface)/0.48)_48%,rgb(var(--theme-negative)/0.1)_100%)] px-2 py-1 text-[10px] text-app-text-soft">
                 <span className="font-semibold text-app-accent">Insight:</span> {derivedMetrics.direction.insight}
-              </p>
+              </p>}
             </MetricCard>
 
             <MetricCard
@@ -4267,7 +4255,7 @@ export function DashboardPage() {
               />
               <div className="relative">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <Badge variant={payoffSignalVariant}>{payoffSignalLabel}</Badge>
+                  {gradeReady && <Badge variant={payoffSignalVariant}>{payoffSignalLabel}</Badge>}
                   <Badge variant="accent">{`W/L ${formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}`}</Badge>
                   <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">
                     {`Capture ${formatMetricValueWithNote(derivedMetrics.payoff.capture, (value) => formatPercent(value * 100, 1))}`}
@@ -4350,7 +4338,7 @@ export function DashboardPage() {
               title={copyTradeStatsActive ? "Leader edge" : "Edge"}
               primaryValue={formatMetricValue(expectancyPerTradeMetric, formatPnl)}
               primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgb(var(--theme-bg)/0.5)]", edgePrimaryClassName)}
-              subtitle="Expected net result per trade."
+              subtitle="Observed average net P&L per closed trade."
               info="Expectancy combines your win rate and payoff profile into average dollars per trade."
               accentClassName={edgeAccentClassName}
               className={cn(
@@ -4365,7 +4353,7 @@ export function DashboardPage() {
               />
               <div className="relative">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <Badge variant={edgeSignalVariant}>{edgeSignalLabel}</Badge>
+                  {gradeReady && <Badge variant={edgeSignalVariant}>{edgeSignalLabel}</Badge>}
                   <Badge variant="accent">{`PF ${formatProfitFactor(summary)}`}</Badge>
                   <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">{`WR ${formatPercent(summary.win_rate, 1)}`}</span>
                 </div>
@@ -4424,7 +4412,7 @@ export function DashboardPage() {
               />
               <div className="relative">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <Badge variant={activitySignalVariant}>{activitySignalLabel}</Badge>
+                  {gradeReady && <Badge variant={activitySignalVariant}>{activitySignalLabel}</Badge>}
                   <Badge variant="accent">{`${formatInteger(displayActiveDays)} Active Days`}</Badge>
                   <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">
                     {`Avg ${formatNumber(displayAvgTradesPerDay, 1)} / day`}
@@ -4478,85 +4466,94 @@ export function DashboardPage() {
               />
             </MetricCard>
 
-            <MetricCard
-              title={copyTradeStatsActive ? "Leader sustainability" : "Sustainability"}
-              primaryValue={displayTradeCount > 0 ? `${formatInteger(sustainability.score)}/100` : "—"}
-              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgb(var(--theme-bg)/0.45)]", sustainabilityPrimaryClassName)}
-              subtitle="Composite score from Risk, Consistency, and Edge."
-              info="Sustainability blends drawdown control, day-to-day consistency, and profit factor with a confidence adjustment for small samples."
-              accentClassName={sustainabilityAccentClassName}
-              className={cn(
-                "insight-summary relative isolate self-start p-3",
-                sustainabilityCardClassName,
-              )}
-              contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
-            >
-              <div
-                aria-hidden="true"
-                className={cn(
-                  "pointer-events-none absolute -right-14 -top-10 h-28 w-28 rounded-full blur-3xl",
-                  sustainability.score >= 70 ? "bg-app-positive/20" : sustainability.score >= 45 ? "bg-app-accent/20" : "bg-app-negative/20",
-                )}
+            {!gradeReady ? (
+              <MetricCard
+                title={copyTradeStatsActive ? "Leader sustainability" : "Sustainability"}
+                primaryValue="Awaiting history"
+                subtitle={`Grades begin at ${PERFORMANCE_SAMPLE_MINIMUM} on the selected account.`}
+                className="insight-summary self-start"
               />
-              <div className="relative">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-[11px] uppercase tracking-[0.14em] text-app-muted-strong">Score 0-100</p>
-                  <Badge variant={displayTradeCount > 0 ? sustainabilityBadgeVariant(sustainability.label) : "neutral"}>{displayTradeCount > 0 ? sustainability.label : "Awaiting trades"}</Badge>
-                </div>
-
-                <div className="mt-2.5 space-y-2">
-                  {[
-                    {
-                      label: "Risk",
-                      value: sustainability.riskScore,
-                      fillClassName: "bg-gradient-to-r from-app-negative/90 to-app-warning/75",
-                    },
-                    {
-                      label: "Consistency",
-                      value: sustainability.consistencyScore,
-                      fillClassName: "bg-gradient-to-r from-app-accent/90 to-app-secondary/80",
-                    },
-                    {
-                      label: "Edge",
-                      value: sustainability.edgeScore,
-                      fillClassName: "bg-gradient-to-r from-app-positive/90 to-app-accent/80",
-                    },
-                  ].map((item) => (
-                    <div key={item.label} className="space-y-1">
-                      <div className="flex items-center justify-between text-[10px]">
-                        <span className="text-app-muted">{item.label}</span>
-                        <span className="font-semibold text-app-text">{formatNumber(item.value, 1)}/100</span>
-                      </div>
-                      <div className="h-1.5 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/85">
-                        <div className={cn("h-full", item.fillClassName)} style={{ width: `${Math.max(0, Math.min(100, item.value))}%` }} />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-1 rounded-xl border border-app-border/70 bg-app-bg/35 p-2.5">
-                <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-app-muted-strong">
-                  <span>Score Gauge</span>
-                  <span className="font-semibold text-app-muted">{formatInteger(sustainability.score)}/100</span>
-                </div>
-                <div className="relative pt-3.5">
-                  <div className="h-2 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/85">
-                    <div
-                      aria-hidden="true"
-                      className={`h-full transition-all duration-500 ${sustainabilityFillClass(sustainability.score)}`}
-                      style={{ width: `${sustainability.score}%` }}
-                    />
+            ) : (
+              <MetricCard
+                title={copyTradeStatsActive ? "Leader sustainability" : "Sustainability"}
+                primaryValue={displayTradeCount > 0 ? `${formatInteger(sustainability.score)}/100` : "—"}
+                primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgb(var(--theme-bg)/0.45)]", sustainabilityPrimaryClassName)}
+                subtitle="Composite score from Risk, Consistency, and Edge."
+                info="Sustainability blends drawdown control, day-to-day consistency, and profit factor with a confidence adjustment for small samples."
+                accentClassName={sustainabilityAccentClassName}
+                className={cn(
+                  "insight-summary relative isolate self-start p-3",
+                  sustainabilityCardClassName,
+                )}
+                contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
+              >
+                <div
+                  aria-hidden="true"
+                  className={cn(
+                    "pointer-events-none absolute -right-14 -top-10 h-28 w-28 rounded-full blur-3xl",
+                    sustainability.score >= 70 ? "bg-app-positive/20" : sustainability.score >= 45 ? "bg-app-accent/20" : "bg-app-negative/20",
+                  )}
+                />
+                <div className="relative">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[11px] uppercase tracking-[0.14em] text-app-muted-strong">Score 0-100</p>
+                    <Badge variant={displayTradeCount > 0 ? sustainabilityBadgeVariant(sustainability.label) : "neutral"}>{displayTradeCount > 0 ? sustainability.label : "Awaiting trades"}</Badge>
                   </div>
-                  {[40, 60, 80].map((tick) => (
-                    <div key={tick} className="pointer-events-none absolute top-0 -translate-x-1/2" style={{ left: `${tick}%` }}>
-                      <span className="block text-[10px] text-app-muted-strong">{tick}</span>
-                      <span className="mx-auto mt-0.5 block h-2 w-px bg-app-muted-strong/70" />
-                    </div>
-                  ))}
+
+                  <div className="mt-2.5 space-y-2">
+                    {[
+                      {
+                        label: "Risk",
+                        value: sustainability.riskScore,
+                        fillClassName: "bg-gradient-to-r from-app-negative/90 to-app-warning/75",
+                      },
+                      {
+                        label: "Consistency",
+                        value: sustainability.consistencyScore,
+                        fillClassName: "bg-gradient-to-r from-app-accent/90 to-app-secondary/80",
+                      },
+                      {
+                        label: "Edge",
+                        value: sustainability.edgeScore,
+                        fillClassName: "bg-gradient-to-r from-app-positive/90 to-app-accent/80",
+                      },
+                    ].map((item) => (
+                      <div key={item.label} className="space-y-1">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="text-app-muted">{item.label}</span>
+                          <span className="font-semibold text-app-text">{formatNumber(item.value, 1)}/100</span>
+                        </div>
+                        <div className="h-1.5 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/85">
+                          <div className={cn("h-full", item.fillClassName)} style={{ width: `${Math.max(0, Math.min(100, item.value))}%` }} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            </MetricCard>
+
+                <div className="space-y-1 rounded-xl border border-app-border/70 bg-app-bg/35 p-2.5">
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-app-muted-strong">
+                    <span>Score Gauge</span>
+                    <span className="font-semibold text-app-muted">{formatInteger(sustainability.score)}/100</span>
+                  </div>
+                  <div className="relative pt-3.5">
+                    <div className="h-2 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/85">
+                      <div
+                        aria-hidden="true"
+                        className={`h-full transition-all duration-500 ${sustainabilityFillClass(sustainability.score)}`}
+                        style={{ width: `${sustainability.score}%` }}
+                      />
+                    </div>
+                    {[40, 60, 80].map((tick) => (
+                      <div key={tick} className="pointer-events-none absolute top-0 -translate-x-1/2" style={{ left: `${tick}%` }}>
+                        <span className="block text-[10px] text-app-muted-strong">{tick}</span>
+                        <span className="mx-auto mt-0.5 block h-2 w-px bg-app-muted-strong/70" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </MetricCard>
+            )}
 
             <MetricCard
               title="Hold Time"
@@ -4579,7 +4576,7 @@ export function DashboardPage() {
               />
               <div className="relative">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <Badge variant={holdTimeSignalVariant}>{holdTimeSignalLabel}</Badge>
+                  {gradeReady && <Badge variant={holdTimeSignalVariant}>{holdTimeSignalLabel}</Badge>}
                   <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">
                     {`Ratio ${formatMetricValue(derivedMetrics.winDurationOverLossDuration, (value) => `${formatNumber(value)}x`)}`}
                   </span>
@@ -4588,8 +4585,8 @@ export function DashboardPage() {
                   className="mt-2.5 rounded-md border border-app-border/70 bg-app-bg/45 p-1.5"
                   leftLabel="Avg Win Duration"
                   rightLabel="Avg Loss Duration"
-                  leftValue={formatDurationCompact(summary.avg_win_duration_minutes)}
-                  rightValue={formatDurationCompact(summary.avg_loss_duration_minutes)}
+                  leftValue={summary.win_count > 0 ? formatDurationCompact(summary.avg_win_duration_minutes) : "N/A"}
+                  rightValue={summary.loss_count > 0 ? formatDurationCompact(summary.avg_loss_duration_minutes) : "N/A"}
                   leftMagnitude={summary.avg_win_duration_minutes}
                   rightMagnitude={summary.avg_loss_duration_minutes}
                   leftBarClassName="bg-gradient-to-r from-app-accent/90 to-app-positive/80"
@@ -4600,12 +4597,11 @@ export function DashboardPage() {
                 className="gap-1.5"
                 columns={1}
                 items={[
-                  { label: "Avg Win Duration", value: formatMinutes(summary.avg_win_duration_minutes) },
-                  { label: "Avg Loss Duration", value: formatMinutes(summary.avg_loss_duration_minutes) },
+                  { label: "Avg Win Duration", value: summary.win_count > 0 ? formatMinutes(summary.avg_win_duration_minutes) : "N/A" },
+                  { label: "Avg Loss Duration", value: summary.loss_count > 0 ? formatMinutes(summary.avg_loss_duration_minutes) : "N/A" },
                 ]}
               />
             </MetricCard>
-            </>}
           </div>
         )}
       </div>
