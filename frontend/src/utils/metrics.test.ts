@@ -39,6 +39,10 @@ describe("computeBreakevenWinRate", () => {
     expect(result.value).toBeCloseTo(33.3333, 3);
   });
 
+  it.each([[0, -100], [100, 0]])("requires outcomes on both sides (%d, %d)", (win, loss) => {
+    expect(computeBreakevenWinRate(win, loss).value).toBeNull();
+  });
+
   it("returns missing when avg win/loss are not usable", () => {
     const result = computeBreakevenWinRate(0, 0);
     expect(result.value).toBeNull();

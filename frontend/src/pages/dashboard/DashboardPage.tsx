@@ -418,6 +418,13 @@ function sustainabilityBadgeVariant(label: SustainabilityLabel) {
   return "negative" as const;
 }
 
+// Preserve whether both directions occurred, including for a single minority close.
+function formatDirectionShare(value: number) {
+  if (value > 0 && value < 0.1) return "<0.1%";
+  if (value < 100 && value > 99.9) return ">99.9%";
+  return formatPercent(value, Number.isInteger(value) ? 0 : 1);
+}
+
 function sustainabilityFillClass(score: number) {
   if (score >= 80) {
     return "bg-app-positive/75";
@@ -2654,8 +2661,11 @@ export function DashboardPage() {
   ]);
 
   const stabilityScore = useMemo(
-    () => computeStabilityScoreFromWorstDayPercent(derivedMetrics.stability.worstDayPercentOfNet.value),
-    [derivedMetrics.stability.worstDayPercentOfNet.value],
+    () => computeStabilityScoreFromWorstDayPercent(
+      derivedMetrics.stability.worstDay.value !== null && derivedMetrics.stability.worstDay.value >= 0
+        ? 0 : derivedMetrics.stability.worstDayPercentOfNet.value,
+    ),
+    [derivedMetrics.stability.worstDay.value, derivedMetrics.stability.worstDayPercentOfNet.value],
   );
   const sustainabilityDailyNetPnl = useMemo(
     () =>
@@ -2795,13 +2805,35 @@ export function DashboardPage() {
       ? 0
       : Math.min(100, Math.max(0, (drawdownPercentOfEquityBase.value / RISK_PRESSURE_FULL_SCALE_PERCENT) * 100));
 
-  const directionPrimaryValue =
-    directionSplit.longPercent.value === null ? "N/A" : `${formatPercent(directionSplit.longPercent.value, 0)} Long`;
+  const longShare = directionSplit.longPercent.value;
+  const directionPrimaryValue = longShare === null ? "N/A"
+    : longShare === 0 ? "100% Short" : `${formatDirectionShare(longShare)} Long`;
+  const directionRing = (
+    <DonutRing
+      className="min-w-0"
+      segments={[
+        {
+          label: "Long",
+          value: directionSplit.longPercent.value,
+          valueLabel: formatMetricValue(directionSplit.longPercent, formatDirectionShare),
+          color: "rgb(var(--theme-positive)/0.95)",
+        },
+        {
+          label: "Short",
+          value: directionSplit.shortPercent.value,
+          valueLabel: formatMetricValue(directionSplit.shortPercent, formatDirectionShare),
+          color: "rgb(var(--theme-negative)/0.95)",
+        },
+      ]}
+      centerLabel={directionPrimaryValue}
+      centerSubLabel="Direction"
+    />
+  );
   const longPnlShareMagnitude = Math.abs(derivedMetrics.direction.longPnlShare.value ?? 0);
   const shortPnlShareMagnitude = Math.abs(derivedMetrics.direction.shortPnlShare.value ?? 0);
   const totalPnlShareMagnitude = longPnlShareMagnitude + shortPnlShareMagnitude;
-  const longPnlShareWidth = totalPnlShareMagnitude > 0 ? (longPnlShareMagnitude / totalPnlShareMagnitude) * 100 : 50;
-  const shortPnlShareWidth = totalPnlShareMagnitude > 0 ? (shortPnlShareMagnitude / totalPnlShareMagnitude) * 100 : 50;
+  const longPnlShareWidth = totalPnlShareMagnitude > 0 ? (longPnlShareMagnitude / totalPnlShareMagnitude) * 100 : 0;
+  const shortPnlShareWidth = totalPnlShareMagnitude > 0 ? (shortPnlShareMagnitude / totalPnlShareMagnitude) * 100 : 0;
   const activityMetrics = useMemo(
     () =>
       computeActivityMetrics({
@@ -3771,8 +3803,13 @@ export function DashboardPage() {
             <p className="text-sm text-app-negative">{summaryError}</p>
           </Card>
         ) : (
-          <div className="dashboard-analytics-grid">
-            {!gradeReady ? <Card className="col-span-full space-y-2 p-4">
+          <div className={gradeReady ? "dashboard-analytics-grid" : "grid gap-3 lg:grid-cols-2"}>
+            {!gradeReady ? <>
+              {sampleCount > 0 && <MetricCard title={copyTradeStatsActive ? "Leader direction" : "Direction"}
+                primaryValue={directionPrimaryValue} subtitle="Long vs short trade mix.">
+                {directionRing}
+              </MetricCard>}
+              <Card className={cn("space-y-2 p-4", sampleCount === 0 && "col-span-full")}>
               <h3 className="font-semibold text-app-text">Observed results</h3>
               <p className="text-sm text-app-muted-text">Performance grades begin at {PERFORMANCE_SAMPLE_MINIMUM} on the selected account.</p>
               <MiniStatList items={[
@@ -3783,7 +3820,7 @@ export function DashboardPage() {
                 { label: "Average winning hold", value: summary.win_count && summary.avg_win_duration_minutes > 0 ? formatMinutes(summary.avg_win_duration_minutes) : "—" },
                 { label: "Recorded max drawdown", value: sampleCount ? formatPnl(-Math.abs(summary.max_drawdown)) : "—" },
               ]} />
-            </Card> : <>
+            </Card></> : <>
             <MetricCard
               title={copyTradeStatsActive ? "Copy Trade Net" : "Performance"}
               primaryValue={formatMetricValue(netPnlMetric, formatPnl)}
@@ -3987,7 +4024,8 @@ export function DashboardPage() {
                   value={
                     derivedMetrics.stability.nukeRatio.value === null
                       ? formatMetricValueWithNote(derivedMetrics.stability.nukeRatio, (value) => formatNumber(value, 1))
-                      : `Worst Day = ${formatNumber(derivedMetrics.stability.nukeRatio.value, 1)} days of avg profit`
+                      : derivedMetrics.stability.nukeRatio.value === 0 ? "No losing day"
+                      : `Worst loss = ${formatNumber(derivedMetrics.stability.nukeRatio.value, 1)} days of avg profit`
                   }
                   className={
                     derivedMetrics.stability.nukeRatio.value !== null && derivedMetrics.stability.nukeRatio.value >= 10
@@ -4086,7 +4124,7 @@ export function DashboardPage() {
                   ? directionSplit.longPercent.missingReason ?? "Needs directional trade history."
                   : "Long vs short trade mix."
               }
-              info="Long % is long trades divided by total directional trades for this range."
+              info="Direction is the share of closed long and short trades in the selected range."
               accentClassName="bg-gradient-to-r from-app-positive/80 via-app-accent/25 to-app-negative/80"
               className="insight-comparison relative flex flex-col overflow-hidden"
               contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
@@ -4095,25 +4133,7 @@ export function DashboardPage() {
                 <div aria-hidden="true" className="pointer-events-none absolute -left-8 top-0 h-20 w-20 rounded-full bg-app-positive/20 blur-2xl" />
                 <div aria-hidden="true" className="pointer-events-none absolute -right-6 bottom-1 h-24 w-24 rounded-full bg-app-negative/15 blur-2xl" />
                 <div className="insight-direction-breakdown relative grid gap-4">
-                  <DonutRing
-                    className="min-w-0"
-                    segments={[
-                      {
-                        label: "Long",
-                        value: directionSplit.longPercent.value,
-                        valueLabel: formatMetricValue(directionSplit.longPercent, (value) => formatPercent(value, 0)),
-                        color: "rgb(var(--theme-positive)/0.95)",
-                      },
-                      {
-                        label: "Short",
-                        value: directionSplit.shortPercent.value,
-                        valueLabel: formatMetricValue(directionSplit.shortPercent, (value) => formatPercent(value, 0)),
-                        color: "rgb(var(--theme-negative)/0.95)",
-                      },
-                    ]}
-                    centerLabel={directionPrimaryValue}
-                    centerSubLabel="Direction"
-                  />
+                  {directionRing}
                     <div className="space-y-1.5">
                       <div className="overflow-hidden rounded-lg border border-app-border/70 bg-app-bg/45 shadow-[inset_0_1px_0_rgb(var(--theme-muted)/0.07)]">
                         <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)] border-b border-app-border/65 bg-app-surface/90 px-2 py-1 text-[9px] uppercase tracking-[0.12em] text-app-muted">

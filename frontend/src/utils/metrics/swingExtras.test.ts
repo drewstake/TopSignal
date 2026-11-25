@@ -20,6 +20,11 @@ describe("computeSwingExtras", () => {
     expect(result.redDayPercent.value).toBeCloseTo(50);
   });
 
+  it("counts only downside against positive average profit", () => {
+    expect(computeSwingExtras([dailyDays[0], dailyDays[2]], 150).nukeRatio.value).toBe(0);
+    expect(computeSwingExtras(dailyDays, -50).nukeRatio.value).toBeNull();
+  });
+
   it("computes nuke ratio from worst day and average day profit", () => {
     const result = computeSwingExtras(dailyDays, 50);
     expect(result.nukeRatio.value).toBeCloseTo(3);

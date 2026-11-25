@@ -34,8 +34,8 @@ export function SplitBar({
   const left = safeMagnitude(leftMagnitude);
   const right = safeMagnitude(rightMagnitude);
   const total = left + right;
-  const leftPercent = total > 0 ? (left / total) * 100 : 50;
-  const rightPercent = total > 0 ? (right / total) * 100 : 50;
+  const leftPercent = total > 0 ? (left / total) * 100 : 0;
+  const rightPercent = total > 0 ? (right / total) * 100 : 0;
 
   return (
     <div className={cn("space-y-1.5", className)}>

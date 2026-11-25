@@ -38,9 +38,9 @@ export function computeSwingExtras(dailyPnlDays: AccountPnlCalendarDay[], profit
   const worstDay = Math.min(...dailyNetValues);
 
   const nukeRatio =
-    Math.abs(profitPerDay) <= EPSILON
-      ? missingMetric("needs non-zero average day profit")
-      : metric(Math.abs(worstDay) / Math.abs(profitPerDay));
+    profitPerDay <= EPSILON
+      ? missingMetric("needs positive average daily profit")
+      : metric(Math.max(0, -worstDay) / profitPerDay);
 
   const greenRedDaySizeRatio =
     avgGreen === null || avgRed === null || Math.abs(avgRed) <= EPSILON
@@ -65,5 +65,7 @@ function computeSwingInsight(nukeRatio: DerivedMetricValue, avgGreenDay: number 
   if (avgGreenDay !== null && avgRedDay !== null && Math.abs(avgRedDay) > Math.abs(avgGreenDay)) {
     return "Red days are larger than green days on average.";
   }
+  if (nukeRatio.value === null) return "Worst-day impact needs positive average daily profit.";
+  if (avgRedDay === null) return "No losing days in this range.";
   return "Daily swings look controlled relative to average day.";
 }

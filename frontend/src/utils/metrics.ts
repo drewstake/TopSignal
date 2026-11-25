@@ -39,7 +39,7 @@ export function computeBreakevenWinRate(avgWin: number, avgLoss: number): Derive
   const lossMagnitude = Math.abs(avgLoss);
   const denominator = winMagnitude + lossMagnitude;
 
-  if (denominator <= EPSILON || lossMagnitude <= EPSILON) {
+  if (winMagnitude <= EPSILON || lossMagnitude <= EPSILON) {
     return missingMetric("Needs non-zero average win and average loss.");
   }
 

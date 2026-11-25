@@ -44,7 +44,7 @@ export function DonutRing({ segments, centerLabel, centerSubLabel, className }: 
       return [];
     }
     let offset = 0;
-    return segments.map((segment) => {
+    return segments.filter(segment => safeValue(segment.value) > 0).map((segment) => {
       const share = safeValue(segment.value) / total;
       const next = {
         ...segment,
@@ -59,14 +59,14 @@ export function DonutRing({ segments, centerLabel, centerSubLabel, className }: 
   const descriptionText =
     normalizedSegments.length === 0
       ? "No directional split data available."
-      : normalizedSegments.map((segment) => `${segment.label} ${segment.valueLabel}`).join(", ");
+      : segments.map((segment) => `${segment.label} ${segment.valueLabel}`).join(", ");
 
   return (
     <div className={cn("flex items-center gap-2.5", className)}>
       <div className="relative h-[112px] w-[112px] shrink-0">
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 rounded-full bg-[conic-gradient(from_180deg,rgb(var(--theme-positive)/0.3),rgb(var(--theme-accent-secondary)/0.18),rgb(var(--theme-negative)/0.28),rgb(var(--theme-positive)/0.3))] blur-xl"
+          className="pointer-events-none absolute inset-0 rounded-full bg-app-accent/10 blur-xl"
         />
         <svg
           viewBox={`0 0 ${SIZE} ${SIZE}`}
@@ -86,7 +86,7 @@ export function DonutRing({ segments, centerLabel, centerSubLabel, className }: 
           <g transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}>
             {normalizedSegments.map((segment) => {
               const length = segment.share * CIRCUMFERENCE;
-              const strokeDasharray = `${length} ${CIRCUMFERENCE - length}`;
+              const strokeDasharray = segment.share === 1 ? undefined : `${length} ${CIRCUMFERENCE - length}`;
               const strokeDashoffset = -segment.offset;
               return (
                 <circle
@@ -99,7 +99,7 @@ export function DonutRing({ segments, centerLabel, centerSubLabel, className }: 
                   strokeWidth={STROKE_WIDTH}
                   strokeDasharray={strokeDasharray}
                   strokeDashoffset={strokeDashoffset}
-                  strokeLinecap="round"
+                  strokeLinecap="butt"
                   className="transition-all duration-500"
                 />
               );

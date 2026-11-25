@@ -24,16 +24,16 @@ export function computeDashboardDerivedMetrics(input: DashboardMetricsInput): Da
 function computeWinLossRatio(avgWin: number, avgLoss: number): MetricValue {
   const lossMagnitude = Math.abs(avgLoss);
   // Win/Loss Ratio = Average Win / abs(Average Loss).
-  if (lossMagnitude <= EPSILON) {
-    return missingMetric("needs a non-zero average loss");
+  if (avgWin <= EPSILON || lossMagnitude <= EPSILON) {
+    return missingMetric("needs both winning and losing trades");
   }
   return metric(avgWin / lossMagnitude);
 }
 
 function computeWinDurationRatio(avgWinMinutes: number, avgLossMinutes: number): MetricValue {
   // Win Duration / Loss Duration = Avg Win Duration / Avg Loss Duration.
-  if (avgLossMinutes <= EPSILON) {
-    return missingMetric("needs a non-zero average loss duration");
+  if (avgWinMinutes <= EPSILON || avgLossMinutes <= EPSILON) {
+    return missingMetric("needs measured winning and losing hold times");
   }
   return metric(avgWinMinutes / avgLossMinutes);
 }
