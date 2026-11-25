@@ -820,7 +820,7 @@ function hasMatchingLeaderTrade(followerTrade: AccountTrade, leaderTrades: reado
   return leaderTrades.some((leaderTrade) => areCopyTradeMatches(leaderTrade, followerTrade));
 }
 
-function areCopyTradeMatches(leaderTrade: AccountTrade, followerTrade: AccountTrade): boolean {
+export function areCopyTradeMatches(leaderTrade: AccountTrade, followerTrade: AccountTrade): boolean {
   if (getComparableSymbol(leaderTrade) !== getComparableSymbol(followerTrade)) {
     return false;
   }

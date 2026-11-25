@@ -9,6 +9,14 @@ describe("getAccountRiskRuleFromName", () => {
     expect(getAccountRiskRuleFromName("150KTC-12345")?.maxLossLimit).toBe(4_500);
   });
 
+  it("only applies Freedom combine rules to the matching evaluation plan", () => {
+    expect(getAccountRiskRuleFromName("250KTC-LABS002-V2-DLL-123")).toMatchObject({
+      profitTarget: 15000, maxLossLimit: 10000, dailyLossLimit: 5000, consistencyTargetPercent: 55,
+    });
+    expect(getAccountRiskRuleFromName("250KTC-LABS003-123")).toBeNull();
+    expect(getAccountRiskRuleFromName("XFA-250K-FREEDOM")).toBeNull();
+  });
+
   it("includes the matching profit targets", () => {
     expect(getAccountRiskRuleFromName("50KTC-12345")?.profitTarget).toBe(3_000);
     expect(getAccountRiskRuleFromName("100KTC-12345")?.profitTarget).toBe(6_000);

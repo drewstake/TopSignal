@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { formatProfitFactor, profitFactorValue } from "../../utils/profitFactor";
 
 import type { ActivityMetrics } from "../../utils/activityMetrics";
-import type { SustainabilityResult } from "../../utils/sustainability";
+import { hasPerformanceSample, PERFORMANCE_SAMPLE_MINIMUM, type SustainabilityResult } from "../../utils/sustainability";
 import type { AccountPnlCalendarDay, AccountSummary } from "../../lib/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -573,7 +573,7 @@ function buildSampleQuality(metrics: CopyFullStatsMetrics): SampleQuality {
   const tradeCount = metrics.summary.trade_count;
   const activeDays = metrics.summary.active_days;
   const missingKeyMetrics = getMissingKeyMetricNames(metrics);
-  const hasNoMeaningfulSample = tradeCount < 5 || activeDays < 2;
+  const hasNoMeaningfulSample = !hasPerformanceSample(tradeCount, activeDays);
   const isSmallTradeSample = tradeCount < 30;
   const isThinDaySample = activeDays < 5;
   const hasManyMissingMetrics = missingKeyMetrics.length >= 3;
@@ -1172,7 +1172,7 @@ export function buildFullStatsText({ metrics, rangeLabel, calendarDays = [], gen
         : `${lowestDayLabel} = ${formatDecimal(metrics.consistency.worstDayImpact.value, 1)} days of avg profit`,
     ),
     buildLine("G/R Size Ratio", formatMetricRatio(metrics.consistency.greenRedDaySizeRatio)),
-    buildLine("Stability", formatMetricPercent(metrics.consistency.stabilityScore)),
+    buildLine("Stability", hasPerformanceSample(summary.trade_count, summary.active_days) ? formatMetricPercent(metrics.consistency.stabilityScore) : "Awaiting history"),
     "",
     "RISK",
     buildLine("Max Drawdown", formatMetricMoney(metrics.risk.maxDrawdown, { forceNegative: true })),
@@ -1269,10 +1269,12 @@ export function buildFullStatsText({ metrics, rangeLabel, calendarDays = [], gen
     buildLine("Trades / Active Hour", formatTradesPerActiveHour(metrics)),
     "",
     "SUSTAINABILITY",
-    buildLine("Score", `${formatInteger(metrics.sustainability.score)}/100 (${metrics.sustainability.label})`),
-    buildLine("Risk Quality", `${formatDecimal(metrics.sustainability.riskScore, 1)}/100 (higher is better)`),
-    buildLine("Consistency", `${formatDecimal(metrics.sustainability.consistencyScore, 1)}/100`),
-    buildLine("Edge", `${formatDecimal(metrics.sustainability.edgeScore, 1)}/100`),
+    ...(hasPerformanceSample(summary.trade_count, summary.active_days) ? [
+      buildLine("Score", `${formatInteger(metrics.sustainability.score)}/100 (${metrics.sustainability.label})`),
+      buildLine("Risk Quality", `${formatDecimal(metrics.sustainability.riskScore, 1)}/100 (higher is better)`),
+      buildLine("Consistency", `${formatDecimal(metrics.sustainability.consistencyScore, 1)}/100`),
+      buildLine("Edge", `${formatDecimal(metrics.sustainability.edgeScore, 1)}/100`),
+    ] : [buildLine("Score", `Awaiting ${PERFORMANCE_SAMPLE_MINIMUM}`)]),
     "",
     "HOLD TIME",
     buildLine("Hold Time Ratio (win/loss)", formatMetricRatio(metrics.holdTime.ratio)),
@@ -1337,6 +1339,15 @@ export function buildStatsCoachSummary({ metrics, rangeLabel }: BuildFullStatsTe
   const activeDays = summary.active_days;
   const activeDaysPerWeek = metrics.activity.activeDaysPerWeek;
   const sampleQuality = buildSampleQuality(metrics);
+  if (sampleQuality.isNoMeaningful) {
+    return {
+      verdict: `Insufficient Sample · Performance grades begin at ${PERFORMANCE_SAMPLE_MINIMUM} on the selected account.`,
+      confidence: { label: sampleQuality.label, detail: sampleQuality.detail, tone: "neutral" },
+      keyStats: [{ label: "Net after fees", value: formatMetricMoney(metrics.performance.netPnl), tone: "neutral" }],
+      topLevers: [],
+      sections: [],
+    };
+  }
   const leverCandidates = buildLeverCandidates(metrics, sampleQuality);
   const topLevers = buildTopLevers(leverCandidates, metrics);
   const directionComparison = getDirectionComparison(metrics);
@@ -1613,7 +1624,7 @@ function CoachSummaryDialog({
                 </div>
               </section>
 
-              <section>
+              {coachSummary.topLevers.length > 0 && <section>
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <h3 className="text-base font-semibold text-app-text">Top 3 Levers</h3>
                   <p className="text-xs font-medium uppercase text-app-muted">Issue / Metric / Action</p>
@@ -1623,7 +1634,7 @@ function CoachSummaryDialog({
                     <TopLeverCard key={`${lever.issue}-${lever.metric}`} lever={lever} index={index} />
                   ))}
                 </div>
-              </section>
+              </section>}
 
               <div className="grid gap-4 lg:grid-cols-2">
                 {coachSummary.sections

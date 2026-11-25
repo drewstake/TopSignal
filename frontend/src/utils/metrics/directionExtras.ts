@@ -1,4 +1,5 @@
 import type { AccountTrade } from "../../lib/types";
+import { getTradeNetPnl } from "../../lib/tradePnl";
 import { inferTradeDirection } from "../../lib/tradeDirection";
 import { EPSILON, average, metric, missingMetric, sum, type DerivedMetricValue } from "./shared";
 
@@ -35,10 +36,11 @@ export function inferDirectionFromSide(side: string): InferredDirection | null {
 export function buildDirectionSamples(trades: AccountTrade[]): DirectionSample[] {
   return trades.flatMap((trade) => {
     const direction = inferDirectionFromSide(trade.side);
-    if (direction === null || trade.pnl === null || !Number.isFinite(trade.pnl)) {
+    const pnl = getTradeNetPnl(trade);
+    if (direction === null || pnl === null) {
       return [];
     }
-    return [{ direction, pnl: trade.pnl }];
+    return [{ direction, pnl }];
   });
 }
 

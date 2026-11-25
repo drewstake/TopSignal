@@ -59,8 +59,9 @@ import {
   computeDrawdownPercentOfNetPnl,
   computeStabilityScoreFromWorstDayPercent,
 } from "../../utils/metrics";
-import { computeSustainability, type SustainabilityLabel } from "../../utils/sustainability";
+import { computeSustainability, hasPerformanceSample, PERFORMANCE_SAMPLE_MINIMUM, type SustainabilityLabel } from "../../utils/sustainability";
 import type { AppShellOutletContext } from "../../app/AppShell";
+import { TradingSamplePanel } from "./components/TradingSamplePanel";
 import { CompactDashboardSkeleton, CompactDashboardView } from "./components/CompactDashboardView";
 import { CopyTradePanel } from "./components/CopyTradePanel";
 import { CopyTradeConfirmation } from "./components/CopyTradeConfirmation";
@@ -2468,21 +2469,21 @@ export function DashboardPage() {
   const analyticsPnlCalendarDays = useMemo(
     () =>
       activeSelectedTradeDate
-        ? dashboardPnlCalendarDays.filter((day) => day.date === activeSelectedTradeDate)
-        : dashboardPnlCalendarDays,
-    [activeSelectedTradeDate, dashboardPnlCalendarDays],
+        ? pnlCalendarDays.filter((day) => day.date === activeSelectedTradeDate)
+        : pnlCalendarDays,
+    [activeSelectedTradeDate, pnlCalendarDays],
   );
   const analyticsSummary = useMemo(
     () =>
       selectedDayLoadedTradeCount === null
-        ? dashboardSummary
+        ? summary
         : {
-            ...dashboardSummary,
+            ...summary,
             trade_count: displayTradeCount,
             active_days: displayActiveDays,
             avg_trades_per_day: displayAvgTradesPerDay,
           },
-    [dashboardSummary, displayActiveDays, displayAvgTradesPerDay, displayTradeCount, selectedDayLoadedTradeCount],
+    [summary, displayActiveDays, displayAvgTradesPerDay, displayTradeCount, selectedDayLoadedTradeCount],
   );
 
   const directionDataIssue = metricsTradesLoading
@@ -2507,7 +2508,7 @@ export function DashboardPage() {
   );
 
   const netPnlMetric = useMemo<MetricValue>(() => ({ value: dashboardSummary.net_pnl }), [dashboardSummary.net_pnl]);
-  const profitPerDayMetric = useMemo<MetricValue>(() => ({ value: dashboardSummary.profit_per_day }), [dashboardSummary.profit_per_day]);
+  const profitPerDayMetric = useMemo<MetricValue>(() => ({ value: summary.profit_per_day }), [summary.profit_per_day]);
   const efficiencyPerHourMetric = useMemo<MetricValue>(() => ({ value: summary.efficiency_per_hour }), [summary.efficiency_per_hour]);
   const expectancyPerTradeMetric = useMemo<MetricValue>(() => ({ value: summary.expectancy_per_trade }), [summary.expectancy_per_trade]);
   const maxDrawdownMetric = useMemo<MetricValue>(() => ({ value: summary.max_drawdown }), [summary.max_drawdown]);
@@ -2627,8 +2628,8 @@ export function DashboardPage() {
       : "border-app-warning/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-warning)/0.18),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]";
 
   const drawdownPercentOfNet = useMemo(
-    () => computeDrawdownPercentOfNetPnl(summary.max_drawdown, dashboardSummary.net_pnl),
-    [dashboardSummary.net_pnl, summary.max_drawdown],
+    () => computeDrawdownPercentOfNetPnl(summary.max_drawdown, summary.net_pnl),
+    [summary.net_pnl, summary.max_drawdown],
   );
 
   const directionSplit = useMemo(() => {
@@ -2658,9 +2659,7 @@ export function DashboardPage() {
   );
   const sustainabilityDailyNetPnl = useMemo(
     () =>
-      analyticsPnlCalendarDays
-        .map((day) => day.net_pnl)
-        .filter((value) => Number.isFinite(value)),
+      analyticsPnlCalendarDays.map((day) => day.net_pnl).filter((value) => Number.isFinite(value)),
     [analyticsPnlCalendarDays],
   );
   const accountRiskRule = useMemo(() => {
@@ -2900,7 +2899,7 @@ export function DashboardPage() {
     () => ({
       summary: analyticsSummary,
       performance: {
-        netPnl: netPnlMetric,
+        netPnl: { value: analyticsSummary.net_pnl },
         profitPerDay: profitPerDayMetric,
         efficiencyPerHour: efficiencyPerHourMetric,
         expectancyPerTrade: expectancyPerTradeMetric,
@@ -2974,7 +2973,7 @@ export function DashboardPage() {
         averageLossDurationMinutes: summary.avg_loss_duration_minutes,
       },
       balance: {
-        currentBalance: dashboardCurrentBalance,
+        currentBalance: copyTradeStatsActive ? getAvailableAccountBalance(selectedAccount?.balance ?? null) : dashboardCurrentBalance,
       },
     }),
     [
@@ -3030,10 +3029,11 @@ export function DashboardPage() {
       efficiencyPerHourMetric,
       expectancyPerTradeMetric,
       maxDrawdownMetric,
-      netPnlMetric,
       pointPayoffByBasis,
       profitPerDayMetric,
       dashboardCurrentBalance,
+      copyTradeStatsActive,
+      selectedAccount?.balance,
       analyticsSummary,
       stabilityScore,
       summary,
@@ -3306,6 +3306,11 @@ export function DashboardPage() {
       : [],
     [compactMode.enabled, orderedAccounts, selectedAccountId],
   );
+  const sampleSummary = compactMode.enabled ? compactPrimaryState?.summary : summary;
+  const sampleTrades = compactMode.enabled ? compactPrimaryState?.trades : metricsTrades;
+  const sampleCount = sampleSummary?.trade_count ?? 0;
+  const sampleDays = sampleSummary?.active_days ?? 0;
+  const gradeReady = hasPerformanceSample(sampleCount, sampleDays);
   const activeAccountsLoading = usingShellAccounts ? shellContext.accountsLoading : accountsLoading;
 
   if (activeAccountsLoading || (compactMode.enabled && orderedAccounts.length > 0 && selectedAccountId === null)) {
@@ -3528,7 +3533,7 @@ export function DashboardPage() {
             <Suspense fallback={<Skeleton className="h-8 w-full rounded-lg sm:w-32" />}>
               <CopyFullStatsButton
                 metrics={copyFullStatsMetrics}
-                rangeLabel={fullStatsRangeLabel}
+                rangeLabel={copyTradeStatsActive ? `Leader · ${fullStatsRangeLabel}` : fullStatsRangeLabel}
                 calendarDays={analyticsPnlCalendarDays}
                 disabled={selectedAccountId === null || summaryLoading || pnlCalendarLoading || metricsTradesLoading || summaryError !== null || pnlCalendarError !== null}
                 className="h-11 w-full rounded-lg px-2.5 text-[11px] sm:h-8 sm:w-auto"
@@ -3664,6 +3669,13 @@ export function DashboardPage() {
         </Card>
       ) : null}
 
+      {selectedAccount && <TradingSamplePanel account={selectedAccount} accounts={orderedAccounts}
+        copyIds={copyTradeRosterAccountIds} tradeCount={sampleCount} activeDays={sampleDays}
+        singleTrade={sampleTrades?.length === 1 && !(compactMode.enabled ? compactTradesLoading || compactTradesError : metricsTradesLoading || metricsTradesError)
+          ? sampleTrades[0] : null}
+        loading={compactMode.enabled ? compactSummaryLoading : summaryLoading}
+        error={compactMode.enabled ? compactSummaryError : summaryError} />}
+
       {selectedAccountId !== null && <AccountRiskForecastPanel
         key={selectedAccountId}
         accountId={selectedAccountId}
@@ -3678,6 +3690,8 @@ export function DashboardPage() {
           rangeStartDate={compactRangeBounds.startDate}
           rangeEndDate={compactRangeBounds.endDate}
           summary={compactSummary}
+          gradeReady={gradeReady}
+          copyGroup={compactCopyTradeModeActive}
           score={compactSustainability.score}
           scoreBreakdown={{
             label: compactSustainability.label,
@@ -3744,7 +3758,7 @@ export function DashboardPage() {
           onResetUncopyEvents={handleResetUncopyEvents}
         />
       ) : null}
-      <div className="dashboard-section-title"><h2>Performance insights</h2></div>
+      <div className="dashboard-section-title"><h2>Performance insights</h2>{copyTradeStatsActive && <span className="text-xs text-app-muted-text">Trade statistics use the leader. Copy Trade Net includes the selected followers.</span>}</div>
       <div className="dashboard-insights">
         {summaryLoading ? (
           <div className="dashboard-analytics-grid">
@@ -3758,6 +3772,18 @@ export function DashboardPage() {
           </Card>
         ) : (
           <div className="dashboard-analytics-grid">
+            {!gradeReady ? <Card className="col-span-full space-y-2 p-4">
+              <h3 className="font-semibold text-app-text">Observed results</h3>
+              <p className="text-sm text-app-muted-text">Performance grades begin at {PERFORMANCE_SAMPLE_MINIMUM} on the selected account.</p>
+              <MiniStatList items={[
+                { label: "Long / short closes", value: `${formatMetricValue(derivedMetrics.direction.longTrades, formatInteger)} / ${formatMetricValue(derivedMetrics.direction.shortTrades, formatInteger)}` },
+                { label: "Selected account net", value: formatPnl(summary.net_pnl) },
+                { label: "Fees and commissions", value: formatCurrency(summary.fees) },
+                { label: "Average net per closed trade", value: sampleCount ? formatPnl(summary.expectancy_per_trade) : "—" },
+                { label: "Average winning hold", value: summary.win_count && summary.avg_win_duration_minutes > 0 ? formatMinutes(summary.avg_win_duration_minutes) : "—" },
+                { label: "Recorded max drawdown", value: sampleCount ? formatPnl(-Math.abs(summary.max_drawdown)) : "—" },
+              ]} />
+            </Card> : <>
             <MetricCard
               title={copyTradeStatsActive ? "Copy Trade Net" : "Performance"}
               primaryValue={formatMetricValue(netPnlMetric, formatPnl)}
@@ -3988,7 +4014,7 @@ export function DashboardPage() {
             </MetricCard>
 
             <MetricCard
-              title="Risk Control"
+              title={copyTradeStatsActive ? "Leader risk control" : "Risk Control"}
               primaryValue={formatMetricValue(maxDrawdownMetric, formatPnl)}
               primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgb(var(--theme-bg)/0.5)]", riskPrimaryClassName)}
               subtitle="Peak-to-trough drawdown with account-risk context."
@@ -4052,7 +4078,7 @@ export function DashboardPage() {
             </MetricCard>
 
             <MetricCard
-              title="Direction"
+              title={copyTradeStatsActive ? "Leader direction" : "Direction"}
               primaryValue={directionPrimaryValue}
               primaryClassName="bg-gradient-to-r from-app-positive via-app-accent to-app-negative bg-clip-text text-transparent"
               subtitle={
@@ -4279,7 +4305,7 @@ export function DashboardPage() {
                 />
               </div>
               <div className="space-y-1 rounded-xl border border-app-border/70 bg-app-bg/35 p-2">
-                <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted-strong">Points Payoff By Basis</p>
+                <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted-strong">Points Payoff By Basis · after fees</p>
                 <div className="overflow-hidden rounded-md border border-app-border/70 bg-app-bg/25">
                   <div className="grid grid-cols-[minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,1fr)] px-2 py-1 text-[9px] uppercase tracking-[0.12em] text-app-muted-strong">
                     <span>Basis</span>
@@ -4301,7 +4327,7 @@ export function DashboardPage() {
             </MetricCard>
 
             <MetricCard
-              title="Edge"
+              title={copyTradeStatsActive ? "Leader edge" : "Edge"}
               primaryValue={formatMetricValue(expectancyPerTradeMetric, formatPnl)}
               primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgb(var(--theme-bg)/0.5)]", edgePrimaryClassName)}
               subtitle="Expected net result per trade."
@@ -4433,7 +4459,7 @@ export function DashboardPage() {
             </MetricCard>
 
             <MetricCard
-              title="Sustainability"
+              title={copyTradeStatsActive ? "Leader sustainability" : "Sustainability"}
               primaryValue={displayTradeCount > 0 ? `${formatInteger(sustainability.score)}/100` : "—"}
               primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgb(var(--theme-bg)/0.45)]", sustainabilityPrimaryClassName)}
               subtitle="Composite score from Risk, Consistency, and Edge."
@@ -4559,6 +4585,7 @@ export function DashboardPage() {
                 ]}
               />
             </MetricCard>
+            </>}
           </div>
         )}
       </div>

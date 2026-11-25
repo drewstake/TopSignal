@@ -118,6 +118,8 @@ export interface CompactDashboardViewProps {
   rangeStartDate?: string;
   rangeEndDate?: string;
   summary: AccountSummary;
+  gradeReady?: boolean;
+  copyGroup?: boolean;
   score: number;
   scoreBreakdown?: CompactScoreBreakdown | null;
   performanceContext?: CompactPerformanceContext | null;
@@ -146,6 +148,8 @@ export function CompactDashboardView({
   rangeStartDate,
   rangeEndDate,
   summary,
+  gradeReady,
+  copyGroup = false,
   score,
   scoreBreakdown = null,
   performanceContext = null,
@@ -274,7 +278,7 @@ export function CompactDashboardView({
           valueClassName={pnlTextClass(summary.net_pnl)}
           className="col-span-2 md:col-span-2 lg:col-span-1"
         >
-          {metricFootnote(`${summary.trade_count.toLocaleString("en-US")} closed trade${summary.trade_count === 1 ? "" : "s"}`)}
+          {metricFootnote(`${summary.trade_count.toLocaleString("en-US")} ${copyGroup ? "account close" : "closed trade"}${summary.trade_count === 1 ? "" : "s"}`)}
         </CompactMetricCard>
         <CompactMetricCard
           label="Trade Expectancy"
@@ -287,11 +291,11 @@ export function CompactDashboardView({
           valueClassName={pnlTextClass(summary.expectancy_per_trade)}
           className="md:col-span-2 lg:col-span-1"
         >
-          {metricFootnote("Expected net value per trade")}
+          {metricFootnote("Observed average after fees")}
         </CompactMetricCard>
         <CompactMetricCard
           label="Profit Factor"
-          info="Gross winning P&L divided by gross losing P&L. It is unbounded without a losing trade."
+          info="Winning after-fee P&L divided by absolute losing after-fee P&L. It is unbounded without a losing trade."
           value={formatProfitFactor(summary)}
           kind="profit"
           loading={summaryLoading}
@@ -303,7 +307,7 @@ export function CompactDashboardView({
               : undefined}
           className="md:col-span-2 lg:col-span-1"
         >
-          {metricFootnote(profitFactorValue(summary) === Infinity ? (summary.loss_count === 0 ? "No losing trades" : "No gross losing P&L") : "Gross wins ÷ gross losses")}
+          {metricFootnote(profitFactorValue(summary) === Infinity ? (summary.loss_count === 0 ? "No losing trades" : "No gross losing P&L") : "Net winning P&L ÷ net losing P&L")}
         </CompactMetricCard>
         <CompactMetricCard
           label="Win Rate"
@@ -363,6 +367,7 @@ export function CompactDashboardView({
         </div>
         <div className="min-w-0 lg:col-span-2">
           <CompactScoreCard
+            gradeReady={gradeReady}
             score={score}
             breakdown={scoreBreakdown}
             loading={daysLoading}

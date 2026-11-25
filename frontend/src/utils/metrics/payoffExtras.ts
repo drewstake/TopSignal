@@ -1,5 +1,6 @@
 import type { AccountTrade } from "../../lib/types";
-import { EPSILON, average, metric, missingMetric, percentile, type DerivedMetricValue } from "./shared";
+import { getTradeNetPnl } from "../../lib/tradePnl";
+import { EPSILON, metric, missingMetric, percentile, type DerivedMetricValue } from "./shared";
 
 export interface PayoffExtrasInput {
   trades: AccountTrade[];
@@ -44,7 +45,7 @@ export function computePayoffExtras(input: PayoffExtrasInput): PayoffExtrasMetri
   }
 
   const pnlValues = input.trades
-    .map((trade) => trade.pnl)
+    .map(getTradeNetPnl)
     .filter((value): value is number => value !== null && Number.isFinite(value));
   const lossPnls = pnlValues.filter((value) => value < 0);
 
@@ -58,7 +59,7 @@ export function computePayoffExtras(input: PayoffExtrasInput): PayoffExtrasMetri
   const p95Loss =
     p95LossMagnitude === null ? missingMetric("needs at least 5 losing trades") : metric(-p95LossMagnitude);
 
-  const capture = computeCapture(input.trades, input.avgWin);
+  const capture = computeCapture(input.trades);
 
   return {
     wrCushion,
@@ -87,24 +88,16 @@ function computeLargeLossRate(pnlValues: number[], largeLossThreshold: DerivedMe
   return metric((pnlValues.filter((pnl) => pnl <= -threshold).length / pnlValues.length) * 100);
 }
 
-function computeCapture(trades: AccountTrade[], avgWin: number): DerivedMetricValue {
-  const winningMfeValues = trades
-    .filter((trade) => trade.pnl !== null && trade.pnl > 0)
-    .map((trade) => trade.mfe)
-    .filter((value): value is number => value !== null && value !== undefined && Number.isFinite(value))
-    .map((value) => Math.abs(value))
-    .filter((value) => value > EPSILON);
-
-  if (winningMfeValues.length === 0) {
-    return missingMetric("needs MFE data");
-  }
-
-  const avgMfeWins = average(winningMfeValues);
-  if (avgMfeWins === null || avgMfeWins <= EPSILON) {
-    return missingMetric("needs MFE data");
-  }
-
-  return metric(avgWin / avgMfeWins);
+function computeCapture(trades: AccountTrade[]): DerivedMetricValue {
+  const wins = trades.flatMap((trade) => {
+    const net = getTradeNetPnl(trade);
+    const mfe = trade.mfe;
+    return net !== null && net > 0 && typeof mfe === "number" && Number.isFinite(mfe) && mfe > EPSILON
+      ? [{ net, mfe }]
+      : [];
+  });
+  if (wins.length === 0) return missingMetric("needs MFE data");
+  return metric(wins.reduce((total, win) => total + win.net, 0) / wins.reduce((total, win) => total + win.mfe, 0));
 }
 
 function computePayoffInsight(args: {

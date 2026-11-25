@@ -9,6 +9,7 @@ import {
 
 import { Card } from "../../../components/ui/Card";
 import { cn } from "../../../components/ui/cn";
+import { PERFORMANCE_SAMPLE_MINIMUM } from "../../../utils/sustainability";
 import { formatCurrency, formatPnl } from "../../../utils/formatters";
 import type { CompactChartPoint } from "../compactDashboardData";
 import {
@@ -451,10 +452,12 @@ export const CompactPerformanceChart = memo(function CompactPerformanceChart({
 
 export const CompactScoreCard = memo(function CompactScoreCard({
   score,
+  gradeReady = true,
   breakdown,
   loading,
   error,
 }: {
+  gradeReady?: boolean;
   score: number;
   breakdown: CompactScoreBreakdown | null;
   loading: boolean;
@@ -496,8 +499,8 @@ export const CompactScoreCard = memo(function CompactScoreCard({
         <CompactState kind="loading" title="Calculating score" detail="Evaluating risk, consistency, and edge." minHeightClassName="min-h-[292px]" />
       ) : error ? (
         <CompactState kind="error" title="Score unavailable" detail={error} minHeightClassName="min-h-[292px]" announce={false} />
-      ) : !breakdown || breakdown.sampleSize === 0 ? (
-        <CompactState kind="insufficient" title="Not enough data" detail="The TopSignal Score requires at least one closed-trade day." minHeightClassName="min-h-[292px]" />
+      ) : !gradeReady || !breakdown || breakdown.sampleSize === 0 ? (
+        <CompactState kind="insufficient" title="Not enough data" detail={`Performance grades begin at ${PERFORMANCE_SAMPLE_MINIMUM} on the selected account.`} minHeightClassName="min-h-[292px]" />
       ) : (
         <div className="flex min-h-[292px] flex-1 flex-col items-center justify-center px-3 pb-4 pt-2">
           <svg

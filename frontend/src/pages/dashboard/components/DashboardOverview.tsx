@@ -1,3 +1,4 @@
+import { hasPerformanceSample } from "../../../utils/sustainability";
 import { formatProfitFactor } from "../../../utils/profitFactor";
 import { Icon, type IconName } from "../../../components/ui/Icon";
 import { Skeleton } from "../../../components/ui/Skeleton";
@@ -18,7 +19,7 @@ export function DashboardOverview({ summary, loading, error, hasAccount, maxDraw
   const metrics: { label: string; value: string; detail: string; icon: IconName; tone?: string }[] = [
     { label: copyAdjusted ? "Copy Trade Net" : "Net P&L", value: formatPnl(summary.net_pnl), detail: copyAdjusted ? "Combined leader + follower result" : "Realized profit after fees", icon: "chart", tone: hasTrades ? summary.net_pnl > 0 ? "positive" : summary.net_pnl < 0 ? "negative" : undefined : undefined },
     { label: copyAdjusted ? "Leader win rate" : "Win rate", value: hasTrades ? formatPercent(summary.win_rate, 1) : "—", detail: hasTrades ? `${formatInteger(summary.win_count)} wins · ${formatInteger(summary.loss_count)} losses` : "No closed trades", icon: "target" },
-    { label: copyAdjusted ? "Leader profit factor" : "Profit factor", value: hasTrades ? formatProfitFactor(summary) : "—", detail: "Gross profit / gross loss", icon: "pulse" },
+    { label: copyAdjusted ? "Leader profit factor" : "Profit factor", value: hasTrades ? formatProfitFactor(summary) : "—", detail: "Winning net P&L / absolute losing net P&L", icon: "pulse" },
     { label: copyAdjusted ? "Leader max drawdown" : "Max drawdown", value: hasTrades ? formatPnl(-Math.abs(maxDrawdown)) : "—", detail: "Largest peak-to-trough decline", icon: "shield" },
   ];
 
@@ -50,6 +51,6 @@ export function TradingProfile({ summary, score, loading, error, copyAdjusted = 
     <div className="profile-trade-count"><strong>{loading ? "…" : error ? "—" : formatInteger(summary.trade_count)}</strong><span>closed trades</span></div>
     <div className="profile-outcome-bar" aria-hidden="true">{hasTrades && outcomes.map((outcome) => <span key={outcome.label} className={`outcome-${outcome.tone}`} style={{ width: `${total ? outcome.count / total * 100 : 0}%` }} />)}</div>
     <div className="profile-outcomes">{outcomes.map((outcome) => <div key={outcome.label}><span><i className={`outcome-${outcome.tone}`} />{outcome.label}</span><strong>{loading || error ? "—" : outcome.count}</strong></div>)}</div>
-    <dl className="profile-stat-list"><div><dt>Active days</dt><dd>{loading || error ? "—" : summary.active_days}</dd></div><div><dt>Average trades / day</dt><dd>{hasTrades ? formatNumber(summary.avg_trades_per_day, 1) : "—"}</dd></div><div><dt>Sustainability score</dt><dd>{hasTrades ? `${formatInteger(score)} / 100` : "Awaiting trades"}</dd></div></dl>
+    <dl className="profile-stat-list"><div><dt>Active days</dt><dd>{loading || error ? "—" : summary.active_days}</dd></div><div><dt>Average trades / day</dt><dd>{hasTrades ? formatNumber(summary.avg_trades_per_day, 1) : "—"}</dd></div><div><dt>Sustainability score</dt><dd>{hasTrades && hasPerformanceSample(summary.trade_count, summary.active_days) ? `${formatInteger(score)} / 100` : "Awaiting history"}</dd></div></dl>
   </section>;
 }

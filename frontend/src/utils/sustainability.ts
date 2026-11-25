@@ -1,5 +1,11 @@
 const EPSILON = 1e-9;
 
+export const PERFORMANCE_SAMPLE_MINIMUM = "5 closed trades across 2 trading days";
+
+export function hasPerformanceSample(trades: number, days: number) {
+  return trades >= 5 && days >= 2;
+}
+
 export interface SustainabilityInputs {
   dailyNetPnl: number[];
   maxDrawdown: number;

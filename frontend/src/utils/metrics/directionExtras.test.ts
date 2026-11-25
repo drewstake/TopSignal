@@ -21,6 +21,17 @@ function buildTrade(id: number, side: "BUY" | "SELL", pnl: number): AccountTrade
 }
 
 describe("computeDirectionExtras", () => {
+  it("uses net outcomes for direction, including a gross win erased by fees", () => {
+    const samples = buildDirectionSamples([
+      { ...buildTrade(1, "SELL", 1200), fees: 2.44 },
+      { ...buildTrade(2, "BUY", 1), fees: 2.44 },
+    ]);
+    const result = computeDirectionExtras(samples);
+    expect(result.long.expectancy.value).toBeCloseTo(1197.56);
+    expect(result.short.pnl.value).toBeCloseTo(-1.44);
+    expect(result.short.winRate.value).toBe(0);
+  });
+
   it("computes expectancy and profit factor by side", () => {
     const trades: AccountTrade[] = [
       buildTrade(1, "SELL", 100),

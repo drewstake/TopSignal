@@ -21,6 +21,19 @@ function buildTrade(id: number, pnl: number): AccountTrade {
 }
 
 describe("computePayoffExtras", () => {
+  it("uses net losses for tails and the same measured winners for both sides of capture", () => {
+    const result = computePayoffExtras({
+      trades: [
+        ...Array.from({ length: 5 }, (_, id) => ({ ...buildTrade(id, 1), fees: 3, mfe: 1 })),
+        { ...buildTrade(10, 22), fees: 2, mfe: 40 }, buildTrade(11, 1000),
+      ],
+      avgWin: 510, avgLoss: -2, currentWinRate: 0, breakevenWinRate: null,
+      canUseTradeDistribution: true, tradeDistributionReason: "",
+    });
+    expect(result.p95Loss.value).toBe(-2);
+    expect(result.capture.value).toBe(0.5);
+  });
+
   it("computes large loss rate from a 2x avg loss threshold", () => {
     const trades = [buildTrade(1, -50), buildTrade(2, -250), buildTrade(3, -300), buildTrade(4, 100), buildTrade(5, 200)];
     const result = computePayoffExtras({
