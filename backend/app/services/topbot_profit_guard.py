@@ -141,6 +141,7 @@ def poll(owner, account_id, contract_id, client, limit=TARGET, *, now=None):
     quote_fresh = bool(quote.get("ready") and quote_at and
                       0 <= (checked_at - as_utc(datetime.fromisoformat(quote_at))).total_seconds() <= 2)
     total = realized
+    has_open_position = False
     if not isinstance(positions, list):
         raise ValueError("Open positions are unavailable")
     for position in positions:
@@ -151,6 +152,7 @@ def poll(owner, account_id, contract_id, client, limit=TARGET, *, now=None):
             raise ValueError("Daily P&L position metadata is incomplete")
         if size == 0:
             continue
+        has_open_position = True
         unrealized = service._finite_optional_float(position.get("unrealized_pnl"))
         if unrealized is None and position["contract_id"] == contract_id and contract_id.startswith("CON.F.US.MNQ.") and quote_fresh:
             average = service._finite_optional_float(position.get("average_price"))
@@ -160,7 +162,8 @@ def poll(owner, account_id, contract_id, client, limit=TARGET, *, now=None):
         if unrealized is None:
             raise ValueError("Complete account unrealized P&L is unavailable")
         total += unrealized
-    return observe(owner, account_id, total, limit=limit, now=checked_at)
+    state = observe(owner, account_id, total, limit=limit, now=checked_at)
+    return {**state, "has_open_position": has_open_position}
 
 
 def public_status(owner, account_id, *, limit=TARGET, now=None):

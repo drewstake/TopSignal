@@ -38,7 +38,7 @@ def test_worker_checks_profit_protection_without_waiting_for_entry_signal(sessio
         assert db.get(BotConfig, 1).enabled
 
 
-def test_next_session_can_evaluate_without_restarting_the_run(session_factory, monkeypatch):
+def test_worker_waits_for_flat_then_evaluates_on_the_same_run(session_factory, monkeypatch):
     _seed_run(session_factory, dry_run=False)
     with session_factory() as db:
         config = db.get(BotConfig, 1)
@@ -51,7 +51,8 @@ def test_next_session_can_evaluate_without_restarting_the_run(session_factory, m
     monkeypatch.setattr(worker, "_evaluation_is_due", lambda *a, **kw: True)
     monkeypatch.setattr(topbot_depth.feed, "ensure", lambda *a, **kw: None)
     monkeypatch.setattr(topbot_depth.feed, "snapshot", lambda *a, **kw: {"ready": False})
-    monkeypatch.setattr(guard, "poll", lambda *a, **kw: {"trigger": None})
+    positions = iter([True, True, False])
+    monkeypatch.setattr(guard, "poll", lambda *a, **kw: {"trigger": None, "has_open_position": next(positions)})
     monkeypatch.setattr(market_archive, "prepare_decision", lambda result: None)
     monkeypatch.setattr(forward_results, "prepare_committed_record", lambda result: None)
     evaluated = []
@@ -59,6 +60,7 @@ def test_next_session_can_evaluate_without_restarting_the_run(session_factory, m
         evaluated.append(kwargs["run"].id)
         return SimpleNamespace(run=kwargs["run"], risk_events=[], status="held")
     monkeypatch.setattr(worker, "evaluate_bot_config", evaluate)
-    runtime._process_run(run_id=1, now=datetime(2026, 11, 3, 15, tzinfo=timezone.utc), startup_recovery=False,
-                         blocked_accounts=set(), probe_provider=False, probed_users=set())
-    assert evaluated == [1]
+    for expected in ([], [], [1]):
+        runtime._process_run(run_id=1, now=datetime(2026, 11, 3, 15, tzinfo=timezone.utc), startup_recovery=False,
+                             blocked_accounts=set(), probe_provider=False, probed_users=set())
+        assert evaluated == expected

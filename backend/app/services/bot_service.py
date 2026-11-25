@@ -547,6 +547,7 @@ class LiveExecutionPreflight:
     account_can_trade: bool
     account_automation_eligible: bool | None
     current_position_qty: float
+    account_has_open_position: bool
     working_order_signed_sizes: tuple[float, ...]
     working_orders: tuple[dict[str, Any], ...]
     account_gross_position_qty: float
@@ -11165,6 +11166,8 @@ def evaluate_risk_gates(
         resulting_position_qty=resulting_position_qty,
     )
     additional_blocks: list[RiskBlock] = []
+    from .topbot_strategy import selected as dom_selected
+    dom_strategy = str(config.strategy_type) == "topbot_adaptive" and dom_selected(config.strategy_params)
     if not dry_run:
         shared_account_block = _shared_broker_account_block(
             db, user_id=user_id, account_id=int(config.account_id)
@@ -11256,6 +11259,13 @@ def evaluate_risk_gates(
             account_unrealized_pnl = preflight.account_unrealized_pnl
             unrealized_pnl_complete = preflight.unrealized_pnl_complete
             adjustment_block: RiskBlock | None = None
+            # A position can open after the worker's account poll. Entry targets
+            # are sized from flat and must never be applied to that exposure.
+            waiting_for_flat = dom_strategy and target_position_qty != 0 and preflight.account_has_open_position
+            flat_block = RiskBlock(
+                code="dom_entry_requires_flat",
+                message="TopBot is waiting for the account to be flat before entering.",
+            ) if waiting_for_flat else None
             if target_position_qty is not None:
                 adjustment_block = _apply_authoritative_target_to_order_attempt(
                     order_attempt,
@@ -11263,6 +11273,7 @@ def evaluate_risk_gates(
                     signal_action=action,
                     target_position_qty=float(target_position_qty),
                     provider_position_qty=preflight.current_position_qty,
+                    flat_block=flat_block,
                 )
                 if adjustment_block is not None:
                     additional_blocks.append(adjustment_block)
@@ -11286,6 +11297,9 @@ def evaluate_risk_gates(
                     else:
                         order_size = float(adjusted_size)
                         signed_change = order_size if action == "BUY" else -order_size
+            elif flat_block is not None:
+                additional_blocks.append(flat_block)
+                signed_change = 0.0
             # Non-target-aware signals remain deltas. Target-aware signals are
             # rewritten above from the authoritative provider position.
             resulting_position_qty = preflight.current_position_qty + signed_change
@@ -11323,7 +11337,7 @@ def evaluate_risk_gates(
                 )
             if position_reducing:
                 _mark_order_attempt_reduce_only(order_attempt, decision=decision)
-            if preflight.prior_delivery_contract_ids and not position_reducing:
+            if preflight.prior_delivery_contract_ids and not position_reducing and not waiting_for_flat:
                 prior_deliveries = ", ".join(preflight.prior_delivery_contract_ids)
                 additional_blocks.append(
                     RiskBlock(
@@ -11475,8 +11489,7 @@ def evaluate_risk_gates(
                 )
 
     latest_candle_age_seconds = _candle_delivery_delay_seconds(latest_candle, symbol=symbol or contract_id, now=now)
-    from .topbot_strategy import selected as dom_selected
-    if str(config.strategy_type) == "topbot_adaptive" and dom_selected(config.strategy_params) and not position_reducing:
+    if dom_strategy and not position_reducing:
         from .topbot_depth import feed, utc
         from .topbot_session import runner_entry_boundary_reason
         depth = feed.snapshot(user_id, contract_id, now=depth_check_clock)
@@ -11511,8 +11524,6 @@ def evaluate_risk_gates(
             if "depth_unavailable" in failed_checks:
                 details += f" ({depth.get('reason', 'No valid depth')})"
             additional_blocks.append(RiskBlock(code="dom_signal_expired", message=f"Depth no longer qualifies; entry skipped: {details}."))
-        if preflight is not None and abs(preflight.current_position_qty) > 1e-9:
-            additional_blocks.append(RiskBlock(code="dom_entry_requires_flat", message="TopBot does not add to or adopt existing positions."))
         contracts = params.get("entry_contracts", 1)
         if order_size != contracts or float(config.max_contracts) != contracts or float(config.order_size) != contracts:
             additional_blocks.append(RiskBlock(code="dom_size_invalid", message="Order size must match the configured MNQ entry size and contract limit."))
@@ -11526,8 +11537,7 @@ def evaluate_risk_gates(
     authoritative_entry_risk_required = bool(
         live_preflight_required and perform_live_preflight and preflight is not None
     )
-    if (not dry_run and not position_reducing and str(config.strategy_type) == "topbot_adaptive"
-            and dom_selected(config.strategy_params)):
+    if not dry_run and not position_reducing and dom_strategy:
         from . import topbot_profit_guard as profit_guard
         try:
             limit = profit_guard.configured_limits(config.strategy_params)
@@ -11613,8 +11623,7 @@ def evaluate_risk_gates(
         )
     )
 
-    if (decision is not None and str(config.strategy_type) == "topbot_adaptive"
-            and dom_selected(config.strategy_params) and not position_reducing):
+    if decision is not None and dom_strategy and not position_reducing:
         from .topbot_entry_checks import snapshot
         if authoritative_entry_risk_required and blocks:
             decision.raw_payload["depth_recheck"]["account_entries_today"] = trades_today
@@ -11971,6 +11980,7 @@ def _fetch_live_execution_preflight(
         account_can_trade=provider_can_trade,
         account_automation_eligible=account_automation_eligible,
         current_position_qty=current_position_qty,
+        account_has_open_position=any(abs(qty) > 1e-9 for qty in position_qty_by_contract.values()),
         working_order_signed_sizes=tuple(working_order_signed_sizes),
         working_orders=tuple(working_orders),
         account_gross_position_qty=account_gross_position_qty,
@@ -13748,6 +13758,7 @@ def _apply_authoritative_target_to_order_attempt(
     signal_action: str,
     target_position_qty: float,
     provider_position_qty: float,
+    flat_block: RiskBlock | None,
 ) -> RiskBlock | None:
     if not math.isfinite(target_position_qty) or not math.isfinite(provider_position_qty):
         return RiskBlock(
@@ -13794,6 +13805,9 @@ def _apply_authoritative_target_to_order_attempt(
             request["strategyOrderPlan"] = plan
             order_attempt.raw_request = request
 
+    if flat_block is not None:
+        record_audit(effective_order_size=0.0)
+        return flat_block
     if target_position_qty * provider_position_qty < -(epsilon**2):
         record_audit(effective_order_size=0.0)
         return RiskBlock(

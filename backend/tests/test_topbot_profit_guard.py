@@ -107,6 +107,9 @@ def test_poll_combines_net_realized_with_liquidation_side_unrealized(monkeypatch
     client = RecordingClient(positions=[dict(account_id=9001, contract_id=CONTRACT_ID, signed_size=size, average_price=20000)])
     state = guard.poll(USER_A, 9001, CONTRACT_ID, client, now=NOW)
     assert state["pnl"] == expected and not state["armed"]
+    assert state["has_open_position"]
+    client.positions = []
+    assert not guard.poll(USER_A, 9001, CONTRACT_ID, client, now=NOW)["has_open_position"]
     assert not client.place_order_calls and not client.close_position_calls
 
 

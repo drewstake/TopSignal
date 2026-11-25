@@ -821,6 +821,10 @@ class BotWorkerRuntime:
                     except Exception:
                         logger.exception("blocked_trade_observation_failed", extra={"bot_run_id": run_id})
                     return {"evaluated": False, "provider_ok": True}
+                if guard.get("has_open_position"):
+                    # Keep the run armed. Position management runs independently
+                    # and the next worker pass reads the broker again.
+                    return {"evaluated": False, "provider_ok": True}
             from .services.topbot_session import runner_entry_pause_reason
             if runner_entry_pause_reason(now, symbol=archive_contract or "MNQ"):
                 # Scheduled downtime is idle, not a rejected BUY/SELL. Keep the

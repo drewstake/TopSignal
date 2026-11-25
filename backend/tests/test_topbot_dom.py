@@ -9,6 +9,7 @@ import pytest
 from app.services import topbot_strategy as strategy, bot_service
 from app.services.topbot_depth import DepthState, feed
 from app.services.topbot_runner import desired_stop, runner_plan, finalize, manage
+from app.services.topbot_time_exit import process_time_exit
 from test_bot_execution_safety import USER_A, CONTRACT_ID, RecordingClient, _add_account_and_config, db_session, open_exchange_session
 from test_topbot_time_exit import lease
 
@@ -134,8 +135,7 @@ def test_trail_activation_and_never_widen(side,entry,mfe,current,expected):
     assert desired_stop(side,entry,mfe,current) == expected
 
 
-@pytest.fixture
-def dom_entry(db_session, monkeypatch, open_exchange_session, request):
+def _arm_dom(db_session, monkeypatch, policy=None):
     def unexpected_context(*args, **kwargs):
         raise AssertionError("Optional context must not delay a DOM entry")
     monkeypatch.setattr("app.services.market_context_bundle.build_collected_context", unexpected_context)
@@ -148,17 +148,16 @@ def dom_entry(db_session, monkeypatch, open_exchange_session, request):
     # The real cutoff and overnight behavior are covered by the risk-gate tests below.
     monkeypatch.setattr("app.services.topbot_session.flat_deadline", lambda *a, **kw: now + timedelta(hours=1))
     monkeypatch.setattr("app.services.topbot_session.futures_session_is_open", lambda *a, **kw: True)
-    policy = getattr(request, "param", None)
     observed = observation(now, .2 if policy == "following_bid" else -.2)
     observed.update(bid_levels=99, ask_levels=99)
     monkeypatch.setattr(feed,"snapshot",lambda *a,**kw:observed)
     account, config = _add_account_and_config(db_session, enabled=False, execution_mode="live")
     config.strategy_type = "topbot_adaptive"
     config.strategy_params = dict(strategy.DEFAULTS)
-    if getattr(request, "param", None) == "fixed":
+    if policy == "fixed":
         from app.services.trading_day import trading_day_key
         config.strategy_params = {**config.strategy_params, "fixed_bracket_session": trading_day_key(now)}
-    elif getattr(request, "param", None) == "persistent_fixed":
+    elif policy == "persistent_fixed":
         config.strategy_params = {**config.strategy_params, "exit_mode": "fixed"}
     elif policy in ("following_bid", "following_ask", "custom_bracket"):
         config.strategy_params = {**config.strategy_params, "imbalance_direction": "following", "exit_mode": "fixed",
@@ -172,14 +171,51 @@ def dom_entry(db_session, monkeypatch, open_exchange_session, request):
     result = bot_service.start_bot_run(db_session,user_id=USER_A,bot_config_id=config.id,client=client,
                                      dry_run=False,confirm_live_order_routing=True,continuous=True)
     assert result.order_attempt is None  # Only the fenced worker may enter.
-    token = lease(db_session)
-    result = bot_service.evaluate_bot_config(db_session,user_id=USER_A,config=config,account=account,client=client,
+    return result, client, lease(db_session), observed
+
+
+@pytest.fixture
+def dom_entry(db_session, monkeypatch, open_exchange_session, request):
+    policy = getattr(request, "param", None)
+    result, client, token, _ = _arm_dom(db_session, monkeypatch, policy)
+    config = result.config
+    result = bot_service.evaluate_bot_config(db_session,user_id=USER_A,config=config,account=None,client=client,
         run=result.run,dry_run=False,confirm_live_order_routing=True,worker_lease_token=token)
     assert result.order_attempt is not None, [(r.code,r.message) for r in result.risk_events]
     expected = "blocked" if policy == "dispatch_reset" else "submitted"
     assert result.order_attempt.status == expected, [(r.code,r.message) for r in result.risk_events]
     db_session.commit()
     return result, client, token
+
+
+@pytest.mark.parametrize("contract,quantity", [(CONTRACT_ID, 3), (CONTRACT_ID, -3), ("CON.F.US.MES.Z26", 1)])
+def test_position_opened_before_dispatch_waits_then_enters_when_flat(
+    db_session, monkeypatch, open_exchange_session, contract, quantity,
+):
+    armed, client, token, depth = _arm_dom(db_session, monkeypatch, "following_bid")
+    client.positions = [dict(account_id=9001, contract_id=contract, signed_size=quantity, unrealized_pnl=0)]
+
+    def evaluate():
+        return bot_service.evaluate_bot_config(
+            db_session, user_id=USER_A, config=armed.config, account=None, client=client,
+            run=armed.run, dry_run=False, confirm_live_order_routing=True, worker_lease_token=token,
+        )
+
+    waiting = evaluate()
+    assert waiting.order_attempt.status == "blocked"
+    assert "dom_entry_requires_flat" in {event.code for event in waiting.risk_events}
+    assert waiting.order_attempt.raw_request["strategyOrderPlan"]["effective_order_size"] == 0
+    assert armed.config.enabled and armed.run.status == "running"
+    assert process_time_exit(db_session, entry_id=waiting.order_attempt.id, client=client, worker_lease_token=token)
+    assert not (client.place_order_calls or client.cancel_order_calls or client.close_position_calls)
+    db_session.commit()
+
+    client.positions = []
+    depth.update(observation(datetime.now(timezone.utc), .2))
+    resumed = evaluate()
+    assert resumed.order_attempt is not None, (resumed.decision.reason, [e.code for e in resumed.risk_events])
+    assert resumed.order_attempt.status == "submitted"
+    assert resumed.run.id == armed.run.id and len(client.place_order_calls) == 1
 
 
 @pytest.fixture
